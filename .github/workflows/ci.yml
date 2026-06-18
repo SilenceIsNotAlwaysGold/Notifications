@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      APP_ENV: test
+      DB_AUTO_CREATE: "false"
+      DATABASE_URL: sqlite:///./ci_test.db
+      WECOM_SEND_MODE: mock
+      WECOM_ARCHIVE_MODE: mock
+      MEDIA_DOWNLOAD_MODE: mock
+      TENCENT_DOC_MODE: mock
+      OCR_PROVIDER: mock
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        run: pytest -q
+
+      - name: Run Alembic migrations
+        run: alembic upgrade head
+
+      - name: Compile app
+        run: python -m compileall app

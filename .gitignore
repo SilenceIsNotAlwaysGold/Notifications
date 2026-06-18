@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Local databases and runtime state
+*.db
+*.sqlite
+*.sqlite3
+wecom_archive_seq.txt
+
+# Runtime storage
+storage/media/*
+!storage/media/.gitkeep
+
+# Build and packaged artifacts
+dist/
+build/
+*.egg-info/
+*.zip
+*.tar.gz
+
+# OS and editor files
+.DS_Store
+.idea/
+.vscode/

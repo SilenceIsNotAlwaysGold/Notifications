@@ -1,0 +1,10 @@
+services:
+  legal-wecom-api:
+    build: .
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./storage:/app/storage
+      - ./legal_wecom.db:/app/legal_wecom.db

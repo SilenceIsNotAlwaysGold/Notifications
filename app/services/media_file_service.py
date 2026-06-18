@@ -1,0 +1,329 @@
+import json
+import logging
+from pathlib import Path
+from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.adapters.wecom_media import WeComMediaAdapter
+from app.core.config import get_settings
+from app.models.group_message import GroupMessage
+from app.models.legal_case import LegalCase
+from app.models.legal_event import LegalEvent
+from app.models.media_file import MediaFile
+from app.models.reminder import Reminder
+from app.services.case_service import CaseService
+from app.services.document_sync_service import DocumentSyncService
+from app.services.ocr_service import OCRService
+from app.services.reminder_service import ReminderService
+from app.services.system_run_log_service import SystemRunLogService
+from app.services.tenant_settings_service import TenantSettingsService
+from app.utils.datetime_utils import now_tz
+from app.utils.media_storage import MediaStorage
+
+logger = logging.getLogger(__name__)
+
+
+class MediaFileService:
+    def __init__(
+        self,
+        db: Session,
+        media_adapter: WeComMediaAdapter | None = None,
+        storage: MediaStorage | None = None,
+    ) -> None:
+        self.db = db
+        self.media_adapter = media_adapter or WeComMediaAdapter()
+        self.storage = storage or MediaStorage()
+        self.ocr_service = OCRService()
+        self.case_service = CaseService(db)
+        self.document_sync = DocumentSyncService(db)
+        self.reminder_service = ReminderService(db)
+
+    def create_media_from_message(
+        self,
+        group_message: GroupMessage,
+        normalized_payload: dict[str, Any],
+        case_id: int | None = None,
+    ) -> MediaFile | None:
+        media_type = self._media_type(group_message.msg_type)
+        if media_type is None:
+            return None
+
+        raw_payload = normalized_payload.get("raw_payload_json") or {}
+        file_info = self._file_info(media_type, raw_payload)
+        media_file = MediaFile(
+            group_message_id=group_message.id,
+            case_id=case_id,
+            tenant_id=group_message.tenant_id,
+            group_id=group_message.group_id,
+            msg_id=raw_payload.get("msgid"),
+            seq=int(raw_payload["seq"]) if raw_payload.get("seq") is not None else None,
+            media_type=media_type,
+            original_filename=file_info.get("filename"),
+            file_ext=file_info.get("file_ext"),
+            mime_type=file_info.get("mime_type"),
+            file_size=file_info.get("filesize"),
+            md5sum=file_info.get("md5sum"),
+            source="wecom_archive" if raw_payload else "mock",
+            source_payload_json=json.dumps(raw_payload, ensure_ascii=False) if raw_payload else None,
+            download_status="pending",
+            ocr_status="pending",
+            metadata_json=json.dumps({"created_from": "message"}, ensure_ascii=False),
+        )
+        self.db.add(media_file)
+        self.db.flush()
+        return media_file
+
+    def download_media_file(self, media_file_id: int) -> MediaFile:
+        media_file = self._get_media_file(media_file_id)
+        raw_payload = json.loads(media_file.source_payload_json or "{}")
+        target_path = self.storage.build_local_path(
+            msg_id=media_file.msg_id,
+            seq=media_file.seq,
+            original_filename=media_file.original_filename,
+            media_type=media_file.media_type,
+        )
+        result = self.media_adapter.download_media(raw_payload, target_path)
+        if result.get("success"):
+            media_file.local_path = result["local_path"]
+            media_file.file_size = result.get("file_size") or media_file.file_size
+            media_file.public_url = self.storage.get_public_url(media_file.local_path)
+            media_file.download_status = "downloaded"
+            media_file.last_error = None
+        else:
+            media_file.download_status = "failed"
+            media_file.last_error = result.get("error") or "媒体下载失败"
+        self.db.flush()
+        return media_file
+
+    def process_ocr(self, media_file_id: int, trigger_type: str = "system", operator: str | None = None) -> dict[str, Any]:
+        run_service = SystemRunLogService(self.db)
+        run_log = run_service.start_run("ocr_process", trigger_type, summary={"media_file_id": media_file_id, **({"operator": operator} if operator else {})})
+        media_file = self._get_media_file(media_file_id)
+        if media_file.ocr_status == "processed" and not get_settings().ocr_enable_reprocess:
+            summary = self._ocr_summary(media_file, message="OCR 已处理，当前配置不允许重复处理")
+            run_service.finish_success(run_log, summary=self._run_summary(summary), total_count=1, success_count=1, failed_count=0)
+            return summary
+        if media_file.download_status != "downloaded":
+            media_file = self.download_media_file(media_file_id)
+        if media_file.download_status != "downloaded" or not media_file.local_path:
+            media_file.ocr_status = "skipped"
+            self.db.flush()
+            summary = self._ocr_summary(media_file, message="媒体文件未下载，跳过 OCR")
+            run_service.finish_success(run_log, summary=self._run_summary(summary), total_count=1, success_count=1, failed_count=0)
+            return summary
+
+        try:
+            result = self.ocr_service.extract_from_file(media_file.local_path, media_file.media_type, tenant_id=media_file.tenant_id)
+            if not result.get("success"):
+                media_file.extracted_text = ""
+                media_file.metadata_json = json.dumps(result.get("metadata") or {}, ensure_ascii=False)
+                media_file.ocr_status = "failed"
+                media_file.last_error = result.get("error") or "OCR 处理失败"
+                self.db.flush()
+                summary = self._ocr_summary(media_file, error=media_file.last_error)
+                run_service.finish_failed(run_log, media_file.last_error, summary=self._run_summary(summary))
+                return summary
+
+            extracted_text = result.get("raw_text") or result.get("extracted_text") or ""
+            media_file.extracted_text = extracted_text
+            media_file.metadata_json = json.dumps(
+                {
+                    **(result.get("metadata") or {}),
+                    "provider": result.get("provider"),
+                    "confidence": result.get("confidence"),
+                },
+                ensure_ascii=False,
+                default=str,
+            )
+            media_file.ocr_status = "processed" if extracted_text else "skipped"
+            media_file.last_error = None
+            event = None
+            created_reminders = 0
+            matched_case = self.case_service.find_case_by_case_no(result.get("case_no"))
+            if matched_case:
+                media_file.case_id = matched_case.id
+                media_file.tenant_id = matched_case.tenant_id or media_file.tenant_id
+                self._backfill_group_message_events(media_file, matched_case.id, media_file.tenant_id)
+            if extracted_text:
+                event = self._create_ocr_event(media_file, result)
+                self.document_sync.sync_archive_event(event, media_file=media_file)
+                if matched_case and result.get("event_type") == "payment_notice" and self._payment_tracking_enabled(matched_case.tenant_id):
+                    created_reminders = self._create_ocr_payment_tracking_once(matched_case, media_file, event.id)
+                if matched_case and result.get("event_type") == "payment_screenshot" and result.get("amount") is not None:
+                    self.case_service.update_paid_amount(matched_case, result["amount"])
+        except Exception as exc:
+            logger.exception("媒体 OCR 处理失败 media_file_id=%s", media_file.id)
+            media_file.ocr_status = "failed"
+            media_file.last_error = str(exc)
+            self.db.flush()
+            summary = self._ocr_summary(media_file, error=str(exc))
+            run_service.finish_failed(run_log, str(exc), summary=self._run_summary(summary))
+            return summary
+        self.db.flush()
+        summary = self._ocr_summary(
+            media_file,
+            event_id=event.id if event else None,
+            matched_case_id=media_file.case_id,
+            event_type=result.get("event_type") or "unknown",
+            amount=result.get("amount"),
+            created_reminders=created_reminders,
+        )
+        run_service.finish_success(run_log, summary=self._run_summary(summary), total_count=1, success_count=1, failed_count=0)
+        return summary
+
+    def list_media_files(
+        self,
+        group_id: str | None = None,
+        case_id: int | None = None,
+        media_type: str | None = None,
+        download_status: str | None = None,
+        ocr_status: str | None = None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> tuple[int, list[MediaFile]]:
+        query = select(MediaFile)
+        if group_id:
+            query = query.where(MediaFile.group_id == group_id)
+        if case_id is not None:
+            query = query.where(MediaFile.case_id == case_id)
+        if media_type:
+            query = query.where(MediaFile.media_type == media_type)
+        if download_status:
+            query = query.where(MediaFile.download_status == download_status)
+        if ocr_status:
+            query = query.where(MediaFile.ocr_status == ocr_status)
+        all_items = list(self.db.scalars(query.order_by(MediaFile.id.desc())).all())
+        start = (page - 1) * page_size
+        return len(all_items), all_items[start : start + page_size]
+
+    def _get_media_file(self, media_file_id: int) -> MediaFile:
+        media_file = self.db.get(MediaFile, media_file_id)
+        if not media_file:
+            raise ValueError("媒体文件不存在")
+        return media_file
+
+    @staticmethod
+    def _media_type(msg_type: str) -> str | None:
+        if msg_type in {"image", "pdf", "file"}:
+            return msg_type
+        return None
+
+    @staticmethod
+    def _file_info(media_type: str, raw_payload: dict[str, Any]) -> dict[str, Any]:
+        if media_type == "image":
+            image = raw_payload.get("image") or {}
+            return {
+                "filename": raw_payload.get("msgid") + ".jpg" if raw_payload.get("msgid") else None,
+                "file_ext": ".jpg",
+                "mime_type": "image/jpeg",
+                "filesize": image.get("filesize"),
+                "md5sum": image.get("md5sum"),
+            }
+        file_payload = raw_payload.get("file") or {}
+        filename = file_payload.get("filename")
+        file_ext = Path(filename or "").suffix or (".pdf" if media_type == "pdf" else None)
+        return {
+            "filename": filename,
+            "file_ext": file_ext,
+            "mime_type": "application/pdf" if media_type == "pdf" else None,
+            "filesize": file_payload.get("filesize"),
+            "md5sum": file_payload.get("md5sum"),
+        }
+
+    def _create_ocr_event(self, media_file: MediaFile, result: dict[str, Any]) -> LegalEvent:
+        event = LegalEvent(
+            case_id=media_file.case_id,
+            tenant_id=media_file.tenant_id,
+            group_message_id=media_file.group_message_id,
+            event_type=result.get("event_type") or "unknown",
+            event_time=result.get("event_time") or now_tz(),
+            amount=result.get("amount"),
+            extracted_text=result.get("raw_text") or result.get("extracted_text"),
+            metadata_json=json.dumps(
+                {
+                    "source": "media_ocr",
+                    "media_file_id": media_file.id,
+                    "provider": result.get("provider"),
+                    "confidence": result.get("confidence"),
+                    **(result.get("metadata") or {}),
+                },
+                ensure_ascii=False,
+                default=str,
+            ),
+        )
+        self.db.add(event)
+        self.db.flush()
+        return event
+
+    def _backfill_group_message_events(self, media_file: MediaFile, case_id: int, tenant_id: str | None) -> None:
+        if media_file.group_message_id is None:
+            return
+        group_message = self.db.get(GroupMessage, media_file.group_message_id)
+        if group_message and tenant_id and group_message.tenant_id != tenant_id:
+            group_message.tenant_id = tenant_id
+        events = self.db.scalars(
+            select(LegalEvent)
+            .where(LegalEvent.group_message_id == media_file.group_message_id)
+            .where(LegalEvent.case_id.is_(None))
+        ).all()
+        for event in events:
+            event.case_id = case_id
+            if tenant_id and event.tenant_id != tenant_id:
+                event.tenant_id = tenant_id
+
+    def _create_ocr_payment_tracking_once(self, legal_case: LegalCase, media_file: MediaFile, event_id: int) -> int:
+        existing = self.db.scalar(
+            select(Reminder)
+            .where(Reminder.case_id == legal_case.id)
+            .where(Reminder.reminder_type == "payment_tracking")
+            .where(Reminder.content.contains(f"OCR:{media_file.group_message_id}:payment_notice"))
+        )
+        if existing:
+            return 0
+        reminders = self.reminder_service.create_payment_tracking(legal_case.id, start_date=now_tz().date(), days=7)
+        marker = f" OCR:{media_file.group_message_id}:payment_notice:event:{event_id}"
+        for reminder in reminders:
+            reminder.content = f"{reminder.content}{marker}"
+        return len(reminders)
+
+    def _payment_tracking_enabled(self, tenant_id: str | None) -> bool:
+        effective = TenantSettingsService(self.db).get_effective_settings(tenant_id)
+        return bool(effective["feature_flags"].get("enable_payment_tracking", True))
+
+    @staticmethod
+    def _ocr_summary(
+        media_file: MediaFile,
+        event_id: int | None = None,
+        matched_case_id: int | None = None,
+        event_type: str | None = None,
+        amount: Any = None,
+        created_reminders: int = 0,
+        error: str | None = None,
+        message: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "media_file": media_file,
+            "media_file_id": media_file.id,
+            "ocr_status": media_file.ocr_status,
+            "event_id": event_id,
+            "matched_case_id": matched_case_id,
+            "event_type": event_type,
+            "amount": str(amount) if amount is not None else None,
+            "created_reminders": created_reminders,
+            "error": error,
+            "message": message,
+        }
+
+    @staticmethod
+    def _run_summary(summary: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "media_file_id": summary.get("media_file_id"),
+            "ocr_status": summary.get("ocr_status"),
+            "event_type": summary.get("event_type"),
+            "matched_case_id": summary.get("matched_case_id"),
+            "event_id": summary.get("event_id"),
+            "created_reminders": summary.get("created_reminders"),
+            "error": summary.get("error"),
+        }

@@ -1,0 +1,184 @@
+import json
+import logging
+from datetime import timedelta
+from decimal import Decimal
+from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.models.group_message import GroupMessage
+from app.models.legal_case import LegalCase
+from app.models.legal_event import LegalEvent
+from app.schemas.legal import MockMessageCreate
+from app.services.case_service import CaseService
+from app.services.document_sync_service import DocumentSyncService
+from app.services.media_file_service import MediaFileService
+from app.services.ocr_service import OCRService
+from app.services.reminder_service import ReminderService
+from app.services.tenant_settings_service import TenantSettingsService
+from app.utils.datetime_utils import ensure_aware, now_tz, today_tz
+
+logger = logging.getLogger(__name__)
+
+
+class MessageService:
+    def __init__(self, db: Session) -> None:
+        self.db = db
+        self.ocr_service = OCRService()
+        self.case_service = CaseService(db)
+        self.document_sync = DocumentSyncService(db)
+        self.reminder_service = ReminderService(db)
+        self.media_file_service = MediaFileService(db)
+
+    def handle_mock_message(self, payload: MockMessageCreate) -> dict[str, Any]:
+        return self.handle_incoming_message(payload)
+
+    def handle_incoming_message(self, payload: MockMessageCreate) -> dict[str, Any]:
+        group_message = self._save_group_message(payload)
+        extracted = self._extract(payload, group_message.tenant_id)
+        legal_case = self.case_service.find_case_by_case_no(extracted.get("case_no"))
+        tenant_id = legal_case.tenant_id if legal_case else group_message.tenant_id
+        if tenant_id and group_message.tenant_id != tenant_id:
+            group_message.tenant_id = tenant_id
+        event_types = extracted.get("event_types") or ["unknown"]
+
+        event_ids: list[int] = []
+        for event_type in event_types:
+            event = self._create_event(
+                event_type=event_type,
+                group_message_id=group_message.id,
+                case_id=legal_case.id if legal_case else None,
+                tenant_id=tenant_id,
+                amount=extracted.get("amount"),
+                extracted_text=extracted.get("extracted_text"),
+                metadata=extracted.get("metadata") or {},
+            )
+            event_ids.append(event.id)
+            self.document_sync.sync_archive_event(event)
+
+        reminder_ids: list[int] = []
+        if legal_case and "payment_screenshot" in event_types and extracted.get("amount") is not None:
+            self.case_service.update_paid_amount(legal_case, extracted["amount"])
+
+        if legal_case and "keyword" in event_types:
+            text = extracted.get("extracted_text") or ""
+            if "强制执行" in text or "仲裁" in text:
+                self.case_service.mark_defaulted(legal_case)
+            elif "逾期" in text:
+                self.case_service.mark_overdue(legal_case)
+
+        if legal_case and "payment_notice" in event_types and self._payment_tracking_enabled(legal_case.tenant_id):
+            reminders = self.reminder_service.create_payment_tracking(
+                legal_case.id,
+                start_date=today_tz() + timedelta(days=1),
+                days=7,
+            )
+            reminder_ids.extend([reminder.id for reminder in reminders])
+
+        self._handle_media_payload(group_message, payload, legal_case.id if legal_case else None)
+
+        self.db.flush()
+        return {
+            "group_message_id": group_message.id,
+            "case_id": legal_case.id if legal_case else None,
+            "event_ids": event_ids,
+            "reminder_ids": reminder_ids,
+            "extracted": self._json_safe_extracted(extracted),
+        }
+
+    def _save_group_message(self, payload: MockMessageCreate) -> GroupMessage:
+        received_at = ensure_aware(payload.received_at) if payload.received_at else now_tz()
+        raw_payload_json = json.dumps(payload.raw_payload_json, ensure_ascii=False) if payload.raw_payload_json else payload.model_dump_json()
+        tenant_id = payload.tenant_id or self._infer_tenant_id_from_group(payload.group_id)
+        group_message = GroupMessage(
+            group_id=payload.group_id,
+            tenant_id=tenant_id,
+            sender_id=payload.sender_id,
+            msg_type=payload.msg_type,
+            content=payload.content,
+            file_url=payload.file_url,
+            raw_payload_json=raw_payload_json,
+            received_at=received_at,
+        )
+        self.db.add(group_message)
+        self.db.flush()
+        return group_message
+
+    def _infer_tenant_id_from_group(self, group_id: str) -> str | None:
+        legal_case = self.db.scalar(
+            select(LegalCase)
+            .where(LegalCase.group_id == group_id)
+            .where(LegalCase.tenant_id.is_not(None))
+            .order_by(LegalCase.id.asc())
+        )
+        return legal_case.tenant_id if legal_case else None
+
+    def _extract(self, payload: MockMessageCreate, tenant_id: str | None) -> dict[str, Any]:
+        if payload.msg_type == "text":
+            return self.ocr_service.extract_from_text(payload.content, tenant_id=tenant_id)
+        if payload.msg_type == "image":
+            return self.ocr_service.extract_from_image(payload.file_url)
+        if payload.msg_type in {"file", "pdf"}:
+            return self.ocr_service.extract_from_pdf(payload.file_url)
+        return {
+            "case_no": None,
+            "amounts": [],
+            "amount": None,
+            "keywords": [],
+            "event_types": [],
+            "extracted_text": payload.content or "",
+            "metadata": {"parser": "unknown"},
+        }
+
+    def _create_event(
+        self,
+        event_type: str,
+        group_message_id: int,
+        case_id: int | None,
+        tenant_id: str | None,
+        amount: Decimal | None,
+        extracted_text: str | None,
+        metadata: dict[str, Any],
+    ) -> LegalEvent:
+        event = LegalEvent(
+            case_id=case_id,
+            tenant_id=tenant_id,
+            group_message_id=group_message_id,
+            event_type=event_type,
+            event_time=now_tz(),
+            amount=amount,
+            extracted_text=extracted_text,
+            metadata_json=json.dumps(metadata, ensure_ascii=False),
+        )
+        self.db.add(event)
+        self.db.flush()
+        return event
+
+    def _json_safe_extracted(self, extracted: dict[str, Any]) -> dict[str, Any]:
+        safe = dict(extracted)
+        safe["amounts"] = [str(amount) for amount in extracted.get("amounts", [])]
+        if extracted.get("amount") is not None:
+            safe["amount"] = str(extracted["amount"])
+        return safe
+
+    def _handle_media_payload(self, group_message: GroupMessage, payload: MockMessageCreate, case_id: int | None) -> None:
+        if payload.msg_type not in {"image", "file", "pdf"}:
+            return
+        try:
+            media_file = self.media_file_service.create_media_from_message(
+                group_message,
+                payload.model_dump(),
+                case_id=case_id,
+            )
+            if media_file:
+                self.media_file_service.download_media_file(media_file.id)
+                self.media_file_service.process_ocr(media_file.id)
+        except Exception:
+            # 媒体处理不能阻断消息入库和事件归档。
+            logger.exception("媒体消息处理失败 group_message_id=%s", group_message.id)
+            self.db.flush()
+
+    def _payment_tracking_enabled(self, tenant_id: str | None) -> bool:
+        effective = TenantSettingsService(self.db).get_effective_settings(tenant_id)
+        return bool(effective["feature_flags"].get("enable_payment_tracking", True))

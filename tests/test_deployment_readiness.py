@@ -1,0 +1,155 @@
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+from app.core.config import get_settings
+from app.core.config_validator import validate_runtime_config
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _messages(result):
+    return "\n".join(result["errors"] + result["warnings"])
+
+
+def test_webhook_mode_without_webhook_url_returns_config_error(monkeypatch, tmp_path):
+    monkeypatch.setenv("WECOM_SEND_MODE", "webhook")
+    monkeypatch.setenv("WECOM_WEBHOOK_URL", "")
+    monkeypatch.setenv("MEDIA_STORAGE_DIR", str(tmp_path / "media"))
+    get_settings.cache_clear()
+
+    result = validate_runtime_config(get_settings())
+
+    assert result["ok"] is False
+    assert "WECOM_WEBHOOK_URL" in _messages(result)
+    get_settings.cache_clear()
+
+
+def test_tencent_doc_real_without_token_or_sheet_id_returns_config_error(monkeypatch, tmp_path):
+    monkeypatch.setenv("TENCENT_DOC_MODE", "real")
+    monkeypatch.setenv("TENCENT_DOC_ACCESS_TOKEN", "")
+    monkeypatch.setenv("TENCENT_DOC_SHEET_ID", "")
+    monkeypatch.setenv("MEDIA_STORAGE_DIR", str(tmp_path / "media"))
+    get_settings.cache_clear()
+
+    result = validate_runtime_config(get_settings())
+
+    assert result["ok"] is False
+    assert "TENCENT_DOC_ACCESS_TOKEN" in _messages(result)
+    assert "TENCENT_DOC_SHEET_ID" in _messages(result)
+    get_settings.cache_clear()
+
+
+def test_local_text_ocr_provider_returns_warning(monkeypatch, tmp_path):
+    monkeypatch.setenv("OCR_PROVIDER", "local_text")
+    monkeypatch.setenv("MEDIA_STORAGE_DIR", str(tmp_path / "media"))
+    get_settings.cache_clear()
+
+    result = validate_runtime_config(get_settings())
+
+    assert any(item["name"] == "OCR_PROVIDER" and item["status"] == "warning" for item in result["items"])
+    get_settings.cache_clear()
+
+
+def test_db_auto_create_true_returns_warning(monkeypatch, tmp_path):
+    monkeypatch.setenv("DB_AUTO_CREATE", "true")
+    monkeypatch.setenv("MEDIA_STORAGE_DIR", str(tmp_path / "media"))
+    get_settings.cache_clear()
+
+    result = validate_runtime_config(get_settings())
+
+    assert any(item["name"] == "DB_AUTO_CREATE" and item["status"] == "warning" for item in result["items"])
+    get_settings.cache_clear()
+
+
+def test_health_returns_basic_ok(client):
+    response = client.get("/api/v1/health")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["app"] == "legal-wecom-automation"
+    assert body["env"] == "test"
+    assert "time" in body
+
+
+def test_health_detail_returns_runtime_sections(client):
+    response = client.get("/api/v1/health/detail")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body) >= {"status", "database", "config", "storage", "scheduler"}
+    assert body["database"]["status"] == "ok"
+    assert "running" in body["scheduler"]
+    assert "jobs" in body["scheduler"]
+    assert "writable" in body["storage"]
+    assert "errors" in body["config"]
+    assert "warnings" in body["config"]
+
+
+def test_health_detail_does_not_expose_sensitive_values(client, monkeypatch):
+    monkeypatch.setenv("WECOM_SEND_MODE", "webhook")
+    monkeypatch.setenv("WECOM_WEBHOOK_URL", "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=SECRET_WEBHOOK_KEY")
+    monkeypatch.setenv("TENCENT_DOC_MODE", "real")
+    monkeypatch.setenv("TENCENT_DOC_ACCESS_TOKEN", "SECRET_DOC_TOKEN")
+    monkeypatch.setenv("TENCENT_DOC_SHEET_ID", "SECRET_SHEET_ID")
+    get_settings.cache_clear()
+
+    response = client.get("/api/v1/health/detail")
+
+    body_text = response.text
+    assert "SECRET_WEBHOOK_KEY" not in body_text
+    assert "SECRET_DOC_TOKEN" not in body_text
+    assert "SECRET_SHEET_ID" not in body_text
+    get_settings.cache_clear()
+
+
+def test_config_cli_returns_nonzero_for_error_config(tmp_path):
+    env = os.environ.copy()
+    env.update(
+        {
+            "APP_ENV": "test",
+            "DATABASE_URL": f"sqlite:///{tmp_path / 'cli.db'}",
+            "DB_AUTO_CREATE": "false",
+            "WECOM_SEND_MODE": "webhook",
+            "WECOM_WEBHOOK_URL": "",
+            "TENCENT_DOC_MODE": "mock",
+            "WECOM_ARCHIVE_MODE": "mock",
+            "OCR_PROVIDER": "mock",
+            "MEDIA_STORAGE_DIR": str(tmp_path / "media"),
+            "PYTHONPATH": str(PROJECT_ROOT),
+        }
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-m", "app.cli", "check-config"],
+        cwd=PROJECT_ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "WECOM_WEBHOOK_URL" in result.stdout
+
+
+def test_dockerfile_exists_and_uses_uvicorn():
+    dockerfile = PROJECT_ROOT / "Dockerfile"
+
+    assert dockerfile.exists()
+    content = dockerfile.read_text(encoding="utf-8")
+    assert "python:3.11-slim" in content
+    assert "uvicorn" in content
+    assert "app.main:app" in content
+
+
+def test_github_actions_ci_runs_pytest_and_alembic():
+    ci_file = PROJECT_ROOT / ".github" / "workflows" / "ci.yml"
+
+    assert ci_file.exists()
+    content = ci_file.read_text(encoding="utf-8")
+    assert "pytest -q" in content
+    assert "alembic upgrade head" in content

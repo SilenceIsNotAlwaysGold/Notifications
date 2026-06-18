@@ -1,0 +1,510 @@
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class ApiResponse(BaseModel):
+    code: int = 0
+    message: str
+    data: Any | None = None
+
+
+class CaseCreate(BaseModel):
+    case_no: str
+    debtor_name: str
+    tenant_id: str | None = None
+    group_id: str
+    debtor_wecom_userid: str | None = None
+    lawyer_wecom_userid: str | None = None
+    due_date: date
+    total_amount: Decimal = Field(default=Decimal("0.00"), ge=0)
+
+
+class CaseOut(BaseModel):
+    id: int
+    case_no: str
+    debtor_name: str
+    tenant_id: str | None
+    group_id: str
+    debtor_wecom_userid: str | None
+    lawyer_wecom_userid: str | None
+    due_date: date
+    status: str
+    total_amount: Decimal
+    paid_amount: Decimal
+    overdue_at: datetime | None
+    defaulted_at: datetime | None
+    paid_at: datetime | None
+    last_status_checked_at: datetime | None
+    repayment_reminder_created_at: datetime | None
+    default_upgrade_reminder_created_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CaseListOut(BaseModel):
+    total: int
+    items: list[CaseOut]
+
+
+class CaseLifecycleScanOut(BaseModel):
+    checked: int
+    created_repayment_reminders: int
+    marked_overdue: int
+    marked_defaulted: int
+    marked_paid: int
+    created_default_upgrade_reminders: int
+    synced_status: int
+    scoped: bool = False
+    allowed_group_count: int = 0
+    allowed_case_count: int = 0
+    allowed_tenant_count: int = 0
+
+
+class MockMessageCreate(BaseModel):
+    tenant_id: str | None = None
+    group_id: str
+    sender_id: str
+    msg_type: str = Field(pattern="^(text|image|file|pdf|link|unknown)$")
+    content: str | None = None
+    file_url: str | None = None
+    received_at: datetime | None = None
+    raw_payload_json: dict[str, Any] | None = None
+
+
+class MessageProcessOut(BaseModel):
+    group_message_id: int
+    case_id: int | None
+    event_ids: list[int]
+    reminder_ids: list[int]
+    extracted: dict[str, Any]
+
+
+class CustomReminderCreate(BaseModel):
+    tenant_id: str | None = None
+    group_id: str
+    remind_at: datetime
+    content: str
+    target_userid: str | None = None
+    case_id: int | None = None
+
+
+class ReminderOut(BaseModel):
+    id: int
+    tenant_id: str | None
+    case_id: int | None
+    group_id: str
+    reminder_type: str
+    remind_at: datetime
+    content: str
+    target_userid: str | None
+    status: str
+    retry_count: int
+    last_error: str | None
+    sent_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ReminderListOut(BaseModel):
+    total: int
+    items: list[ReminderOut]
+
+
+class RunDueOut(BaseModel):
+    sent: int
+    failed: int
+    retrying: int
+    total: int
+
+
+class EventOut(BaseModel):
+    id: int
+    tenant_id: str | None
+    case_id: int | None
+    group_message_id: int | None
+    event_type: str
+    event_time: datetime | None
+    amount: Decimal | None
+    extracted_text: str | None
+    metadata_json: str
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class EventListOut(BaseModel):
+    total: int
+    items: list[EventOut]
+
+
+class DocumentSyncLogOut(BaseModel):
+    id: int
+    tenant_id: str | None
+    case_id: int | None
+    sync_type: str
+    sync_target: str | None
+    external_doc_id: str | None
+    external_sheet_name: str | None
+    external_row_key: str | None
+    idempotency_key: str | None
+    request_payload_json: str
+    response_payload_json: str
+    status: str
+    error_message: str | None
+    retry_count: int
+    last_attempt_at: datetime | None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DocumentSyncLogListOut(BaseModel):
+    total: int
+    items: list[DocumentSyncLogOut]
+
+
+class WeComArchiveReplayRequest(BaseModel):
+    messages: list[dict[str, Any]]
+
+
+class WeComArchivePullOut(BaseModel):
+    pulled: int
+    processed: int
+    failed: int
+    last_seq: int
+
+
+class MediaFileOut(BaseModel):
+    id: int
+    tenant_id: str | None
+    group_message_id: int | None
+    case_id: int | None
+    group_id: str
+    msg_id: str | None
+    seq: int | None
+    media_type: str
+    original_filename: str | None
+    file_ext: str | None
+    mime_type: str | None
+    file_size: int | None
+    md5sum: str | None
+    source: str
+    source_payload_json: str | None
+    local_path: str | None
+    public_url: str | None
+    download_status: str
+    ocr_status: str
+    extracted_text: str | None
+    metadata_json: str | None
+    last_error: str | None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class MediaFileListOut(BaseModel):
+    total: int
+    items: list[MediaFileOut]
+
+
+class MediaOCRResultOut(BaseModel):
+    media_file_id: int
+    ocr_status: str
+    event_id: int | None = None
+    matched_case_id: int | None = None
+    event_type: str | None = None
+    amount: str | None = None
+    created_reminders: int = 0
+
+
+class SystemRunLogOut(BaseModel):
+    id: int
+    tenant_id: str | None
+    run_type: str
+    trigger_type: str
+    status: str
+    started_at: datetime
+    finished_at: datetime | None
+    duration_ms: int | None
+    total_count: int
+    success_count: int
+    failed_count: int
+    summary_json: str | None
+    error_message: str | None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SystemRunLogListOut(BaseModel):
+    total: int
+    items: list[SystemRunLogOut]
+
+
+class CaseStatusHistoryOut(BaseModel):
+    id: int
+    tenant_id: str | None
+    case_id: int
+    old_status: str | None
+    new_status: str
+    reason: str | None
+    changed_by: str
+    before_json: str | None
+    after_json: str | None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CaseStatusHistoryListOut(BaseModel):
+    total: int
+    items: list[CaseStatusHistoryOut]
+
+
+class ReminderSendLogOut(BaseModel):
+    id: int
+    tenant_id: str | None
+    reminder_id: int
+    group_id: str
+    target_userid: str | None
+    send_mode: str
+    status: str
+    request_payload_json: str | None
+    response_payload_json: str | None
+    error_message: str | None
+    attempt_no: int
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ReminderSendLogListOut(BaseModel):
+    total: int
+    items: list[ReminderSendLogOut]
+
+
+class OperationAuditLogOut(BaseModel):
+    id: int
+    tenant_id: str | None
+    operator: str | None
+    auth_type: str | None
+    operator_role: str | None
+    api_key_id: int | None
+    api_key_prefix: str | None
+    action: str
+    method: str
+    path: str
+    status_code: int | None
+    request_summary_json: str | None
+    response_summary_json: str | None
+    resource_scope_json: str | None
+    client_host: str | None
+    user_agent: str | None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class OperationAuditLogListOut(BaseModel):
+    total: int
+    items: list[OperationAuditLogOut]
+
+
+class ApiKeyCreate(BaseModel):
+    name: str | None = None
+    role: str
+    allowed_group_ids: list[str] = Field(default_factory=list)
+    allowed_case_ids: list[int] = Field(default_factory=list)
+    allowed_tenant_ids: list[str] = Field(default_factory=list)
+    expires_at: datetime | None = None
+
+
+class ApiKeyUpdate(BaseModel):
+    name: str | None = None
+    role: str | None = None
+    expires_at: datetime | None = None
+    is_active: bool | None = None
+    allowed_group_ids: list[str] | None = None
+    allowed_case_ids: list[int] | None = None
+    allowed_tenant_ids: list[str] | None = None
+
+
+class ApiKeyOut(BaseModel):
+    id: int
+    key_prefix: str
+    name: str | None
+    role: str
+    is_active: bool
+    allowed_group_ids: list[str] = Field(default_factory=list)
+    allowed_case_ids: list[int] = Field(default_factory=list)
+    allowed_tenant_ids: list[str] = Field(default_factory=list)
+    expires_at: datetime | None
+    last_used_at: datetime | None
+    last_used_ip: str | None
+    created_by: str | None
+    created_at: datetime
+    updated_at: datetime
+    revoked_at: datetime | None
+    revoked_by: str | None
+
+    model_config = ConfigDict(from_attributes=True)
+
+    @classmethod
+    def model_validate(cls, obj, *args, **kwargs):
+        data = super().model_validate(obj, *args, **kwargs)
+        if hasattr(obj, "allowed_group_ids_json"):
+            import json
+
+            data.allowed_group_ids = json.loads(obj.allowed_group_ids_json or "[]")
+            data.allowed_case_ids = json.loads(obj.allowed_case_ids_json or "[]")
+            data.allowed_tenant_ids = json.loads(obj.allowed_tenant_ids_json or "[]")
+        return data
+
+
+class ApiKeyCreateOut(ApiKeyOut):
+    api_key: str
+
+
+class ApiKeyListOut(BaseModel):
+    total: int
+    items: list[ApiKeyOut]
+
+
+class TenantCreate(BaseModel):
+    tenant_id: str
+    tenant_name: str
+    contact_name: str | None = None
+    contact_phone: str | None = None
+    contact_email: str | None = None
+    remark: str | None = None
+
+
+class TenantUpdate(BaseModel):
+    tenant_name: str | None = None
+    status: str | None = None
+    contact_name: str | None = None
+    contact_phone: str | None = None
+    contact_email: str | None = None
+    remark: str | None = None
+
+
+class TenantOut(BaseModel):
+    id: int
+    tenant_id: str
+    tenant_name: str
+    status: str
+    contact_name: str | None
+    contact_phone: str | None
+    contact_email: str | None
+    remark: str | None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TenantListOut(BaseModel):
+    total: int
+    items: list[TenantOut]
+
+
+class TenantSettingsIn(BaseModel):
+    wecom_send_mode: str | None = None
+    wecom_webhook_url: str | None = None
+    wecom_timeout_seconds: int | None = None
+    wecom_max_retry: int | None = None
+    tencent_doc_mode: str | None = None
+    tencent_doc_base_url: str | None = None
+    tencent_doc_access_token: str | None = None
+    tencent_doc_sheet_id: str | None = None
+    tencent_doc_case_sheet_name: str | None = None
+    tencent_doc_archive_sheet_name: str | None = None
+    tencent_doc_case_no_column: str | None = None
+    tencent_doc_status_column: str | None = None
+    tencent_doc_paid_amount_column: str | None = None
+    tencent_doc_timeout_seconds: int | None = None
+    ocr_provider: str | None = None
+    ocr_enable_reprocess: bool | None = None
+    ocr_max_text_length: int | None = None
+    repayment_reminder_days_before: int | None = None
+    default_upgrade_days_after_overdue: int | None = None
+    case_status_scan_enabled: bool | None = None
+    keyword_config: dict[str, list[str]] | None = None
+    feature_flags: dict[str, bool] | None = None
+
+
+class TenantSettingsOut(BaseModel):
+    tenant_id: str
+    source: str
+    wecom_send_mode: str | None
+    has_wecom_webhook_url: bool
+    wecom_webhook_url: str | None
+    wecom_timeout_seconds: int | None
+    wecom_max_retry: int | None
+    tencent_doc_mode: str | None
+    tencent_doc_base_url: str | None
+    has_tencent_doc_access_token: bool
+    tencent_doc_access_token: str | None
+    tencent_doc_sheet_id: str | None
+    tencent_doc_case_sheet_name: str | None
+    tencent_doc_archive_sheet_name: str | None
+    tencent_doc_case_no_column: str | None
+    tencent_doc_status_column: str | None
+    tencent_doc_paid_amount_column: str | None
+    tencent_doc_timeout_seconds: int | None
+    ocr_provider: str | None
+    ocr_enable_reprocess: bool | None
+    ocr_max_text_length: int | None
+    repayment_reminder_days_before: int | None
+    default_upgrade_days_after_overdue: int | None
+    case_status_scan_enabled: bool | None
+    keyword_config: dict[str, list[str]]
+    feature_flags: dict[str, bool]
+
+
+class EffectiveTenantSettingsOut(BaseModel):
+    tenant_id: str | None
+    source: str
+    wecom: dict[str, Any]
+    tencent_doc: dict[str, Any]
+    ocr: dict[str, Any]
+    reminder: dict[str, Any]
+    feature_flags: dict[str, bool]
+    keyword_config: dict[str, list[str]]
+
+
+class WeComPocSendTestIn(BaseModel):
+    webhook_url: str | None = None
+    content: str = "企业微信机器人发送测试"
+    mentioned_userids: list[str] = Field(default_factory=list)
+    mentioned_mobiles: list[str] = Field(default_factory=list)
+
+
+class WeComPocSendTestOut(BaseModel):
+    success: bool
+    errcode: int | None = None
+    errmsg: str | None = None
+    status_code: int | None = None
+    error: str | None = None
+
+
+class WeComArchiveCheckIn(BaseModel):
+    corp_id: str | None = None
+    archive_secret: str | None = None
+    private_key: str | None = None
+    private_key_path: str | None = None
+    public_key_ver: str | None = None
+
+
+class WeComArchiveCheckOut(BaseModel):
+    ready: bool
+    missing_fields: list[str]
+    warnings: list[str]
