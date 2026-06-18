@@ -1,6 +1,9 @@
 import logging
 from datetime import datetime
 from typing import Any
+from urllib.parse import urljoin
+
+import httpx
 
 from app.core.config import get_settings
 from app.schemas.legal import MockMessageCreate
@@ -24,8 +27,28 @@ class WeComArchiveAdapter:
             start_seq = seq if seq is not None else 0
             return [message for message in self.mock_messages if int(message.get("seq", 0)) > start_seq][:max_limit]
 
-        logger.warning("企业微信会话内容存档 real 模式尚未实现，本次跳过拉取")
-        return []
+        return self._fetch_messages_from_sidecar(seq=seq, limit=limit)
+
+    def _fetch_messages_from_sidecar(self, seq: int | None = None, limit: int | None = None) -> list[dict[str, Any]]:
+        if not self.settings.wecom_archive_sidecar_url:
+            raise RuntimeError("WECOM_ARCHIVE_MODE=real 时必须配置 WECOM_ARCHIVE_SIDECAR_URL")
+
+        endpoint = urljoin(self.settings.wecom_archive_sidecar_url.rstrip("/") + "/", "messages")
+        payload = {
+            "seq": seq if seq is not None else 0,
+            "limit": limit or self.settings.wecom_archive_limit,
+            "corp_id": self.settings.wecom_corp_id,
+            "archive_secret": self.settings.wecom_archive_secret,
+            "private_key_path": self.settings.wecom_archive_private_key_path,
+            "public_key_ver": self.settings.wecom_archive_public_key_ver,
+        }
+        response = httpx.post(endpoint, json=payload, timeout=self.settings.wecom_archive_timeout_seconds)
+        response.raise_for_status()
+        data = response.json()
+        messages = data.get("messages") if isinstance(data, dict) else data
+        if not isinstance(messages, list):
+            raise RuntimeError("企业微信归档 sidecar 响应格式错误：缺少 messages 列表")
+        return [message for message in messages if isinstance(message, dict)]
 
     def normalize_message(self, raw_message: dict[str, Any]) -> dict[str, Any]:
         msgtype = raw_message.get("msgtype") or "unknown"

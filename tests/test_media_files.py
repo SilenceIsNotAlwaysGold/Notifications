@@ -1,7 +1,11 @@
+import base64
 from pathlib import Path
 
+import httpx
 from sqlalchemy import select
 
+from app.adapters.wecom_media import WeComMediaAdapter
+from app.core.config import get_settings
 from app.models.group_message import GroupMessage
 from app.models.media_file import MediaFile
 
@@ -130,3 +134,48 @@ def test_media_download_failure_does_not_block_group_message(client, db_session,
     assert group_message is not None
     assert media_file is not None
     assert media_file.download_status == "pending"
+
+
+def test_real_media_download_uses_sidecar_and_writes_file(monkeypatch, tmp_path):
+    monkeypatch.setenv("MEDIA_DOWNLOAD_MODE", "real")
+    monkeypatch.setenv("WECOM_CORP_ID", "wwxxxx")
+    monkeypatch.setenv("WECOM_ARCHIVE_SECRET", "archive-secret")
+    monkeypatch.setenv("WECOM_ARCHIVE_PRIVATE_KEY_PATH", "/secure/private.pem")
+    monkeypatch.setenv("WECOM_ARCHIVE_PUBLIC_KEY_VER", "1")
+    monkeypatch.setenv("WECOM_ARCHIVE_SIDECAR_URL", "http://127.0.0.1:9001/wecom-archive")
+    get_settings.cache_clear()
+    content = b"real media bytes"
+
+    def fake_post(url, json=None, timeout=None):
+        assert url == "http://127.0.0.1:9001/wecom-archive/media/download"
+        assert json["raw_message"]["msgid"] == "msg_real_media"
+        assert json["target_filename"] == "msg_real_media.jpg"
+        assert json["corp_id"] == "wwxxxx"
+        assert json["archive_secret"] == "archive-secret"
+        assert json["private_key_path"] == "/secure/private.pem"
+        assert json["public_key_ver"] == "1"
+        request = httpx.Request("POST", url)
+        return httpx.Response(200, json={"content_base64": base64.b64encode(content).decode("ascii")}, request=request)
+
+    monkeypatch.setattr("app.adapters.wecom_media.httpx.post", fake_post)
+    target_path = tmp_path / "msg_real_media.jpg"
+
+    result = WeComMediaAdapter().download_media({"msgid": "msg_real_media", "msgtype": "image"}, str(target_path))
+
+    assert result["success"] is True
+    assert result["local_path"] == str(target_path)
+    assert result["file_size"] == len(content)
+    assert target_path.read_bytes() == content
+    get_settings.cache_clear()
+
+
+def test_real_media_download_without_sidecar_returns_failure(monkeypatch, tmp_path):
+    monkeypatch.setenv("MEDIA_DOWNLOAD_MODE", "real")
+    monkeypatch.setenv("WECOM_ARCHIVE_SIDECAR_URL", "")
+    get_settings.cache_clear()
+
+    result = WeComMediaAdapter().download_media({"msgid": "msg_real_media", "msgtype": "image"}, str(tmp_path / "media.jpg"))
+
+    assert result["success"] is False
+    assert "WECOM_ARCHIVE_SIDECAR_URL" in result["error"]
+    get_settings.cache_clear()

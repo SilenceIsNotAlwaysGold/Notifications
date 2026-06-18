@@ -42,6 +42,73 @@ def test_tencent_doc_real_without_token_or_sheet_id_returns_config_error(monkeyp
     get_settings.cache_clear()
 
 
+def test_wecom_archive_real_without_sidecar_returns_config_error(monkeypatch, tmp_path):
+    monkeypatch.setenv("WECOM_ARCHIVE_MODE", "real")
+    monkeypatch.setenv("WECOM_CORP_ID", "wwxxxx")
+    monkeypatch.setenv("WECOM_ARCHIVE_SECRET", "secret")
+    monkeypatch.setenv("WECOM_ARCHIVE_PRIVATE_KEY_PATH", "/secure/private.pem")
+    monkeypatch.setenv("WECOM_ARCHIVE_PUBLIC_KEY_VER", "1")
+    monkeypatch.setenv("WECOM_ARCHIVE_SIDECAR_URL", "")
+    monkeypatch.setenv("MEDIA_STORAGE_DIR", str(tmp_path / "media"))
+    get_settings.cache_clear()
+
+    result = validate_runtime_config(get_settings())
+
+    assert result["ok"] is False
+    assert "WECOM_ARCHIVE_SIDECAR_URL" in _messages(result)
+    get_settings.cache_clear()
+
+
+def test_wecom_archive_real_with_sidecar_returns_ok(monkeypatch, tmp_path):
+    monkeypatch.setenv("WECOM_ARCHIVE_MODE", "real")
+    monkeypatch.setenv("WECOM_CORP_ID", "wwxxxx")
+    monkeypatch.setenv("WECOM_ARCHIVE_SECRET", "secret")
+    monkeypatch.setenv("WECOM_ARCHIVE_PRIVATE_KEY_PATH", "/secure/private.pem")
+    monkeypatch.setenv("WECOM_ARCHIVE_PUBLIC_KEY_VER", "1")
+    monkeypatch.setenv("WECOM_ARCHIVE_SIDECAR_URL", "http://127.0.0.1:9001/wecom-archive")
+    monkeypatch.setenv("MEDIA_STORAGE_DIR", str(tmp_path / "media"))
+    get_settings.cache_clear()
+
+    result = validate_runtime_config(get_settings())
+
+    assert not any(item["name"] == "WECOM_ARCHIVE_MODE" and item["status"] == "error" for item in result["items"])
+    get_settings.cache_clear()
+
+
+def test_media_download_real_without_sidecar_returns_config_error(monkeypatch, tmp_path):
+    monkeypatch.setenv("MEDIA_DOWNLOAD_MODE", "real")
+    monkeypatch.setenv("WECOM_CORP_ID", "wwxxxx")
+    monkeypatch.setenv("WECOM_ARCHIVE_SECRET", "secret")
+    monkeypatch.setenv("WECOM_ARCHIVE_PRIVATE_KEY_PATH", "/secure/private.pem")
+    monkeypatch.setenv("WECOM_ARCHIVE_PUBLIC_KEY_VER", "1")
+    monkeypatch.setenv("WECOM_ARCHIVE_SIDECAR_URL", "")
+    monkeypatch.setenv("MEDIA_STORAGE_DIR", str(tmp_path / "media"))
+    get_settings.cache_clear()
+
+    result = validate_runtime_config(get_settings())
+
+    assert result["ok"] is False
+    assert "MEDIA_DOWNLOAD_MODE=real" in _messages(result)
+    assert "WECOM_ARCHIVE_SIDECAR_URL" in _messages(result)
+    get_settings.cache_clear()
+
+
+def test_media_download_real_with_sidecar_returns_ok(monkeypatch, tmp_path):
+    monkeypatch.setenv("MEDIA_DOWNLOAD_MODE", "real")
+    monkeypatch.setenv("WECOM_CORP_ID", "wwxxxx")
+    monkeypatch.setenv("WECOM_ARCHIVE_SECRET", "secret")
+    monkeypatch.setenv("WECOM_ARCHIVE_PRIVATE_KEY_PATH", "/secure/private.pem")
+    monkeypatch.setenv("WECOM_ARCHIVE_PUBLIC_KEY_VER", "1")
+    monkeypatch.setenv("WECOM_ARCHIVE_SIDECAR_URL", "http://127.0.0.1:9001/wecom-archive")
+    monkeypatch.setenv("MEDIA_STORAGE_DIR", str(tmp_path / "media"))
+    get_settings.cache_clear()
+
+    result = validate_runtime_config(get_settings())
+
+    assert not any(item["name"] == "MEDIA_DOWNLOAD_MODE" and item["status"] == "error" for item in result["items"])
+    get_settings.cache_clear()
+
+
 def test_local_text_ocr_provider_returns_warning(monkeypatch, tmp_path):
     monkeypatch.setenv("OCR_PROVIDER", "local_text")
     monkeypatch.setenv("MEDIA_STORAGE_DIR", str(tmp_path / "media"))
@@ -50,6 +117,31 @@ def test_local_text_ocr_provider_returns_warning(monkeypatch, tmp_path):
     result = validate_runtime_config(get_settings())
 
     assert any(item["name"] == "OCR_PROVIDER" and item["status"] == "warning" for item in result["items"])
+    get_settings.cache_clear()
+
+
+def test_tencent_ocr_without_sidecar_returns_config_error(monkeypatch, tmp_path):
+    monkeypatch.setenv("OCR_PROVIDER", "tencent")
+    monkeypatch.setenv("OCR_SIDECAR_URL", "")
+    monkeypatch.setenv("MEDIA_STORAGE_DIR", str(tmp_path / "media"))
+    get_settings.cache_clear()
+
+    result = validate_runtime_config(get_settings())
+
+    assert result["ok"] is False
+    assert "OCR_SIDECAR_URL" in _messages(result)
+    get_settings.cache_clear()
+
+
+def test_aliyun_ocr_with_sidecar_returns_ok(monkeypatch, tmp_path):
+    monkeypatch.setenv("OCR_PROVIDER", "aliyun")
+    monkeypatch.setenv("OCR_SIDECAR_URL", "http://127.0.0.1:9002")
+    monkeypatch.setenv("MEDIA_STORAGE_DIR", str(tmp_path / "media"))
+    get_settings.cache_clear()
+
+    result = validate_runtime_config(get_settings())
+
+    assert not any(item["name"] == "OCR_PROVIDER" and item["status"] == "error" for item in result["items"])
     get_settings.cache_clear()
 
 

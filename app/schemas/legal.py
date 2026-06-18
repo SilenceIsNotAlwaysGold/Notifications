@@ -502,6 +502,7 @@ class WeComArchiveCheckIn(BaseModel):
     private_key: str | None = None
     private_key_path: str | None = None
     public_key_ver: str | None = None
+    sidecar_url: str | None = None
 
 
 class WeComArchiveCheckOut(BaseModel):

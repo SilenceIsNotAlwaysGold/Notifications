@@ -1,8 +1,11 @@
 import os
+import base64
 from pathlib import Path
 
+import httpx
 from sqlalchemy import select
 
+from app.adapters.ocr_providers.tencent_provider import TencentOCRProvider
 from app.adapters.ocr_providers.local_text_provider import LocalTextOCRProvider
 from app.core.config import get_settings
 from app.models.document_sync_log import DocumentSyncLog
@@ -88,6 +91,48 @@ def test_local_text_provider_missing_txt_fails(tmp_path):
     assert result["success"] is False
     assert result["raw_text"] == ""
     assert "未找到同名 OCR 文本文件" in result["error"]
+
+
+def test_tencent_ocr_provider_uses_sidecar(monkeypatch, tmp_path):
+    os.environ["OCR_PROVIDER"] = "tencent"
+    os.environ["OCR_SIDECAR_URL"] = "http://127.0.0.1:9002"
+    os.environ["OCR_MAX_TEXT_LENGTH"] = "20000"
+    get_settings.cache_clear()
+    image_path = tmp_path / "pay.jpg"
+    image_path.write_bytes(b"image bytes")
+
+    def fake_post(url, json=None, timeout=None):
+        assert url == "http://127.0.0.1:9002/ocr/extract"
+        assert json["provider"] == "tencent"
+        assert json["media_type"] == "image"
+        assert json["filename"] == "pay.jpg"
+        assert base64.b64decode(json["content_base64"]) == b"image bytes"
+        request = httpx.Request("POST", url)
+        return httpx.Response(200, json={"success": True, "raw_text": "案件(2026)黔0281民初3118号已支付400元", "confidence": 0.98}, request=request)
+
+    monkeypatch.setattr("app.adapters.ocr_providers.sidecar_provider.httpx.post", fake_post)
+
+    result = TencentOCRProvider().extract(str(image_path), "image")
+
+    assert result["success"] is True
+    assert result["provider"] == "tencent"
+    assert "已支付400元" in result["raw_text"]
+    assert result["confidence"] == 0.98
+    get_settings.cache_clear()
+
+
+def test_tencent_ocr_provider_without_sidecar_fails(monkeypatch, tmp_path):
+    os.environ["OCR_PROVIDER"] = "tencent"
+    os.environ["OCR_SIDECAR_URL"] = ""
+    get_settings.cache_clear()
+    image_path = tmp_path / "pay.jpg"
+    image_path.write_bytes(b"image bytes")
+
+    result = TencentOCRProvider().extract(str(image_path), "image")
+
+    assert result["success"] is False
+    assert "OCR_SIDECAR_URL" in result["error"]
+    get_settings.cache_clear()
 
 
 def test_ocr_service_extracts_case_no_and_amount_from_local_text(tmp_path):

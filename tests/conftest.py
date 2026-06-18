@@ -14,11 +14,13 @@ os.environ["ADMIN_API_KEYS"] = ""
 os.environ["PUBLIC_ENDPOINTS"] = "/api/v1/health,/api/v1/health/detail"
 os.environ["WECOM_SEND_MODE"] = "mock"
 os.environ["WECOM_ARCHIVE_MODE"] = "mock"
+os.environ["WECOM_ARCHIVE_SIDECAR_URL"] = ""
 os.environ["WECOM_ARCHIVE_SEQ_FILE"] = "./test_wecom_archive_seq.txt"
 os.environ["MEDIA_STORAGE_DIR"] = "./test_storage/media"
 os.environ["MEDIA_DOWNLOAD_MODE"] = "mock"
 os.environ["TENCENT_DOC_MODE"] = "mock"
 os.environ["OCR_PROVIDER"] = "mock"
+os.environ["OCR_SIDECAR_URL"] = ""
 
 from app.core.config import get_settings
 from app.db.base import Base
@@ -43,6 +45,7 @@ def reset_database():
     os.environ["PUBLIC_ENDPOINTS"] = "/api/v1/health,/api/v1/health/detail"
     os.environ["WECOM_SEND_MODE"] = "mock"
     os.environ["WECOM_ARCHIVE_MODE"] = "mock"
+    os.environ["WECOM_ARCHIVE_SIDECAR_URL"] = ""
     os.environ["WECOM_ARCHIVE_SEQ_FILE"] = "./test_wecom_archive_seq.txt"
     os.environ["MEDIA_STORAGE_DIR"] = "./test_storage/media"
     os.environ["MEDIA_DOWNLOAD_MODE"] = "mock"
@@ -51,6 +54,7 @@ def reset_database():
     os.environ["TENCENT_DOC_ACCESS_TOKEN"] = ""
     os.environ["TENCENT_DOC_SHEET_ID"] = ""
     os.environ["OCR_PROVIDER"] = "mock"
+    os.environ["OCR_SIDECAR_URL"] = ""
     os.environ["OCR_ENABLE_REPROCESS"] = "true"
     os.environ["OCR_MAX_TEXT_LENGTH"] = "20000"
     get_settings.cache_clear()

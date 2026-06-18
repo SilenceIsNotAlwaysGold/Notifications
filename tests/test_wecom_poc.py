@@ -67,6 +67,7 @@ def test_archive_check_missing_corp_id_returns_missing_fields(client, monkeypatc
     data = response.json()["data"]
     assert data["ready"] is False
     assert "corp_id" in data["missing_fields"]
+    assert "sidecar_url" in data["missing_fields"]
 
 
 def test_archive_check_private_key_or_path_is_enough(client, monkeypatch):
@@ -75,12 +76,24 @@ def test_archive_check_private_key_or_path_is_enough(client, monkeypatch):
     with_key = client.post(
         "/api/v1/legal/wecom-poc/archive-check",
         headers={"X-API-Key": ENV_ADMIN_KEY},
-        json={"corp_id": "wwxxxx", "archive_secret": "secret", "private_key": "PRIVATE", "public_key_ver": "1"},
+        json={
+            "corp_id": "wwxxxx",
+            "archive_secret": "secret",
+            "private_key": "PRIVATE",
+            "public_key_ver": "1",
+            "sidecar_url": "http://127.0.0.1:9001/wecom-archive",
+        },
     )
     with_path = client.post(
         "/api/v1/legal/wecom-poc/archive-check",
         headers={"X-API-Key": ENV_ADMIN_KEY},
-        json={"corp_id": "wwxxxx", "archive_secret": "secret", "private_key_path": "/secure/private.pem", "public_key_ver": "1"},
+        json={
+            "corp_id": "wwxxxx",
+            "archive_secret": "secret",
+            "private_key_path": "/secure/private.pem",
+            "public_key_ver": "1",
+            "sidecar_url": "http://127.0.0.1:9001/wecom-archive",
+        },
     )
 
     assert with_key.json()["data"]["ready"] is True
@@ -94,7 +107,13 @@ def test_archive_check_does_not_return_private_key_plaintext(client, monkeypatch
     response = client.post(
         "/api/v1/legal/wecom-poc/archive-check",
         headers={"X-API-Key": ENV_ADMIN_KEY},
-        json={"corp_id": "wwxxxx", "archive_secret": "secret", "private_key": private_key, "public_key_ver": "1"},
+        json={
+            "corp_id": "wwxxxx",
+            "archive_secret": "secret",
+            "private_key": private_key,
+            "public_key_ver": "1",
+            "sidecar_url": "http://127.0.0.1:9001/wecom-archive",
+        },
     )
 
     assert response.status_code == 200

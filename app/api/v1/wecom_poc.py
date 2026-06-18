@@ -60,8 +60,11 @@ def check_wecom_archive_config(payload: WeComArchiveCheckIn):
         missing_fields.append("private_key_or_private_key_path")
     if not payload.public_key_ver:
         missing_fields.append("public_key_ver")
+    if not payload.sidecar_url:
+        missing_fields.append("sidecar_url")
 
     warnings = [
+        "真实拉取需要企业微信会话内容存档官方 SDK 或 SDK sidecar，系统不会使用非官方 hook",
         "尚未验证客户是否已开通会话内容存档",
         "尚未验证外部群是否在存档范围内",
         "尚未验证参与群聊员工是否在存档范围内",

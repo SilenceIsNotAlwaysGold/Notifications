@@ -59,6 +59,27 @@ def _validate_database_url(settings: Settings, result: dict[str, Any]) -> None:
     _add_item(result, "DATABASE_URL", "error", "DATABASE_URL 格式无效")
 
 
+def _missing_wecom_archive_sdk_settings(settings: Settings) -> list[str]:
+    return [
+        name
+        for name, value in {
+            "WECOM_CORP_ID": settings.wecom_corp_id,
+            "WECOM_ARCHIVE_SECRET": settings.wecom_archive_secret,
+            "WECOM_ARCHIVE_PRIVATE_KEY_PATH": settings.wecom_archive_private_key_path,
+            "WECOM_ARCHIVE_PUBLIC_KEY_VER": settings.wecom_archive_public_key_ver,
+            "WECOM_ARCHIVE_SIDECAR_URL": settings.wecom_archive_sidecar_url,
+        }.items()
+        if not value
+    ]
+
+
+def _validate_wecom_archive_sidecar_url(settings: Settings, result: dict[str, Any], item_name: str) -> bool:
+    if urlparse(settings.wecom_archive_sidecar_url or "").scheme not in {"http", "https"}:
+        _add_item(result, item_name, "error", "WECOM_ARCHIVE_SIDECAR_URL 必须是 http 或 https URL")
+        return False
+    return True
+
+
 def validate_runtime_config(settings: Settings) -> dict[str, Any]:
     result: dict[str, Any] = {"ok": True, "errors": [], "warnings": [], "items": []}
 
@@ -81,25 +102,34 @@ def validate_runtime_config(settings: Settings) -> dict[str, Any]:
     elif settings.ocr_provider == "local_text":
         _add_item(result, "OCR_PROVIDER", "warning", "OCR_PROVIDER=local_text 仅适合本地调试")
     elif settings.ocr_provider in {"tencent", "aliyun"}:
-        _add_item(result, "OCR_PROVIDER", "warning", f"OCR_PROVIDER={settings.ocr_provider} 当前仅预留，真实 provider 尚未实现")
+        if not settings.ocr_sidecar_url:
+            _add_item(result, "OCR_PROVIDER", "error", f"OCR_PROVIDER={settings.ocr_provider} 时必须配置 OCR_SIDECAR_URL")
+        elif urlparse(settings.ocr_sidecar_url or "").scheme not in {"http", "https"}:
+            _add_item(result, "OCR_PROVIDER", "error", "OCR_SIDECAR_URL 必须是 http 或 https URL")
+        else:
+            _add_item(result, "OCR_PROVIDER", "ok", f"OCR_PROVIDER={settings.ocr_provider} 将通过 OCR sidecar 识别")
 
     if settings.wecom_archive_mode == "mock":
         _add_item(result, "WECOM_ARCHIVE_MODE", "ok", "企业微信会话内容存档为 mock 模式")
     else:
-        missing = [
-            name
-            for name, value in {
-                "WECOM_CORP_ID": settings.wecom_corp_id,
-                "WECOM_ARCHIVE_SECRET": settings.wecom_archive_secret,
-                "WECOM_ARCHIVE_PRIVATE_KEY_PATH": settings.wecom_archive_private_key_path,
-                "WECOM_ARCHIVE_PUBLIC_KEY_VER": settings.wecom_archive_public_key_ver,
-            }.items()
-            if not value
-        ]
+        missing = _missing_wecom_archive_sdk_settings(settings)
         if missing:
             _add_item(result, "WECOM_ARCHIVE_MODE", "error", f"WECOM_ARCHIVE_MODE=real 时缺少配置：{', '.join(missing)}")
+        elif not _validate_wecom_archive_sidecar_url(settings, result, "WECOM_ARCHIVE_MODE"):
+            pass
         else:
-            _add_item(result, "WECOM_ARCHIVE_MODE", "ok", "企业微信会话内容存档 real 模式必要配置已提供")
+            _add_item(result, "WECOM_ARCHIVE_MODE", "ok", "企业微信会话内容存档 real 模式必要配置已提供，将通过 SDK sidecar 拉取")
+
+    if settings.media_download_mode == "mock":
+        _add_item(result, "MEDIA_DOWNLOAD_MODE", "ok", "企业微信媒体下载为 mock 模式")
+    else:
+        missing = _missing_wecom_archive_sdk_settings(settings)
+        if missing:
+            _add_item(result, "MEDIA_DOWNLOAD_MODE", "error", f"MEDIA_DOWNLOAD_MODE=real 时缺少配置：{', '.join(missing)}")
+        elif not _validate_wecom_archive_sidecar_url(settings, result, "MEDIA_DOWNLOAD_MODE"):
+            pass
+        else:
+            _add_item(result, "MEDIA_DOWNLOAD_MODE", "ok", "企业微信媒体下载 real 模式必要配置已提供，将通过 SDK sidecar 下载")
 
     _validate_media_storage(settings, result)
 

@@ -33,6 +33,8 @@
 - public_key_ver：
 - private_key：
 - private_key 是否可通过安全方式交付：
+- 是否允许部署企业微信会话存档 SDK sidecar：
+- SDK sidecar 部署位置 / 内网访问地址：
 - 哪些员工在存档范围：
 - 外部群消息是否在存档范围：
 - 文件 / 图片 / PDF 是否允许拉取：

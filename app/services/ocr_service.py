@@ -23,7 +23,7 @@ class OCRService:
             "keywords": [],
             "event_types": [],
             "extracted_text": "",
-            "metadata": {"parser": "mock", "todo": "replace with image OCR", "file_url": file_url},
+            "metadata": {"parser": "mock", "mock": True, "file_url": file_url},
         }
 
     def extract_from_pdf(self, file_url: str | None) -> dict[str, Any]:
@@ -34,7 +34,7 @@ class OCRService:
             "keywords": [],
             "event_types": [],
             "extracted_text": "",
-            "metadata": {"parser": "mock", "todo": "replace with PDF OCR", "file_url": file_url},
+            "metadata": {"parser": "mock", "mock": True, "file_url": file_url},
         }
 
     def extract_from_file(self, local_path: str, media_type: str, tenant_id: str | None = None) -> dict[str, Any]:

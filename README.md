@@ -7,21 +7,21 @@
 - 创建和查询法务案件。
 - 模拟企业微信群消息进入系统。
 - 使用正则识别案号、金额、缴费通知、付款完成、开庭、判决、逾期/执行关键词。
-- 保存群消息、结构化事件、提醒、腾讯文档 mock 同步日志。
+- 保存群消息、结构化事件、提醒、腾讯文档同步日志。
 - 缴费通知自动生成 7 天每日跟踪提醒。
 - 付款完成消息自动累加案件已还金额。
 - APScheduler 每分钟扫描待发送提醒，也可以手动调用 run-due 接口。
 - 企业微信群机器人发送链路支持 mock / webhook 两种模式。
-- 企业微信归档 image/file/pdf 消息可落库为媒体文件，并执行 mock 下载与 mock OCR。
+- 企业微信归档 image/file/pdf 消息可落库为媒体文件，并支持 mock 或 sidecar 下载。
+- OCR 支持 mock、本地文本调试，以及腾讯/阿里 sidecar provider。
 - 支持案件状态扫描：到期前提醒、逾期标记、违约升级、已还清标记 paid。
 
 ## 当前阶段限制
 
-- 当前未接真实企业微信消息监听。
-- 当前未接企业微信会话内容存档。
-- 当前未接真实腾讯文档 API。
-- 当前未接真实 OCR。
-- 当前媒体下载也是 mock，不请求真实企业微信媒体接口。
+- 企业微信读取必须走官方会话内容存档；系统本体不做非官方 hook、网页版模拟或 cookie 抓取。
+- 企业微信会话存档和媒体下载 real 模式依赖 SDK sidecar。
+- 腾讯/阿里 OCR real 模式依赖 OCR sidecar。
+- 腾讯文档 real 模式依赖客户提供可用的文档 API 网关、token 和表格配置。
 
 ## 项目结构
 
@@ -90,6 +90,7 @@ WECOM_CORP_ID=
 WECOM_ARCHIVE_SECRET=
 WECOM_ARCHIVE_PRIVATE_KEY_PATH=
 WECOM_ARCHIVE_PUBLIC_KEY_VER=
+WECOM_ARCHIVE_SIDECAR_URL=
 WECOM_ARCHIVE_SEQ_FILE=./wecom_archive_seq.txt
 WECOM_ARCHIVE_LIMIT=100
 WECOM_ARCHIVE_TIMEOUT_SECONDS=10
@@ -116,6 +117,7 @@ CASE_STATUS_SCAN_ENABLED=true
 CASE_STATUS_SCAN_HOUR=1
 CASE_STATUS_SCAN_MINUTE=0
 OCR_PROVIDER=mock
+OCR_SIDECAR_URL=
 OCR_ENABLE_REPROCESS=true
 OCR_MAX_TEXT_LENGTH=20000
 ```
@@ -586,12 +588,12 @@ curl -X POST http://127.0.0.1:8000/api/v1/legal/wecom-poc/send-test \
 curl -X POST http://127.0.0.1:8000/api/v1/legal/wecom-poc/archive-check \
   -H 'X-API-Key: admin-key' \
   -H 'Content-Type: application/json' \
-  -d '{"corp_id":"wwxxxx","archive_secret":"xxx","private_key_path":"/secure/private.pem","public_key_ver":"1"}'
+  -d '{"corp_id":"wwxxxx","archive_secret":"xxx","private_key_path":"/secure/private.pem","public_key_ver":"1","sidecar_url":"http://127.0.0.1:9001/wecom-archive"}'
 ```
 
 ## 企业微信会话内容存档
 
-第三阶段只提供会话内容存档 adapter 骨架和 replay 调试流程。当前不真实请求企业微信，不解密生产消息，也不使用个人号 hook、不模拟网页版、不抓取 cookie。
+当前系统提供会话内容存档 replay 调试流程，并支持在 `WECOM_ARCHIVE_MODE=real` 时通过 SDK sidecar 拉取已解密消息。系统本体不使用个人号 hook、不模拟网页版、不抓取 cookie；真实企业微信会话存档需要由 sidecar 封装企业微信官方会话内容存档 SDK。
 
 真实接入需要客户开通企业微信会话内容存档，并提供：
 
@@ -600,6 +602,13 @@ curl -X POST http://127.0.0.1:8000/api/v1/legal/wecom-poc/archive-check \
 - private key
 - public key version
 - 已开通的员工 / 群范围
+- SDK sidecar 地址 `WECOM_ARCHIVE_SIDECAR_URL`
+
+sidecar 约定：
+
+- 系统会向 `{WECOM_ARCHIVE_SIDECAR_URL}/messages` 发起 `POST` 请求。
+- 请求体包含 `seq`、`limit`、`corp_id`、`archive_secret`、`private_key_path`、`public_key_ver`。
+- 响应体应为 `{"messages":[...]}`，其中每条消息使用企业微信归档原始字段，如 `seq`、`msgid`、`roomid`、`from`、`msgtype`、`text`、`image`、`file`、`msgtime`。
 
 本地可以通过 replay 接口模拟真实归档消息进入系统：
 
@@ -615,13 +624,18 @@ curl -X POST http://127.0.0.1:8000/api/v1/legal/wecom-archive/replay \
 curl -X POST http://127.0.0.1:8000/api/v1/legal/wecom-archive/pull
 ```
 
-默认 `WECOM_ARCHIVE_MODE=mock`，pull 返回空列表。若设置 `WECOM_ARCHIVE_AUTO_PULL=true`，APScheduler 会每分钟尝试执行一次归档 pull；本地默认关闭。
+默认 `WECOM_ARCHIVE_MODE=mock`，pull 返回空列表。若设置 `WECOM_ARCHIVE_MODE=real`，必须同时配置 `WECOM_ARCHIVE_SIDECAR_URL` 和企业微信归档凭证。若设置 `WECOM_ARCHIVE_AUTO_PULL=true`，APScheduler 会每分钟尝试执行一次归档 pull；本地默认关闭。
 
 ## 媒体文件处理
 
-当前支持企业微信归档 `image`、`file`、`pdf` 消息落库到 `legal_media_files`。媒体下载为 mock，会在 `MEDIA_STORAGE_DIR` 下写入本地测试文件；OCR 也是 mock，只为后续真实 OCR 预留 `local_path` 输入和状态流转。
+当前支持企业微信归档 `image`、`file`、`pdf` 消息落库到 `legal_media_files`。默认 `MEDIA_DOWNLOAD_MODE=mock`，会在 `MEDIA_STORAGE_DIR` 下写入本地测试文件；若设置 `MEDIA_DOWNLOAD_MODE=real`，系统会通过 SDK sidecar 下载真实媒体文件并保存到 `MEDIA_STORAGE_DIR`。
 
-后续接入真实企业微信媒体下载后，图片/PDF/文件会保存到 `MEDIA_STORAGE_DIR`，真实 OCR provider 可直接基于 `local_path` 处理文件。
+媒体下载 sidecar 约定：
+
+- 系统会向 `{WECOM_ARCHIVE_SIDECAR_URL}/media/download` 发起 `POST` 请求。
+- 请求体包含 `raw_message`、`target_filename`、`corp_id`、`archive_secret`、`private_key_path`、`public_key_ver`。
+- 响应体应为 `{"content_base64":"..."}`。
+- 系统会校验 `MEDIA_MAX_FILE_SIZE_MB` 后写入本地文件；真实 OCR provider 可直接基于 `local_path` 处理文件。
 
 replay 图片消息：
 
@@ -687,6 +701,31 @@ curl -X POST http://127.0.0.1:8000/api/v1/legal/media-files/1/ocr
 ```
 
 系统会读取 `.txt`，进入案号、金额、关键词识别链路；匹配到案件后会生成 `payment_notice` 事件和 7 条缴费跟踪提醒。付款完成类文本会累加 `paid_amount` 并写入腾讯文档 mock 同步日志。
+
+## OCR Sidecar 模式
+
+设置：
+
+```env
+OCR_PROVIDER=tencent
+OCR_SIDECAR_URL=http://127.0.0.1:9002
+OCR_MAX_TEXT_LENGTH=20000
+```
+
+`OCR_PROVIDER` 也可以设置为 `aliyun`。系统会向 `{OCR_SIDECAR_URL}/ocr/extract` 发起 `POST` 请求，请求体包含：
+
+- `provider`：`tencent` 或 `aliyun`
+- `media_type`：`image`、`pdf` 或 `file`
+- `filename`
+- `content_base64`
+
+响应体应为：
+
+```json
+{"success": true, "raw_text": "识别出的文本", "confidence": 0.98, "metadata": {}}
+```
+
+系统拿到 `raw_text` 后会继续进入统一的案号、金额、关键词解析链路。
 
 ## 腾讯文档同步
 

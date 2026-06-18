@@ -11,5 +11,5 @@ class MockOCRProvider:
             provider=self.provider_name,
             raw_text="",
             confidence=0,
-            metadata={"media_type": media_type, "local_path": local_path, "todo": "真实 OCR 未接入"},
+            metadata={"media_type": media_type, "local_path": local_path, "mock": True},
         )

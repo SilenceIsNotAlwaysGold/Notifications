@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     wecom_archive_secret: str | None = Field(default=None, alias="WECOM_ARCHIVE_SECRET")
     wecom_archive_private_key_path: str | None = Field(default=None, alias="WECOM_ARCHIVE_PRIVATE_KEY_PATH")
     wecom_archive_public_key_ver: str | None = Field(default=None, alias="WECOM_ARCHIVE_PUBLIC_KEY_VER")
+    wecom_archive_sidecar_url: str | None = Field(default=None, alias="WECOM_ARCHIVE_SIDECAR_URL")
     wecom_archive_seq_file: str = Field(default="./wecom_archive_seq.txt", alias="WECOM_ARCHIVE_SEQ_FILE")
     wecom_archive_limit: int = Field(default=100, ge=1, le=1000, alias="WECOM_ARCHIVE_LIMIT")
     wecom_archive_timeout_seconds: int = Field(default=10, gt=0, alias="WECOM_ARCHIVE_TIMEOUT_SECONDS")
@@ -58,6 +59,7 @@ class Settings(BaseSettings):
     case_status_scan_hour: int = Field(default=1, ge=0, le=23, alias="CASE_STATUS_SCAN_HOUR")
     case_status_scan_minute: int = Field(default=0, ge=0, le=59, alias="CASE_STATUS_SCAN_MINUTE")
     ocr_provider: Literal["mock", "local_text", "tencent", "aliyun"] = Field(default="mock", alias="OCR_PROVIDER")
+    ocr_sidecar_url: str | None = Field(default=None, alias="OCR_SIDECAR_URL")
     ocr_enable_reprocess: bool = Field(default=True, alias="OCR_ENABLE_REPROCESS")
     ocr_max_text_length: int = Field(default=20000, ge=1, alias="OCR_MAX_TEXT_LENGTH")
 

@@ -1,3 +1,4 @@
+import httpx
 from sqlalchemy import select
 
 from app.adapters.wecom_archive import WeComArchiveAdapter
@@ -120,6 +121,49 @@ def test_pull_mock_mode_returns_empty_without_error(client):
 
     assert response.status_code == 200
     assert response.json()["data"] == {"pulled": 0, "processed": 0, "failed": 0, "last_seq": 0}
+
+
+def test_fetch_real_mode_uses_sidecar(monkeypatch):
+    monkeypatch.setenv("WECOM_ARCHIVE_MODE", "real")
+    monkeypatch.setenv("WECOM_CORP_ID", "wwxxxx")
+    monkeypatch.setenv("WECOM_ARCHIVE_SECRET", "archive-secret")
+    monkeypatch.setenv("WECOM_ARCHIVE_PRIVATE_KEY_PATH", "/secure/private.pem")
+    monkeypatch.setenv("WECOM_ARCHIVE_PUBLIC_KEY_VER", "1")
+    monkeypatch.setenv("WECOM_ARCHIVE_SIDECAR_URL", "http://127.0.0.1:9001/wecom-archive")
+    get_settings.cache_clear()
+
+    def fake_post(url, json=None, timeout=None):
+        assert url == "http://127.0.0.1:9001/wecom-archive/messages"
+        assert json["seq"] == 100
+        assert json["limit"] == 20
+        assert json["corp_id"] == "wwxxxx"
+        assert json["archive_secret"] == "archive-secret"
+        assert json["private_key_path"] == "/secure/private.pem"
+        assert json["public_key_ver"] == "1"
+        request = httpx.Request("POST", url)
+        return httpx.Response(200, json={"messages": [{"seq": 101, "msgtype": "text", "text": {"content": "ok"}}]}, request=request)
+
+    monkeypatch.setattr("app.adapters.wecom_archive.httpx.post", fake_post)
+
+    messages = WeComArchiveAdapter().fetch_messages(seq=100, limit=20)
+
+    assert messages == [{"seq": 101, "msgtype": "text", "text": {"content": "ok"}}]
+    get_settings.cache_clear()
+
+
+def test_fetch_real_mode_without_sidecar_raises(monkeypatch):
+    monkeypatch.setenv("WECOM_ARCHIVE_MODE", "real")
+    monkeypatch.setenv("WECOM_ARCHIVE_SIDECAR_URL", "")
+    get_settings.cache_clear()
+
+    try:
+        WeComArchiveAdapter().fetch_messages(seq=0, limit=1)
+    except RuntimeError as exc:
+        assert "WECOM_ARCHIVE_SIDECAR_URL" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError")
+    finally:
+        get_settings.cache_clear()
 
 
 def test_seq_store_missing_file_defaults_to_zero(tmp_path):
