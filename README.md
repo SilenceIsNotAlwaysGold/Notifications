@@ -132,6 +132,18 @@ cp .env.example .env
 uvicorn app.main:app --reload
 ```
 
+启动后访问管理后台：
+
+```text
+http://127.0.0.1:8000/admin
+```
+
+接口文档：
+
+```text
+http://127.0.0.1:8000/docs
+```
+
 ## 部署说明
 
 本地开发启动：

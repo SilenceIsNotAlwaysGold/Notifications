@@ -181,6 +181,21 @@ def test_health_detail_returns_runtime_sections(client):
     assert "warnings" in body["config"]
 
 
+def test_admin_console_static_files_available(client):
+    redirect_response = client.get("/admin", follow_redirects=False)
+    assert redirect_response.status_code in {307, 308}
+    assert redirect_response.headers["location"] == "/admin/"
+
+    index_response = client.get("/admin/")
+    assert index_response.status_code == 200
+    assert "法务群自动化管理后台" in index_response.text
+    assert "/admin/admin.js" in index_response.text
+
+    js_response = client.get("/admin/admin.js")
+    assert js_response.status_code == 200
+    assert "legal_wecom_api_key" in js_response.text
+
+
 def test_health_detail_does_not_expose_sensitive_values(client, monkeypatch):
     monkeypatch.setenv("WECOM_SEND_MODE", "webhook")
     monkeypatch.setenv("WECOM_WEBHOOK_URL", "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=SECRET_WEBHOOK_KEY")

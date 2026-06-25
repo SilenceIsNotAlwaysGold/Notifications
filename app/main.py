@@ -1,7 +1,9 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.exceptions import RequestValidationError
+from fastapi.staticfiles import StaticFiles
 
 from app.api.v1.router import api_router
 from app.core.config import get_settings
@@ -34,6 +36,17 @@ settings = get_settings()
 app = FastAPI(title=settings.app_name, debug=settings.debug, lifespan=lifespan)
 app.add_middleware(OperationAuditMiddleware)
 app.include_router(api_router, prefix="/api/v1")
+
+admin_static_dir = Path(__file__).resolve().parent / "static" / "admin"
+
+
+@app.get("/admin", include_in_schema=False)
+def admin_redirect() -> RedirectResponse:
+    return RedirectResponse(url="/admin/")
+
+
+if admin_static_dir.exists():
+    app.mount("/admin", StaticFiles(directory=admin_static_dir, html=True), name="admin")
 
 
 @app.exception_handler(HTTPException)

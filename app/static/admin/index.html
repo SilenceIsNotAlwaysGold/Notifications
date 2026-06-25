@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>法务群自动化管理后台</title>
+    <link rel="stylesheet" href="/admin/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">法</div>
+          <div>
+            <div class="brand-title">法务自动化</div>
+            <div class="brand-subtitle">WeCom Ops Console</div>
+          </div>
+        </div>
+        <nav class="nav">
+          <button class="nav-item active" data-view="overview">总览</button>
+          <button class="nav-item" data-view="cases">案件</button>
+          <button class="nav-item" data-view="messages">消息</button>
+          <button class="nav-item" data-view="reminders">提醒</button>
+          <button class="nav-item" data-view="events">事件</button>
+          <button class="nav-item" data-view="media">媒体</button>
+          <button class="nav-item" data-view="sync">同步日志</button>
+        </nav>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div>
+            <h1 id="view-title">总览</h1>
+            <p id="view-subtitle">系统状态、调度器和部署健康情况</p>
+          </div>
+          <div class="key-panel">
+            <input id="api-key-input" type="password" placeholder="X-API-Key" autocomplete="off" />
+            <button id="save-key-btn">保存</button>
+            <button id="refresh-btn" class="ghost">刷新</button>
+          </div>
+        </header>
+
+        <section id="alert" class="alert hidden"></section>
+        <section id="content"></section>
+      </main>
+    </div>
+
+    <template id="empty-state-template">
+      <div class="empty-state">暂无数据</div>
+    </template>
+
+    <script src="/admin/admin.js"></script>
+  </body>
+</html>
