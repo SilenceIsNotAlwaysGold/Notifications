@@ -739,6 +739,18 @@ OCR_MAX_TEXT_LENGTH=20000
 
 系统拿到 `raw_text` 后会继续进入统一的案号、金额、关键词解析链路。
 
+仓库内提供了一个轻量腾讯 OCR sidecar，位于 `ocr_sidecar/`。它通过腾讯云
+`GeneralBasicOCR` API 识别图片和 PDF，并适配上面的 `/ocr/extract` 协议：
+
+```bash
+TENCENT_OCR_SECRET_ID=xxx \
+TENCENT_OCR_SECRET_KEY=xxx \
+TENCENT_OCR_REGION=ap-guangzhou \
+uvicorn ocr_sidecar.main:app --host 127.0.0.1 --port 9002
+```
+
+生产环境建议把腾讯云密钥写入 systemd 环境文件，不要提交到代码仓库。
+
 ## 腾讯文档同步
 
 默认 `TENCENT_DOC_MODE=mock`，系统不会请求腾讯文档，只会把稳定的同步 payload 写入 `document_sync_logs`。当前支持三类主要同步：
