@@ -6,6 +6,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.adapters.kdocs import KDocsAdapter
 from app.adapters.tencent_doc import TencentDocAdapter
 from app.core.config import get_settings
 from app.models.document_sync_log import DocumentSyncLog
@@ -19,10 +20,10 @@ logger = logging.getLogger(__name__)
 
 
 class DocumentSyncService:
-    def __init__(self, db: Session, adapter: TencentDocAdapter | None = None) -> None:
+    def __init__(self, db: Session, adapter: Any | None = None) -> None:
         self.db = db
         self.settings = get_settings()
-        self.adapter = adapter or TencentDocAdapter()
+        self.adapter = adapter or KDocsAdapter()
 
     def sync_status(self, legal_case: LegalCase, status: str) -> DocumentSyncLog:
         result = self._safe_call(lambda: self.adapter.update_case_status(legal_case.case_no, status, legal_case.id, tenant_id=legal_case.tenant_id), "update_case_status")
@@ -32,9 +33,9 @@ class DocumentSyncService:
             tenant_id=legal_case.tenant_id,
             sync_type="status",
             result=result,
-            external_sheet_name=payload.get("sheet_name") or self.settings.tencent_doc_case_sheet_name,
+            external_sheet_name=payload.get("sheet_name") or payload.get("sheet_id") or self.settings.kdocs_case_sheet_id,
             external_row_key=legal_case.case_no,
-            idempotency_key=f"tencent_doc:status:{legal_case.id}:{status}",
+            idempotency_key=f"kdocs:status:{legal_case.id}:{status}",
         )
 
     def sync_paid_amount(self, legal_case: LegalCase) -> DocumentSyncLog:
@@ -48,9 +49,9 @@ class DocumentSyncService:
             tenant_id=legal_case.tenant_id,
             sync_type="paid_amount",
             result=result,
-            external_sheet_name=payload.get("sheet_name") or self.settings.tencent_doc_case_sheet_name,
+            external_sheet_name=payload.get("sheet_name") or payload.get("sheet_id") or self.settings.kdocs_case_sheet_id,
             external_row_key=legal_case.case_no,
-            idempotency_key=f"tencent_doc:paid_amount:{legal_case.id}:{legal_case.paid_amount}",
+            idempotency_key=f"kdocs:paid_amount:{legal_case.id}:{legal_case.paid_amount}",
         )
 
     def sync_archive_event(self, event: LegalEvent, media_file: MediaFile | None = None) -> DocumentSyncLog:
@@ -75,9 +76,9 @@ class DocumentSyncService:
             tenant_id=tenant_id,
             sync_type="archive",
             result=result,
-            external_sheet_name=request_payload.get("sheet_name") or self.settings.tencent_doc_archive_sheet_name,
+            external_sheet_name=request_payload.get("sheet_name") or request_payload.get("sheet_id") or self.settings.kdocs_enforcement_sheet_id,
             external_row_key=legal_case.case_no if legal_case else None,
-            idempotency_key=f"tencent_doc:archive:{event.id}",
+            idempotency_key=f"kdocs:archive:{event.id}",
         )
 
     def sync_case_snapshot(self, legal_case: LegalCase) -> DocumentSyncLog:
@@ -98,9 +99,70 @@ class DocumentSyncService:
             tenant_id=legal_case.tenant_id,
             sync_type="case_snapshot",
             result=result,
-            external_sheet_name=payload.get("sheet_name") or self.settings.tencent_doc_case_sheet_name,
+            external_sheet_name=payload.get("sheet_name") or payload.get("sheet_id") or self.settings.kdocs_case_sheet_id,
             external_row_key=legal_case.case_no,
-            idempotency_key=f"tencent_doc:case_snapshot:{legal_case.id}:{legal_case.updated_at.isoformat()}",
+            idempotency_key=f"kdocs:case_snapshot:{legal_case.id}:{legal_case.updated_at.isoformat()}",
+        )
+
+    def sync_legal_document_upload(
+        self,
+        media_file: MediaFile,
+        target_filename: str,
+        metadata: dict[str, Any],
+    ) -> DocumentSyncLog:
+        result = self._safe_call(
+            lambda: self.adapter.upload_legal_document(media_file.local_path or "", target_filename, metadata, tenant_id=media_file.tenant_id),
+            "upload_legal_document",
+        )
+        payload = result.get("request_payload") or {}
+        response = result.get("response") or {}
+        return self._write_log(
+            case_id=media_file.case_id,
+            tenant_id=media_file.tenant_id,
+            sync_type="legal_document_upload",
+            result=result,
+            external_sheet_name=payload.get("folder_id") or self.settings.kdocs_judgment_folder_id,
+            external_row_key=target_filename,
+            idempotency_key=f"kdocs:legal_document_upload:{media_file.id}:{target_filename}:{response.get('file_id')}",
+        )
+
+    def sync_court_time(self, event: LegalEvent, row: dict[str, Any]) -> DocumentSyncLog:
+        result = self._safe_call(lambda: self.adapter.append_court_time_row(row, tenant_id=event.tenant_id), "append_court_time_row")
+        payload = result.get("request_payload") or {}
+        return self._write_log(
+            case_id=event.case_id,
+            tenant_id=event.tenant_id,
+            sync_type="court_time",
+            result=result,
+            external_sheet_name=payload.get("sheet_id") or self.settings.kdocs_court_time_sheet_id,
+            external_row_key=row.get("案号"),
+            idempotency_key=f"kdocs:court_time:{event.id}",
+        )
+
+    def sync_enforcement_progress(self, event: LegalEvent, row: dict[str, Any]) -> DocumentSyncLog:
+        result = self._safe_call(lambda: self.adapter.append_enforcement_row(row, tenant_id=event.tenant_id), "append_enforcement_row")
+        payload = result.get("request_payload") or {}
+        return self._write_log(
+            case_id=event.case_id,
+            tenant_id=event.tenant_id,
+            sync_type="enforcement_progress",
+            result=result,
+            external_sheet_name=payload.get("sheet_id") or self.settings.kdocs_enforcement_sheet_id,
+            external_row_key=row.get("案号"),
+            idempotency_key=f"kdocs:enforcement_progress:{event.id}",
+        )
+
+    def sync_payment_registration(self, event: LegalEvent, row: dict[str, Any]) -> DocumentSyncLog:
+        result = self._safe_call(lambda: self.adapter.append_payment_registration_row(row, tenant_id=event.tenant_id), "append_payment_registration_row")
+        payload = result.get("request_payload") or {}
+        return self._write_log(
+            case_id=event.case_id,
+            tenant_id=event.tenant_id,
+            sync_type="payment_registration",
+            result=result,
+            external_sheet_name=payload.get("sheet_id") or self.settings.kdocs_payment_sheet_id,
+            external_row_key=row.get("案号"),
+            idempotency_key=f"kdocs:payment_registration:{event.id}",
         )
 
     def retry_failed_sync(self, sync_log_id: int, operator: str | None = None) -> DocumentSyncLog:
@@ -165,8 +227,8 @@ class DocumentSyncService:
             fields = payload.get("fields") or {}
             tenant_id = log.tenant_id
             return self.adapter.update_case_status(
-                row_match.get(self.settings.tencent_doc_case_no_column) or log.external_row_key or "",
-                fields.get(self.settings.tencent_doc_status_column) or "",
+                row_match.get(self.settings.kdocs_case_no_column) or row_match.get(self.settings.tencent_doc_case_no_column) or log.external_row_key or "",
+                fields.get(self.settings.kdocs_status_column) or fields.get(self.settings.tencent_doc_status_column) or "",
                 log.case_id,
                 tenant_id=tenant_id,
             )
@@ -174,8 +236,8 @@ class DocumentSyncService:
             row_match = payload.get("row_match") or {}
             fields = payload.get("fields") or {}
             return self.adapter.update_paid_amount(
-                row_match.get(self.settings.tencent_doc_case_no_column) or log.external_row_key or "",
-                Decimal(str(fields.get(self.settings.tencent_doc_paid_amount_column) or "0")),
+                row_match.get(self.settings.kdocs_case_no_column) or row_match.get(self.settings.tencent_doc_case_no_column) or log.external_row_key or "",
+                Decimal(str(fields.get(self.settings.kdocs_paid_amount_column) or fields.get(self.settings.tencent_doc_paid_amount_column) or "0")),
                 log.case_id,
                 tenant_id=log.tenant_id,
             )
@@ -183,9 +245,23 @@ class DocumentSyncService:
             return self.adapter.append_archive_row(payload.get("row") or payload, log.case_id, tenant_id=log.tenant_id)
         if operation == "sync_case_snapshot":
             return self.adapter.sync_case_snapshot(payload.get("fields") or payload, tenant_id=log.tenant_id)
+        if operation == "upload_legal_document":
+            return self.adapter.upload_legal_document(
+                payload.get("local_path") or "",
+                payload.get("target_filename") or "",
+                payload.get("metadata") or {},
+                tenant_id=log.tenant_id,
+            )
+        if operation == "append_court_time_row":
+            return self.adapter.append_court_time_row(payload.get("row") or payload, tenant_id=log.tenant_id)
+        if operation == "append_enforcement_row":
+            return self.adapter.append_enforcement_row(payload.get("row") or payload, tenant_id=log.tenant_id)
+        if operation == "append_payment_registration_row":
+            return self.adapter.append_payment_registration_row(payload.get("row") or payload, tenant_id=log.tenant_id)
         return {
             "success": False,
-            "mode": self.settings.tencent_doc_mode,
+            "mode": self.settings.kdocs_mode,
+            "sync_target": "kdocs",
             "operation": operation or "unknown",
             "request_payload": payload,
             "response": None,
@@ -210,8 +286,12 @@ class DocumentSyncService:
             case_id=case_id,
             tenant_id=tenant_id,
             sync_type=sync_type,
-            sync_target="tencent_doc",
-            external_doc_id=(result.get("request_payload") or {}).get("sheet_id") or self.settings.tencent_doc_sheet_id,
+            sync_target=result.get("sync_target") or "kdocs",
+            external_doc_id=(
+                (result.get("request_payload") or {}).get("sheet_id")
+                or (result.get("request_payload") or {}).get("folder_id")
+                or self.settings.kdocs_space_id
+            ),
             external_sheet_name=external_sheet_name,
             external_row_key=external_row_key,
             idempotency_key=idempotency_key,
@@ -231,10 +311,11 @@ class DocumentSyncService:
         try:
             return callback()
         except Exception as exc:
-            logger.exception("腾讯文档同步调用异常 operation=%s", operation)
+            logger.exception("文档同步调用异常 operation=%s", operation)
             return {
                 "success": False,
-                "mode": get_settings().tencent_doc_mode,
+                "mode": get_settings().kdocs_mode,
+                "sync_target": "kdocs",
                 "operation": operation,
                 "request_payload": {},
                 "response": None,

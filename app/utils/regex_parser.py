@@ -6,6 +6,8 @@ from typing import Any
 from app.utils.datetime_utils import app_timezone, now_tz
 
 CASE_NO_PATTERN = re.compile(r"(?:案号|案件编号)?[:：]?\s*[\(（]\d{4}[\)）][\u4e00-\u9fa5A-Za-z0-9]+号")
+PLAINTIFF_PATTERN = re.compile(r"原告(?:人)?[:：]?\s*([\u4e00-\u9fa5A-Za-z0-9（）()·、,，\s]{2,40})")
+DEFENDANT_PATTERN = re.compile(r"被告(?:人)?[:：]?\s*([\u4e00-\u9fa5A-Za-z0-9（）()·、,，\s]{2,40})")
 AMOUNT_PATTERNS = [
     re.compile(r"[¥￥]\s*([\d,]+(?:\.\d{1,2})?)"),
     re.compile(r"人民币\s*([\d,]+(?:\.\d{1,2})?)"),
@@ -20,7 +22,7 @@ CN_TIME_PATTERN = re.compile(r"(?:(\d{4})年)?(\d{1,2})月(\d{1,2})日\s*(上午
 PAYMENT_NOTICE_KEYWORDS = ["需要缴费", "缴费通知", "缴费金额", "诉讼费", "公告费", "开庭费", "缴纳"]
 PAYMENT_DONE_KEYWORDS = ["已付款", "已支付", "支付成功", "转账成功", "已缴费", "付款截图"]
 COURT_KEYWORDS = ["传票", "开庭", "现场开庭"]
-JUDGMENT_KEYWORDS = ["判决书", "民事判决书", "裁定书"]
+JUDGMENT_KEYWORDS = ["判决书", "民事判决书", "调解书", "民事调解书", "裁定书", "民事裁定书"]
 DEFAULT_KEYWORDS = ["强制执行", "仲裁", "逾期"]
 
 
@@ -34,6 +36,11 @@ def parse_legal_text(text: str | None, keyword_config: dict[str, list[str]] | No
         "case_no": extract_case_no(content),
         "amounts": amounts,
         "amount": amounts[0] if amounts else None,
+        "document_type": extract_document_type(content),
+        "plaintiff": extract_party(content, PLAINTIFF_PATTERN),
+        "defendant": extract_party(content, DEFENDANT_PATTERN),
+        "court_time": extract_event_time(content),
+        "requires_review": requires_review(content, event_type),
         "keywords": matched_keywords(content, keywords),
         "event_type": event_type,
         "event_types": event_types,
@@ -59,6 +66,34 @@ def extract_amounts(content: str) -> list[Decimal]:
             if amount not in values:
                 values.append(amount)
     return values
+
+
+def extract_document_type(content: str) -> str | None:
+    if "调解书" in content:
+        return "调解书"
+    if "裁定书" in content:
+        return "裁定书"
+    if "判决书" in content:
+        return "判决书"
+    if "传票" in content:
+        return "开庭传票"
+    return None
+
+
+def extract_party(content: str, pattern: re.Pattern[str]) -> str | None:
+    match = pattern.search(content)
+    if not match:
+        return None
+    value = re.split(r"[\n\r，,。；;]\s*", match.group(1).strip())[0]
+    return value.strip(" ：:，,。；;") or None
+
+
+def requires_review(content: str, event_type: str) -> bool:
+    if event_type == "judgment":
+        return not (extract_document_type(content) and extract_party(content, PLAINTIFF_PATTERN) and extract_party(content, DEFENDANT_PATTERN))
+    if event_type == "court_notice":
+        return extract_event_time(content) is None
+    return False
 
 
 def extract_event_time(content: str) -> datetime | None:

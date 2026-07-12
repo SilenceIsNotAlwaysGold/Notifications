@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -149,6 +150,7 @@ class MediaFileService:
             if extracted_text:
                 event = self._create_ocr_event(media_file, result)
                 self.document_sync.sync_archive_event(event, media_file=media_file)
+                self._sync_kdocs_business(event, media_file, result, matched_case)
                 if matched_case and result.get("event_type") == "payment_notice" and self._payment_tracking_enabled(matched_case.tenant_id):
                     created_reminders = self._create_ocr_payment_tracking_once(matched_case, media_file, event.id)
                 if matched_case and result.get("event_type") == "payment_screenshot" and result.get("amount") is not None:
@@ -168,6 +170,7 @@ class MediaFileService:
             matched_case_id=media_file.case_id,
             event_type=result.get("event_type") or "unknown",
             amount=result.get("amount"),
+            result=result,
             created_reminders=created_reminders,
         )
         run_service.finish_success(run_log, summary=self._run_summary(summary), total_count=1, success_count=1, failed_count=0)
@@ -247,6 +250,11 @@ class MediaFileService:
                     "media_file_id": media_file.id,
                     "provider": result.get("provider"),
                     "confidence": result.get("confidence"),
+                    "document_type": result.get("document_type"),
+                    "plaintiff": result.get("plaintiff"),
+                    "defendant": result.get("defendant"),
+                    "court_time": result.get("court_time"),
+                    "requires_review": bool(result.get("requires_review")),
                     **(result.get("metadata") or {}),
                 },
                 ensure_ascii=False,
@@ -288,6 +296,108 @@ class MediaFileService:
             reminder.content = f"{reminder.content}{marker}"
         return len(reminders)
 
+    def _sync_kdocs_business(
+        self,
+        event: LegalEvent,
+        media_file: MediaFile,
+        result: dict[str, Any],
+        legal_case: LegalCase | None,
+    ) -> None:
+        event_type = result.get("event_type")
+        if event_type == "judgment":
+            upload_url = None
+            target_filename = self._target_legal_document_filename(media_file, result)
+            if media_file.local_path:
+                upload_log = self.document_sync.sync_legal_document_upload(
+                    media_file,
+                    target_filename,
+                    self._document_metadata(result, legal_case, media_file),
+                )
+                try:
+                    upload_response = json.loads(upload_log.response_payload_json or "{}")
+                    upload_url = upload_response.get("url") or upload_response.get("file_url")
+                except Exception:
+                    upload_url = None
+            self.document_sync.sync_enforcement_progress(event, self._enforcement_row(result, legal_case, media_file, target_filename, upload_url))
+            return
+
+        if event_type == "court_notice":
+            self.document_sync.sync_court_time(event, self._court_time_row(result, legal_case, media_file))
+            return
+
+        if event_type in {"payment_notice", "payment_screenshot"}:
+            self.document_sync.sync_payment_registration(event, self._payment_registration_row(result, legal_case, media_file))
+
+    def _document_metadata(self, result: dict[str, Any], legal_case: LegalCase | None, media_file: MediaFile) -> dict[str, Any]:
+        return {
+            "case_no": self._case_no(result, legal_case),
+            "plaintiff": result.get("plaintiff"),
+            "defendant": result.get("defendant"),
+            "document_type": result.get("document_type"),
+            "media_file_id": media_file.id,
+            "msg_id": media_file.msg_id,
+            "requires_review": bool(result.get("requires_review")),
+        }
+
+    def _enforcement_row(
+        self,
+        result: dict[str, Any],
+        legal_case: LegalCase | None,
+        media_file: MediaFile,
+        target_filename: str,
+        upload_url: str | None,
+    ) -> dict[str, Any]:
+        return {
+            "案号": self._case_no(result, legal_case),
+            "原告": result.get("plaintiff"),
+            "被告": result.get("defendant") or (legal_case.debtor_name if legal_case else None),
+            "文书类型": result.get("document_type"),
+            "文件名": target_filename,
+            "文件链接": upload_url or media_file.public_url or media_file.local_path,
+            "识别摘要": (result.get("raw_text") or result.get("extracted_text") or "")[:500],
+            "需人工复核": bool(result.get("requires_review")),
+            "消息ID": media_file.msg_id,
+        }
+
+    def _court_time_row(self, result: dict[str, Any], legal_case: LegalCase | None, media_file: MediaFile) -> dict[str, Any]:
+        court_time = result.get("court_time") or result.get("event_time")
+        return {
+            "案号": self._case_no(result, legal_case),
+            "被告": legal_case.debtor_name if legal_case else result.get("defendant"),
+            "开庭时间": court_time.isoformat() if hasattr(court_time, "isoformat") else court_time,
+            "文件链接": media_file.public_url or media_file.local_path,
+            "识别摘要": (result.get("raw_text") or result.get("extracted_text") or "")[:500],
+            "需人工复核": bool(result.get("requires_review")),
+            "消息ID": media_file.msg_id,
+        }
+
+    def _payment_registration_row(self, result: dict[str, Any], legal_case: LegalCase | None, media_file: MediaFile) -> dict[str, Any]:
+        return {
+            "案号": self._case_no(result, legal_case),
+            "被告": legal_case.debtor_name if legal_case else result.get("defendant"),
+            "缴费类型": "付款完成" if result.get("event_type") == "payment_screenshot" else "缴费通知",
+            "金额": str(result.get("amount")) if result.get("amount") is not None else None,
+            "文件链接": media_file.public_url or media_file.local_path,
+            "识别摘要": (result.get("raw_text") or result.get("extracted_text") or "")[:500],
+            "需人工复核": bool(result.get("requires_review")),
+            "消息ID": media_file.msg_id,
+        }
+
+    def _target_legal_document_filename(self, media_file: MediaFile, result: dict[str, Any]) -> str:
+        plaintiff = self._safe_kdocs_filename_part(result.get("plaintiff") or "未知原告")
+        defendant = self._safe_kdocs_filename_part(result.get("defendant") or "未知被告")
+        document_type = result.get("document_type") or "文书"
+        ext = media_file.file_ext or Path(media_file.original_filename or "").suffix or ".pdf"
+        return f"{plaintiff}-{defendant}{{{document_type}}}{ext}"
+
+    @staticmethod
+    def _safe_kdocs_filename_part(value: str) -> str:
+        return re.sub(r"[\\/:*?\"<>|\r\n]+", "_", str(value)).strip(" ._") or "未知"
+
+    @staticmethod
+    def _case_no(result: dict[str, Any], legal_case: LegalCase | None) -> str | None:
+        return result.get("case_no") or (legal_case.case_no if legal_case else None)
+
     def _payment_tracking_enabled(self, tenant_id: str | None) -> bool:
         effective = TenantSettingsService(self.db).get_effective_settings(tenant_id)
         return bool(effective["feature_flags"].get("enable_payment_tracking", True))
@@ -299,10 +409,12 @@ class MediaFileService:
         matched_case_id: int | None = None,
         event_type: str | None = None,
         amount: Any = None,
+        result: dict[str, Any] | None = None,
         created_reminders: int = 0,
         error: str | None = None,
         message: str | None = None,
     ) -> dict[str, Any]:
+        court_time = (result or {}).get("court_time")
         return {
             "media_file": media_file,
             "media_file_id": media_file.id,
@@ -311,6 +423,11 @@ class MediaFileService:
             "matched_case_id": matched_case_id,
             "event_type": event_type,
             "amount": str(amount) if amount is not None else None,
+            "document_type": (result or {}).get("document_type"),
+            "plaintiff": (result or {}).get("plaintiff"),
+            "defendant": (result or {}).get("defendant"),
+            "court_time": court_time.isoformat() if hasattr(court_time, "isoformat") else court_time,
+            "requires_review": bool((result or {}).get("requires_review")),
             "created_reminders": created_reminders,
             "error": error,
             "message": message,
@@ -324,6 +441,11 @@ class MediaFileService:
             "event_type": summary.get("event_type"),
             "matched_case_id": summary.get("matched_case_id"),
             "event_id": summary.get("event_id"),
+            "document_type": summary.get("document_type"),
+            "plaintiff": summary.get("plaintiff"),
+            "defendant": summary.get("defendant"),
+            "court_time": summary.get("court_time"),
+            "requires_review": summary.get("requires_review"),
             "created_reminders": summary.get("created_reminders"),
             "error": summary.get("error"),
         }

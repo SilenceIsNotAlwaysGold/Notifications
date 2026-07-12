@@ -75,6 +75,25 @@ def test_wecom_archive_real_with_sidecar_returns_ok(monkeypatch, tmp_path):
     get_settings.cache_clear()
 
 
+def test_wecom_archive_real_sidecar_mock_allows_missing_credentials_with_warning(monkeypatch, tmp_path):
+    monkeypatch.setenv("WECOM_ARCHIVE_MODE", "real")
+    monkeypatch.setenv("WECOM_ARCHIVE_SIDECAR_MOCK", "true")
+    monkeypatch.setenv("WECOM_CORP_ID", "")
+    monkeypatch.setenv("WECOM_ARCHIVE_SECRET", "")
+    monkeypatch.setenv("WECOM_ARCHIVE_PRIVATE_KEY_PATH", "")
+    monkeypatch.setenv("WECOM_ARCHIVE_PUBLIC_KEY_VER", "")
+    monkeypatch.setenv("WECOM_ARCHIVE_SIDECAR_URL", "http://127.0.0.1:9001/wecom-archive")
+    monkeypatch.setenv("MEDIA_STORAGE_DIR", str(tmp_path / "media"))
+    get_settings.cache_clear()
+
+    result = validate_runtime_config(get_settings())
+
+    assert result["ok"] is True
+    assert any(item["name"] == "WECOM_ARCHIVE_MODE" and item["status"] == "warning" for item in result["items"])
+    assert "sidecar mock" in _messages(result)
+    get_settings.cache_clear()
+
+
 def test_media_download_real_without_sidecar_returns_config_error(monkeypatch, tmp_path):
     monkeypatch.setenv("MEDIA_DOWNLOAD_MODE", "real")
     monkeypatch.setenv("WECOM_CORP_ID", "wwxxxx")
@@ -106,6 +125,25 @@ def test_media_download_real_with_sidecar_returns_ok(monkeypatch, tmp_path):
     result = validate_runtime_config(get_settings())
 
     assert not any(item["name"] == "MEDIA_DOWNLOAD_MODE" and item["status"] == "error" for item in result["items"])
+    get_settings.cache_clear()
+
+
+def test_media_download_real_sidecar_mock_allows_missing_credentials_with_warning(monkeypatch, tmp_path):
+    monkeypatch.setenv("MEDIA_DOWNLOAD_MODE", "real")
+    monkeypatch.setenv("WECOM_ARCHIVE_SIDECAR_MOCK", "true")
+    monkeypatch.setenv("WECOM_CORP_ID", "")
+    monkeypatch.setenv("WECOM_ARCHIVE_SECRET", "")
+    monkeypatch.setenv("WECOM_ARCHIVE_PRIVATE_KEY_PATH", "")
+    monkeypatch.setenv("WECOM_ARCHIVE_PUBLIC_KEY_VER", "")
+    monkeypatch.setenv("WECOM_ARCHIVE_SIDECAR_URL", "http://127.0.0.1:9001/wecom-archive")
+    monkeypatch.setenv("MEDIA_STORAGE_DIR", str(tmp_path / "media"))
+    get_settings.cache_clear()
+
+    result = validate_runtime_config(get_settings())
+
+    assert result["ok"] is True
+    assert any(item["name"] == "MEDIA_DOWNLOAD_MODE" and item["status"] == "warning" for item in result["items"])
+    assert "sidecar mock" in _messages(result)
     get_settings.cache_clear()
 
 
@@ -251,6 +289,27 @@ def test_dockerfile_exists_and_uses_uvicorn():
     assert "python:3.11-slim" in content
     assert "uvicorn" in content
     assert "app.main:app" in content
+
+
+def test_dockerignore_excludes_runtime_and_secret_files():
+    dockerignore = PROJECT_ROOT / ".dockerignore"
+
+    assert dockerignore.exists()
+    content = dockerignore.read_text(encoding="utf-8")
+    for pattern in [".env", "*.pem", "*.key", "*.db", "storage/", "test_storage/", "wxarchive/"]:
+        assert pattern in content
+
+
+def test_release_check_script_covers_core_delivery_checks():
+    script = PROJECT_ROOT / "scripts" / "release_check.sh"
+
+    assert script.exists()
+    content = script.read_text(encoding="utf-8")
+    assert "pytest -q" in content
+    assert "alembic upgrade head" in content
+    assert "python3 -m app.cli check-config" in content
+    assert "acceptance_ocr_samples.py" in content
+    assert "LIVE_BASE_URL" in content
 
 
 def test_github_actions_ci_runs_pytest_and_alembic():

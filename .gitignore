@@ -19,6 +19,7 @@ env/
 .env
 .env.*
 !.env.example
+*.pem
 
 # Local databases and runtime state
 *.db

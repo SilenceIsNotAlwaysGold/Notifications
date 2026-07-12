@@ -121,6 +121,41 @@ def test_archive_check_does_not_return_private_key_plaintext(client, monkeypatch
     assert "secret-private-key" not in response.text
 
 
+def test_current_archive_check_reads_environment_without_leaking_secret(client, monkeypatch):
+    _enable_auth(monkeypatch)
+    monkeypatch.setenv("WECOM_CORP_ID", "wwee945c1253a61052")
+    monkeypatch.setenv("WECOM_ARCHIVE_SECRET", "archive-secret-value")
+    monkeypatch.setenv("WECOM_ARCHIVE_PRIVATE_KEY_PATH", "/secure/private.pem")
+    monkeypatch.setenv("WECOM_ARCHIVE_PUBLIC_KEY_VER", "1")
+    monkeypatch.setenv("WECOM_ARCHIVE_SIDECAR_URL", "http://127.0.0.1:9001/wecom-archive")
+    get_settings.cache_clear()
+
+    response = client.get("/api/v1/legal/wecom-poc/archive-check/current", headers={"X-API-Key": ENV_ADMIN_KEY})
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["ready"] is True
+    assert data["missing_fields"] == []
+    assert "archive-secret-value" not in response.text
+
+
+def test_current_archive_check_reports_missing_secret_and_public_key(client, monkeypatch):
+    _enable_auth(monkeypatch)
+    monkeypatch.setenv("WECOM_CORP_ID", "wwee945c1253a61052")
+    monkeypatch.setenv("WECOM_ARCHIVE_SECRET", "")
+    monkeypatch.setenv("WECOM_ARCHIVE_PRIVATE_KEY_PATH", "/secure/private.pem")
+    monkeypatch.setenv("WECOM_ARCHIVE_PUBLIC_KEY_VER", "")
+    monkeypatch.setenv("WECOM_ARCHIVE_SIDECAR_URL", "")
+    get_settings.cache_clear()
+
+    response = client.get("/api/v1/legal/wecom-poc/archive-check/current", headers={"X-API-Key": ENV_ADMIN_KEY})
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["ready"] is False
+    assert data["missing_fields"] == ["archive_secret", "public_key_ver", "sidecar_url"]
+
+
 def test_wecom_feasibility_docs_exist():
     assert (PROJECT_ROOT / "docs" / "wecom_integration_feasibility.md").exists()
     assert (PROJECT_ROOT / "docs" / "wecom_customer_checklist.md").exists()

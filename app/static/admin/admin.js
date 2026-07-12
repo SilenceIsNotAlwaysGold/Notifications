@@ -11,7 +11,7 @@ const titles = {
   reminders: ["提醒", "查看提醒、手动触发到期提醒发送"],
   events: ["事件", "查看系统抽取出的结构化法务事件"],
   media: ["媒体", "图片、PDF、文件和 OCR 状态"],
-  sync: ["同步日志", "腾讯文档同步日志和重试结果"],
+  sync: ["同步日志", "金山文档同步日志和重试结果"],
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -221,9 +221,10 @@ async function submitCase(event) {
 }
 
 async function renderMessages() {
-  $("#content").innerHTML = panel(
-    "模拟群消息",
-    `
+  $("#content").innerHTML = `
+    ${panel(
+      "模拟群消息",
+      `
       <form id="message-form" class="form-grid">
         <div class="field"><label>群 ID</label><input name="group_id" required value="group_001" /></div>
         <div class="field"><label>发送人 ID</label><input name="sender_id" required value="user_001" /></div>
@@ -234,7 +235,24 @@ async function renderMessages() {
       </form>
       <pre id="message-result" class="mono muted"></pre>
     `,
-  );
+    )}
+    ${panel(
+      "企业微信归档 + OCR 开发回放",
+      `
+      <div style="margin-bottom:12px"><button id="archive-demo-btn" class="ghost">一键生成演示数据</button></div>
+      <form id="archive-ocr-form" class="form-grid">
+        <div class="field"><label>群 ID</label><input name="roomid" required value="group_001" /></div>
+        <div class="field"><label>发送人 ID</label><input name="from" required value="user_001" /></div>
+        <div class="field"><label>消息 ID</label><input name="msgid" required value="msg_dev_001" /></div>
+        <div class="field"><label>文件名</label><input name="filename" required value="判决书.pdf" /></div>
+        <div class="field"><label>序号 seq</label><input name="seq" type="number" value="1001" /></div>
+        <div class="field wide"><label>OCR 文本</label><textarea name="ocr_text" placeholder="民事判决书&#10;案号：(2026)黔0281民初3118号&#10;原告：李四&#10;被告：张三"></textarea></div>
+        <div class="field"><button type="submit">回放并处理 OCR</button></div>
+      </form>
+      <pre id="archive-ocr-result" class="mono muted"></pre>
+      `,
+    )}
+  `;
   $("#message-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const payload = Object.fromEntries(new FormData(event.currentTarget).entries());
@@ -244,6 +262,33 @@ async function renderMessages() {
     const result = await api("/api/v1/legal/messages/mock", { method: "POST", body: JSON.stringify(payload) });
     $("#message-result").textContent = JSON.stringify(result, null, 2);
     showAlert("消息处理完成");
+  });
+  $("#archive-ocr-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = Object.fromEntries(new FormData(event.currentTarget).entries());
+    const msgid = form.msgid;
+    const payload = {
+      messages: [
+        {
+          seq: Number(form.seq || 0),
+          msgid,
+          roomid: form.roomid,
+          from: form.from,
+          msgtype: "file",
+          file: { filename: form.filename, md5sum: "dev", filesize: 100 },
+          msgtime: Date.now(),
+        },
+      ],
+      ocr_text_by_msgid: { [msgid]: form.ocr_text || "" },
+    };
+    const result = await api("/api/v1/legal/wecom-archive/replay-with-ocr", { method: "POST", body: JSON.stringify(payload) });
+    $("#archive-ocr-result").textContent = JSON.stringify(result, null, 2);
+    showAlert("归档回放和 OCR 处理完成");
+  });
+  $("#archive-demo-btn").addEventListener("click", async () => {
+    const result = await api("/api/v1/legal/wecom-archive/replay-demo", { method: "POST", body: "{}" });
+    $("#archive-ocr-result").textContent = JSON.stringify(result, null, 2);
+    showAlert("演示数据已生成");
   });
 }
 

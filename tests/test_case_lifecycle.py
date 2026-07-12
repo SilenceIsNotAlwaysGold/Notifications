@@ -87,7 +87,7 @@ def test_overdue_status_sync_log_written(db_session):
     log = db_session.scalar(select(DocumentSyncLog).where(DocumentSyncLog.sync_type == "status"))
     assert log is not None
     assert log.status == "success"
-    assert log.external_sheet_name == "案件台账"
+    assert log.external_sheet_name == "致和法务/案件台账"
 
 
 def test_overdue_after_three_days_marks_defaulted(db_session):

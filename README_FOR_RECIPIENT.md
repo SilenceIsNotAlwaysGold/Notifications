@@ -7,7 +7,7 @@
 - `app/`：应用源码
 - `alembic/`、`alembic.ini`：数据库迁移
 - `tests/`：自动化测试
-- `docs/`：企微集成与客户准备清单
+- `docs/`：企微集成、客户准备清单和交付验收说明
 - `README.md`：完整项目说明
 - `.env.example`：环境变量模板
 - `Dockerfile`、`docker-compose.yml`：容器化部署配置
@@ -29,6 +29,24 @@ uvicorn app.main:app --reload
 curl http://127.0.0.1:8000/api/v1/health
 ```
 
+管理端：
+
+```text
+http://127.0.0.1:8000/admin/
+```
+
+第一版 mock 验收可在管理端“消息”页点击“一键生成演示数据”，或调用：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/legal/wecom-archive/replay-demo
+```
+
+也可以运行冒烟验收脚本：
+
+```bash
+scripts/smoke_demo.sh
+```
+
 ## Docker 启动
 
 ```bash
@@ -41,7 +59,15 @@ docker compose up --build
 ```bash
 pytest -q
 alembic upgrade head
-python -m app.cli check-config
+python3 -m app.cli check-config
+python3 scripts/acceptance_ocr_samples.py
+python3 scripts/acceptance_wecom_sidecar_mock.py
+```
+
+或统一执行：
+
+```bash
+scripts/release_check.sh
 ```
 
 生产环境请至少调整：
@@ -54,4 +80,6 @@ python -m app.cli check-config
 
 ## 注意事项
 
-本交付包不包含本地 SQLite 数据库、`.env`、缓存文件、媒体存储内容或 Python 编译缓存。默认外部系统配置为 mock 模式；真实企业微信会话存档、真实媒体下载和真实 OCR 仍需按业务环境进一步接入。
+本交付包不包含本地 SQLite 数据库、`.env`、缓存文件、媒体存储内容、私钥、公钥或 Python 编译缓存。默认外部系统配置为 mock 模式；真实企业微信会话存档、真实媒体下载、真实金山文档写入和真实 OCR 仍需按业务环境进一步接入。
+
+详细验收步骤见 `docs/delivery_acceptance.md`。

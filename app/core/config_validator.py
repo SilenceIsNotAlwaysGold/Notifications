@@ -59,7 +59,27 @@ def _validate_database_url(settings: Settings, result: dict[str, Any]) -> None:
     _add_item(result, "DATABASE_URL", "error", "DATABASE_URL 格式无效")
 
 
+def _missing_kdocs_settings(settings: Settings) -> list[str]:
+    return [
+        name
+        for name, value in {
+            "KDOCS_BASE_URL": settings.kdocs_base_url,
+            "KDOCS_ACCESS_TOKEN": settings.kdocs_access_token,
+            "KDOCS_SPACE_ID": settings.kdocs_space_id,
+        }.items()
+        if not value
+    ]
+
+
 def _missing_wecom_archive_sdk_settings(settings: Settings) -> list[str]:
+    if settings.wecom_archive_sidecar_mock:
+        return [
+            name
+            for name, value in {
+                "WECOM_ARCHIVE_SIDECAR_URL": settings.wecom_archive_sidecar_url,
+            }.items()
+            if not value
+        ]
     return [
         name
         for name, value in {
@@ -97,6 +117,17 @@ def validate_runtime_config(settings: Settings) -> dict[str, Any]:
     else:
         _add_item(result, "TENCENT_DOC_MODE", "error", "TENCENT_DOC_MODE=real 时必须配置 TENCENT_DOC_ACCESS_TOKEN 和 TENCENT_DOC_SHEET_ID")
 
+    if settings.kdocs_mode == "mock":
+        _add_item(result, "KDOCS_MODE", "ok", "金山文档为 mock 模式")
+    else:
+        missing = _missing_kdocs_settings(settings)
+        if missing:
+            _add_item(result, "KDOCS_MODE", "error", f"KDOCS_MODE=real 时缺少配置：{', '.join(missing)}")
+        elif urlparse(settings.kdocs_base_url or "").scheme not in {"http", "https"}:
+            _add_item(result, "KDOCS_MODE", "error", "KDOCS_BASE_URL 必须是 http 或 https URL")
+        else:
+            _add_item(result, "KDOCS_MODE", "ok", "金山文档 real 模式必要配置已提供")
+
     if settings.ocr_provider == "mock":
         _add_item(result, "OCR_PROVIDER", "ok", "OCR 为 mock 模式")
     elif settings.ocr_provider == "local_text":
@@ -117,6 +148,8 @@ def validate_runtime_config(settings: Settings) -> dict[str, Any]:
             _add_item(result, "WECOM_ARCHIVE_MODE", "error", f"WECOM_ARCHIVE_MODE=real 时缺少配置：{', '.join(missing)}")
         elif not _validate_wecom_archive_sidecar_url(settings, result, "WECOM_ARCHIVE_MODE"):
             pass
+        elif settings.wecom_archive_sidecar_mock:
+            _add_item(result, "WECOM_ARCHIVE_MODE", "warning", "企业微信会话内容存档使用 sidecar mock，允许缺少真实 Secret/私钥，仅适合本地验收")
         else:
             _add_item(result, "WECOM_ARCHIVE_MODE", "ok", "企业微信会话内容存档 real 模式必要配置已提供，将通过 SDK sidecar 拉取")
 
@@ -128,6 +161,8 @@ def validate_runtime_config(settings: Settings) -> dict[str, Any]:
             _add_item(result, "MEDIA_DOWNLOAD_MODE", "error", f"MEDIA_DOWNLOAD_MODE=real 时缺少配置：{', '.join(missing)}")
         elif not _validate_wecom_archive_sidecar_url(settings, result, "MEDIA_DOWNLOAD_MODE"):
             pass
+        elif settings.wecom_archive_sidecar_mock:
+            _add_item(result, "MEDIA_DOWNLOAD_MODE", "warning", "企业微信媒体下载使用 sidecar mock，允许缺少真实 Secret/私钥，仅适合本地验收")
         else:
             _add_item(result, "MEDIA_DOWNLOAD_MODE", "ok", "企业微信媒体下载 real 模式必要配置已提供，将通过 SDK sidecar 下载")
 

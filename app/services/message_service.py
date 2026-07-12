@@ -160,6 +160,9 @@ class MessageService:
         safe["amounts"] = [str(amount) for amount in extracted.get("amounts", [])]
         if extracted.get("amount") is not None:
             safe["amount"] = str(extracted["amount"])
+        for key in ("event_time", "court_time"):
+            if hasattr(safe.get(key), "isoformat"):
+                safe[key] = safe[key].isoformat()
         return safe
 
     def _handle_media_payload(self, group_message: GroupMessage, payload: MockMessageCreate, case_id: int | None) -> None:

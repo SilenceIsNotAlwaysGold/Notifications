@@ -174,11 +174,27 @@ class WeComArchiveReplayRequest(BaseModel):
     messages: list[dict[str, Any]]
 
 
+class WeComArchiveReplayWithOcrRequest(BaseModel):
+    messages: list[dict[str, Any]]
+    ocr_text_by_msgid: dict[str, str] = Field(default_factory=dict)
+
+
 class WeComArchivePullOut(BaseModel):
     pulled: int
     processed: int
     failed: int
     last_seq: int
+
+
+class WeComArchiveReplayWithOcrOut(WeComArchivePullOut):
+    ocr_processed: int = 0
+    ocr_failed: int = 0
+    ocr_results: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class WeComArchiveDemoReplayOut(WeComArchiveReplayWithOcrOut):
+    case_id: int
+    case_no: str
 
 
 class MediaFileOut(BaseModel):
@@ -222,6 +238,11 @@ class MediaOCRResultOut(BaseModel):
     matched_case_id: int | None = None
     event_type: str | None = None
     amount: str | None = None
+    document_type: str | None = None
+    plaintiff: str | None = None
+    defendant: str | None = None
+    court_time: str | None = None
+    requires_review: bool = False
     created_reminders: int = 0
 
 

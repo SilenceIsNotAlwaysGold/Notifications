@@ -3,6 +3,7 @@ from sqlalchemy import select
 
 from app.adapters.wecom_archive import WeComArchiveAdapter
 from app.core.config import get_settings
+from app.models.document_sync_log import DocumentSyncLog
 from app.models.group_message import GroupMessage
 from app.models.legal_event import LegalEvent
 from app.models.reminder import Reminder
@@ -111,6 +112,70 @@ def test_replay_processes_text_message_and_creates_business_records(client, db_s
     assert message.msg_type == "text"
     assert event.event_type == "payment_notice"
     assert len(reminders) == 7
+
+
+def test_replay_with_ocr_processes_media_text_and_kdocs_logs(client, db_session, monkeypatch):
+    monkeypatch.setenv("OCR_PROVIDER", "mock")
+    monkeypatch.setenv("KDOCS_MODE", "mock")
+    get_settings.cache_clear()
+    create_case(client)
+
+    response = client.post(
+        "/api/v1/legal/wecom-archive/replay-with-ocr",
+        json={
+            "messages": [
+                {
+                    "seq": 10,
+                    "msgid": "msg_dev_judgment",
+                    "roomid": "group_001",
+                    "from": "user_001",
+                    "msgtype": "file",
+                    "file": {"filename": "判决书.pdf", "md5sum": "abc", "filesize": 123},
+                    "msgtime": 1780300000000,
+                }
+            ],
+            "ocr_text_by_msgid": {
+                "msg_dev_judgment": "民事判决书\n案号：(2026)黔0281民初3118号\n原告：李四\n被告：张三"
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["processed"] == 1
+    assert data["ocr_processed"] == 1
+    assert data["ocr_failed"] == 0
+    assert data["ocr_results"][0]["event_type"] == "judgment"
+    assert data["ocr_results"][0]["document_type"] == "判决书"
+    assert data["ocr_results"][0]["plaintiff"] == "李四"
+    assert data["ocr_results"][0]["defendant"] == "张三"
+    assert data["ocr_results"][0]["requires_review"] is False
+
+    sync_types = {log.sync_type for log in db_session.scalars(select(DocumentSyncLog)).all()}
+    assert "legal_document_upload" in sync_types
+    assert "enforcement_progress" in sync_types
+    get_settings.cache_clear()
+
+
+def test_replay_demo_creates_case_and_full_mock_business_loop(client, db_session, monkeypatch):
+    monkeypatch.setenv("OCR_PROVIDER", "mock")
+    monkeypatch.setenv("KDOCS_MODE", "mock")
+    get_settings.cache_clear()
+
+    response = client.post("/api/v1/legal/wecom-archive/replay-demo")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["case_no"] == "(2026)黔0281民初3118号"
+    assert data["processed"] == 4
+    assert data["ocr_processed"] == 4
+    assert data["ocr_failed"] == 0
+
+    sync_types = {log.sync_type for log in db_session.scalars(select(DocumentSyncLog)).all()}
+    assert {"legal_document_upload", "enforcement_progress", "court_time", "payment_registration"}.issubset(sync_types)
+    reminders = list(db_session.scalars(select(Reminder).where(Reminder.reminder_type == "payment_tracking")).all())
+    assert len(reminders) == 7
+    get_settings.cache_clear()
 
 
 def test_pull_mock_mode_returns_empty_without_error(client):

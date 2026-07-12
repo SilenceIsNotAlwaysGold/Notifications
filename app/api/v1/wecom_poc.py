@@ -51,6 +51,25 @@ def send_wecom_poc_test(payload: WeComPocSendTestIn):
 
 @router.post("/archive-check")
 def check_wecom_archive_config(payload: WeComArchiveCheckIn):
+    data = _check_archive_payload(payload)
+    return ok("配置检查完成", data)
+
+
+@router.get("/archive-check/current")
+def check_current_wecom_archive_config():
+    settings = get_settings()
+    payload = WeComArchiveCheckIn(
+        corp_id=settings.wecom_corp_id,
+        archive_secret=settings.wecom_archive_secret,
+        private_key_path=settings.wecom_archive_private_key_path,
+        public_key_ver=settings.wecom_archive_public_key_ver,
+        sidecar_url=settings.wecom_archive_sidecar_url,
+    )
+    data = _check_archive_payload(payload)
+    return ok("当前配置检查完成", data)
+
+
+def _check_archive_payload(payload: WeComArchiveCheckIn) -> WeComArchiveCheckOut:
     missing_fields = []
     if not payload.corp_id:
         missing_fields.append("corp_id")
@@ -70,8 +89,7 @@ def check_wecom_archive_config(payload: WeComArchiveCheckIn):
         "尚未验证参与群聊员工是否在存档范围内",
         "尚未验证图片、文件、PDF 等媒体是否允许拉取",
     ]
-    data = WeComArchiveCheckOut(ready=not missing_fields, missing_fields=missing_fields, warnings=warnings)
-    return ok("配置检查完成", data)
+    return WeComArchiveCheckOut(ready=not missing_fields, missing_fields=missing_fields, warnings=warnings)
 
 
 def _parse_response(response: httpx.Response) -> dict[str, Any]:

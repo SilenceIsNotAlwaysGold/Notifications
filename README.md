@@ -7,7 +7,7 @@
 - 创建和查询法务案件。
 - 模拟企业微信群消息进入系统。
 - 使用正则识别案号、金额、缴费通知、付款完成、开庭、判决、逾期/执行关键词。
-- 保存群消息、结构化事件、提醒、腾讯文档同步日志。
+- 保存群消息、结构化事件、提醒、金山文档同步日志。
 - 缴费通知自动生成 7 天每日跟踪提醒。
 - 付款完成消息自动累加案件已还金额。
 - APScheduler 每分钟扫描待发送提醒，也可以手动调用 run-due 接口。
@@ -208,7 +208,7 @@ curl http://127.0.0.1:8000/api/v1/health/detail
 命令行检查：
 
 ```bash
-python -m app.cli check-config
+python3 -m app.cli check-config
 ```
 
 如果存在 error，命令退出码为 `1`；只有 warning 或全部 ok 时退出码为 `0`。
@@ -216,14 +216,28 @@ python -m app.cli check-config
 上线前检查：
 
 ```bash
-scripts/preflight.sh
+scripts/release_check.sh
 ```
 
 该脚本会执行：
 
 - `pytest -q`
 - `alembic upgrade head`
-- `python -m app.cli check-config`
+- `python3 -m app.cli check-config`
+- 脚本语法和 Python 编译检查
+- 敏感 / 运行时文件追踪检查
+
+如果服务已经启动，可追加在线验收：
+
+```bash
+LIVE_BASE_URL=http://127.0.0.1:8000 RUN_TESTS=false RUN_ALEMBIC=false scripts/release_check.sh
+```
+
+轻量本地预检仍可运行：
+
+```bash
+scripts/preflight.sh
+```
 
 单独检查迁移：
 
@@ -244,7 +258,7 @@ CI 会在 `push` 和 `pull_request` 时执行：
 - 安装依赖
 - `pytest -q`
 - 使用临时 SQLite 执行 `alembic upgrade head`
-- `python -m compileall app`
+- `python3 -m compileall app`
 
 ## 接口鉴权
 
@@ -603,6 +617,13 @@ curl -X POST http://127.0.0.1:8000/api/v1/legal/wecom-poc/archive-check \
   -d '{"corp_id":"wwxxxx","archive_secret":"xxx","private_key_path":"/secure/private.pem","public_key_ver":"1","sidecar_url":"http://127.0.0.1:9001/wecom-archive"}'
 ```
 
+也可以直接检查当前环境变量配置：
+
+```bash
+curl http://127.0.0.1:8000/api/v1/legal/wecom-poc/archive-check/current \
+  -H 'X-API-Key: admin-key'
+```
+
 ## 企业微信会话内容存档
 
 当前系统提供会话内容存档 replay 调试流程，并支持在 `WECOM_ARCHIVE_MODE=real` 时通过 SDK sidecar 拉取已解密消息。系统本体不使用个人号 hook、不模拟网页版、不抓取 cookie；真实企业微信会话存档需要由 sidecar 封装企业微信官方会话内容存档 SDK。
@@ -622,12 +643,72 @@ sidecar 约定：
 - 请求体包含 `seq`、`limit`、`corp_id`、`archive_secret`、`private_key_path`、`public_key_ver`。
 - 响应体应为 `{"messages":[...]}`，其中每条消息使用企业微信归档原始字段，如 `seq`、`msgid`、`roomid`、`from`、`msgtype`、`text`、`image`、`file`、`msgtime`。
 
+仓库内提供了一个最小 sidecar 外壳，路径为 `wecom_archive_sidecar/main.py`。本地联调可先启动 mock backend：
+
+```bash
+WECOM_ARCHIVE_SIDECAR_BACKEND=mock \
+WECOM_ARCHIVE_SIDECAR_MOCK_SCENARIO=legal_demo \
+uvicorn wecom_archive_sidecar.main:app --host 127.0.0.1 --port 9001
+```
+
+然后主应用配置：
+
+```env
+WECOM_ARCHIVE_MODE=real
+MEDIA_DOWNLOAD_MODE=real
+WECOM_ARCHIVE_SIDECAR_MOCK=true
+WECOM_ARCHIVE_SIDECAR_URL=http://127.0.0.1:9001/wecom-archive
+```
+
+`WECOM_ARCHIVE_SIDECAR_MOCK=true` 只用于本地验收：它允许暂时缺少 `WECOM_ARCHIVE_SECRET`、`WECOM_ARCHIVE_PRIVATE_KEY_PATH`、`WECOM_ARCHIVE_PUBLIC_KEY_VER`。生产或真实 SDK 联调时应关闭该开关并填写真实凭证。
+
+启动主应用后，可运行 M4 mock 验收脚本：
+
+```bash
+python3 scripts/acceptance_wecom_sidecar_mock.py
+```
+
+生产接入官方 SDK 时，实现一个 Python factory，并设置 `WECOM_ARCHIVE_SIDECAR_BACKEND=module:function`。factory 返回的对象需要实现：
+
+```python
+class Backend:
+    def fetch_messages(self, request):
+        ...
+
+    def download_media(self, request):
+        ...
+```
+
+其中 `fetch_messages` 返回企业微信归档消息列表，`download_media` 返回媒体文件 bytes。
+
 本地可以通过 replay 接口模拟真实归档消息进入系统：
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/legal/wecom-archive/replay \
   -H 'Content-Type: application/json' \
   -d '{"messages":[{"seq":1,"msgid":"msg_001","roomid":"group_001","from":"user_001","msgtype":"text","text":{"content":"案件(2026)黔0281民初3118号需要缴费400元，7天内完成"},"msgtime":1780300000000}]}'
+```
+
+开发阶段也可以一次性回放归档文件并注入 OCR 文本，适合在企业微信和真实 OCR 都未接入时验收金山文档 mock 闭环：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/legal/wecom-archive/replay-with-ocr \
+  -H 'Content-Type: application/json' \
+  -d '{"messages":[{"seq":10,"msgid":"msg_dev_judgment","roomid":"group_001","from":"user_001","msgtype":"file","file":{"filename":"判决书.pdf","md5sum":"dev","filesize":100},"msgtime":1780300000000}],"ocr_text_by_msgid":{"msg_dev_judgment":"民事判决书\n案号：(2026)黔0281民初3118号\n原告：李四\n被告：张三"}}'
+```
+
+这个接口会自动生成本地同名 `.txt` OCR 文本并重跑 OCR，最终产生 `legal_document_upload`、`enforcement_progress` 等 `sync_target=kdocs` 的同步日志。
+
+也可以使用内置演示场景一次性生成示例案件、判决书、开庭传票、缴费通知和付款截图：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/legal/wecom-archive/replay-demo
+```
+
+M2 样例验收可以直接跑内置 OCR 样例包，脚本会回放判决书、调解书、裁定书、开庭传票、缴费通知，并校验金山 mock 同步日志：
+
+```bash
+python3 scripts/acceptance_ocr_samples.py
 ```
 
 手动触发归档拉取：
@@ -753,7 +834,35 @@ uvicorn ocr_sidecar.main:app --host 127.0.0.1 --port 9002
 
 ## 腾讯文档同步
 
-默认 `TENCENT_DOC_MODE=mock`，系统不会请求腾讯文档，只会把稳定的同步 payload 写入 `document_sync_logs`。当前支持三类主要同步：
+## 金山文档业务闭环
+
+默认 `KDOCS_MODE=mock`，系统不会请求金山文档，只会把稳定的同步 payload 写入 `document_sync_logs`，`sync_target=kdocs`。当前金山文档是新业务主路径，保留旧腾讯文档适配器用于兼容历史代码。
+
+媒体 OCR 识别后会自动触发以下同步：
+
+- 判决书、调解书、裁定书：按 `原告-被告{文书类型}.扩展名` 重命名并上传到 `KDOCS_JUDGMENT_FOLDER_ID`，同时写入强制执行进度表。
+- 开庭传票：抽取开庭时间，写入 `KDOCS_COURT_TIME_SHEET_ID`，payload 中声明按“开庭时间”排序。
+- 缴费通知、缴费截图、缴费文件：写入 `KDOCS_PAYMENT_SHEET_ID`，并继续创建 7 天缴费跟踪提醒。
+
+配置示例：
+
+```env
+KDOCS_MODE=mock
+KDOCS_BASE_URL=
+KDOCS_ACCESS_TOKEN=
+KDOCS_SPACE_ID=
+KDOCS_JUDGMENT_FOLDER_ID=致和法务/判决书文件
+KDOCS_COURT_TIME_SHEET_ID=致和法务/开庭时间
+KDOCS_ENFORCEMENT_SHEET_ID=致和法务/强制执行进度表格
+KDOCS_PAYMENT_SHEET_ID=致和法务/缴费登记
+KDOCS_CASE_SHEET_ID=致和法务/案件台账
+```
+
+`KDOCS_MODE=real` 时必须配置 `KDOCS_BASE_URL`、`KDOCS_ACCESS_TOKEN`、`KDOCS_SPACE_ID`。当前适配器会向 `{KDOCS_BASE_URL}/kdocs/{operation}` 发起请求，可直接指向金山文档官方 API 封装网关；网关协议见 [docs/kdocs_gateway_contract.md](docs/kdocs_gateway_contract.md)。
+
+## 腾讯文档同步
+
+默认 `TENCENT_DOC_MODE=mock`，系统不会请求腾讯文档，只会把稳定的同步 payload 写入 `document_sync_logs`。当前保留腾讯文档兼容适配器，历史支持三类主要同步：
 
 - `status`：案件状态
 - `paid_amount`：已还金额
@@ -807,7 +916,7 @@ curl -X POST http://127.0.0.1:8000/api/v1/legal/cases/1/sync
 - 逾期满 `DEFAULT_UPGRADE_DAYS_AFTER_OVERDUE` 天自动升级 `defaulted`。
 - `paid_amount >= total_amount` 时自动标记 `paid`。
 - `closed` 案件不参与扫描。
-- 状态变化会写腾讯文档同步日志。
+- 状态变化会写文档同步日志，当前新需求主路径为金山文档。
 - 违约升级只提醒法务，不自动执行任何法律动作。
 
 每日扫描通过以下配置控制：

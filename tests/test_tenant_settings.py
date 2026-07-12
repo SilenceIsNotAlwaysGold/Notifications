@@ -196,7 +196,7 @@ def test_tenant_keyword_config_affects_text_recognition(client, db_session, monk
     assert "交费" in result["keywords"]
 
 
-def test_tenant_tencent_doc_sheet_name_override_used_in_sync_log(client, db_session, monkeypatch):
+def test_kdocs_case_sheet_used_in_sync_log(client, db_session, monkeypatch):
     _enable_auth(monkeypatch)
     _tenant(db_session)
     _put_settings(client, {"tencent_doc_case_sheet_name": "租户案件台账", "tencent_doc_archive_sheet_name": "租户资料台账"})
@@ -207,8 +207,8 @@ def test_tenant_tencent_doc_sheet_name_override_used_in_sync_log(client, db_sess
     assert response.status_code == 200
     log = db_session.scalar(select(DocumentSyncLog).where(DocumentSyncLog.case_id == legal_case.id))
     payload = json.loads(log.request_payload_json)
-    assert payload["payload"]["sheet_name"] == "租户案件台账"
-    assert payload["payload"]["tenant_settings_source"] == "tenant"
+    assert payload["payload"]["sheet_id"] == "致和法务/案件台账"
+    assert log.sync_target == "kdocs"
 
 
 def test_delete_tenant_settings_restores_global(client, db_session, monkeypatch):

@@ -1,6 +1,7 @@
 import json
 import os
 
+import httpx
 from sqlalchemy import select
 
 from app.adapters.tencent_doc import TencentDocAdapter
@@ -83,7 +84,7 @@ def test_legal_event_creation_writes_archive_sync_log(client, db_session):
 
     archive_log = db_session.scalar(select(DocumentSyncLog).where(DocumentSyncLog.sync_type == "archive"))
     assert archive_log is not None
-    assert archive_log.sync_target == "tencent_doc"
+    assert archive_log.sync_target == "kdocs"
     payload = json.loads(archive_log.request_payload_json)
     assert payload["operation"] == "append_archive_row"
     assert payload["payload"]["row"]["event_type"] == "payment_notice"
@@ -184,6 +185,59 @@ def test_failed_sync_log_can_retry(client, db_session):
     data = response.json()["data"]
     assert data["status"] == "success"
     assert data["retry_count"] == 1
+
+
+def test_kdocs_failed_log_retry_uses_real_gateway_without_leaking_token(client, db_session, monkeypatch):
+    reset_settings(
+        KDOCS_MODE="real",
+        KDOCS_BASE_URL="https://kdocs-gateway.test",
+        KDOCS_ACCESS_TOKEN="secret-token",
+        KDOCS_SPACE_ID="space_001",
+    )
+    captured = {}
+
+    def fake_post(url, **kwargs):
+        captured["url"] = url
+        captured["headers"] = kwargs.get("headers")
+        captured["json"] = kwargs.get("json")
+        request = httpx.Request("POST", url)
+        return httpx.Response(200, json={"success": True, "row_id": "row_retry_001"}, request=request)
+
+    monkeypatch.setattr("app.adapters.kdocs.httpx.post", fake_post)
+    payload = {
+        "operation": "append_court_time_row",
+        "payload": {
+            "space_id": "space_001",
+            "sheet_id": "致和法务/开庭时间",
+            "sort_by": "开庭时间",
+            "row": {"案号": "(2026)黔0281民初3118号", "开庭时间": "2026-07-02T15:00:00+08:00"},
+        },
+    }
+    log = DocumentSyncLog(
+        case_id=None,
+        sync_type="court_time",
+        sync_target="kdocs",
+        external_sheet_name="致和法务/开庭时间",
+        idempotency_key="kdocs-retry-test",
+        request_payload_json=json.dumps(payload, ensure_ascii=False),
+        response_payload_json='{"success": false}',
+        status="failed",
+        error_message="网关临时失败",
+    )
+    db_session.add(log)
+    db_session.commit()
+
+    response = client.post(f"/api/v1/legal/document-sync-logs/{log.id}/retry")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["status"] == "success"
+    assert data["retry_count"] == 1
+    assert captured["url"] == "https://kdocs-gateway.test/kdocs/append_court_time_row"
+    assert captured["headers"] == {"Authorization": "Bearer secret-token"}
+    assert captured["json"]["row"]["案号"] == "(2026)黔0281民初3118号"
+    assert "secret-token" not in data["request_payload_json"]
+    assert "secret-token" not in data["response_payload_json"]
 
 
 def test_real_mode_missing_token_or_sheet_id_returns_failure_without_crash():

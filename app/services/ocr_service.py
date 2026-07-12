@@ -46,6 +46,11 @@ class OCRService:
                 "case_no": None,
                 "amount": None,
                 "amounts": [],
+                "document_type": None,
+                "plaintiff": None,
+                "defendant": None,
+                "court_time": None,
+                "requires_review": False,
                 "event_type": "unknown",
                 "event_types": [],
                 "event_time": None,
@@ -58,6 +63,12 @@ class OCRService:
             }
         provider_name = effective["ocr"]["provider"]
         provider = self._build_provider(provider_name)
+        if provider_name == "mock":
+            from pathlib import Path
+
+            if Path(local_path).with_suffix(".txt").exists():
+                provider = LocalTextOCRProvider()
+                provider_name = "local_text"
         try:
             provider_result = provider.extract(local_path, media_type)
         except Exception as exc:
@@ -78,6 +89,11 @@ class OCRService:
             "case_no": parsed.get("case_no"),
             "amount": parsed.get("amount"),
             "amounts": parsed.get("amounts", []),
+            "document_type": parsed.get("document_type"),
+            "plaintiff": parsed.get("plaintiff"),
+            "defendant": parsed.get("defendant"),
+            "court_time": parsed.get("court_time"),
+            "requires_review": bool(parsed.get("requires_review")),
             "event_type": parsed.get("event_type") or "unknown",
             "event_types": parsed.get("event_types") or [],
             "event_time": parsed.get("event_time"),
@@ -93,6 +109,11 @@ class OCRService:
                 "parser": parsed.get("metadata", {}).get("parser"),
                 "tenant_settings_source": effective["source"],
                 "payment_keyword_conflict": parsed.get("metadata", {}).get("payment_keyword_conflict"),
+                "document_type": parsed.get("document_type"),
+                "plaintiff": parsed.get("plaintiff"),
+                "defendant": parsed.get("defendant"),
+                "court_time": parsed.get("court_time"),
+                "requires_review": bool(parsed.get("requires_review")),
             },
             "error": provider_result.get("error"),
         }

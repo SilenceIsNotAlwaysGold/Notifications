@@ -3,5 +3,5 @@ set -euo pipefail
 
 pytest -q
 alembic upgrade head
-python -m app.cli check-config
+python3 -m app.cli check-config
 echo "preflight passed"
