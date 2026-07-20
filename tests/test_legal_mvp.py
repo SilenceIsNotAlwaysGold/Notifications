@@ -126,7 +126,7 @@ def test_custom_reminder_create_success(client):
     assert body["data"]["reminder_type"] == "custom"
 
 
-def test_run_due_marks_pending_reminder_sent(client, db_session):
+def test_run_due_marks_pending_reminder_simulated_in_mock_mode(client, db_session):
     client.post(
         "/api/v1/legal/reminders/custom",
         json={
@@ -138,9 +138,11 @@ def test_run_due_marks_pending_reminder_sent(client, db_session):
     )
     response = client.post("/api/v1/legal/reminders/run-due")
     assert response.status_code == 200
-    assert response.json()["data"]["sent"] == 1
+    assert response.json()["data"]["sent"] == 0
+    assert response.json()["data"]["simulated"] == 1
     reminder = db_session.scalar(select(Reminder).where(Reminder.content == "到期提醒"))
-    assert reminder.status == "sent"
+    assert reminder.status == "simulated"
+    assert reminder.sent_at is None
 
 
 def test_tencent_doc_mock_writes_archive_and_paid_amount_logs(client, db_session):

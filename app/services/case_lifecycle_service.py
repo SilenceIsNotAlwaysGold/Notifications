@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import or_, select
@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.resource_permissions import allowed_case_ids, allowed_group_ids, allowed_tenant_ids, resource_scope_enabled, tenant_scope_enabled
 from app.models.legal_case import LegalCase
+from app.models.reminder import Reminder
 from app.services.case_service import CaseService
 from app.services.document_sync_service import DocumentSyncService
 from app.services.reminder_service import ReminderService
@@ -76,16 +77,14 @@ class CaseLifecycleService:
                     stats["synced_status"] += 1
                     continue
 
-                if self.ensure_repayment_reminder(legal_case, scan_date, effective):
-                    stats["created_repayment_reminders"] += 1
+                stats["created_repayment_reminders"] += self.ensure_repayment_reminder(legal_case, scan_date, effective)
                 if self.mark_overdue_if_needed(legal_case, scan_date):
                     stats["marked_overdue"] += 1
                     stats["synced_status"] += 1
                 if self.mark_defaulted_if_needed(legal_case, scan_date, effective):
                     stats["marked_defaulted"] += 1
                     stats["synced_status"] += 1
-                if self.ensure_default_upgrade_reminder(legal_case):
-                    stats["created_default_upgrade_reminders"] += 1
+                stats["created_default_upgrade_reminders"] += self.ensure_default_upgrade_reminder(legal_case, scan_date)
             run_service.finish_success(
                 run_log,
                 summary={**stats, **({"operator": operator} if operator else {})},
@@ -99,20 +98,34 @@ class CaseLifecycleService:
             run_service.finish_failed(run_log, str(exc), summary={**stats, **({"operator": operator} if operator else {})})
             raise
 
-    def ensure_repayment_reminder(self, legal_case: LegalCase, today: date | None = None, effective_settings: dict[str, object] | None = None) -> bool:
+    def ensure_repayment_reminder(self, legal_case: LegalCase, today: date | None = None, effective_settings: dict[str, object] | None = None) -> int:
         scan_date = today or now_tz().date()
-        effective = effective_settings or TenantSettingsService(self.db).get_effective_settings(legal_case.tenant_id)
-        days_before = int(effective["reminder"].get("repayment_reminder_days_before") or self.settings.repayment_reminder_days_before)
-        if legal_case.repayment_reminder_created_at is not None:
-            return False
         if self._is_fully_paid(legal_case):
-            return False
-        if (legal_case.due_date - scan_date).days != days_before:
-            return False
-        self.reminder_service.create_repayment_reminder(legal_case.id, days_before)
+            return 0
+        reminders = self.reminder_service.create_repayment_rules_for_date(legal_case.id, scan_date)
+        if not reminders:
+            day_start = datetime(scan_date.year, scan_date.month, scan_date.day, tzinfo=app_timezone())
+            existing = self.db.scalar(
+                select(Reminder.id)
+                .where(Reminder.case_id == legal_case.id)
+                .where(Reminder.reminder_type == "repayment_before_due")
+                .where(Reminder.remind_at >= day_start)
+                .where(Reminder.remind_at < day_start + timedelta(days=1))
+            )
+            if existing:
+                return 0
+            effective = effective_settings or TenantSettingsService(self.db).get_effective_settings(legal_case.tenant_id)
+            legacy_offset = int(
+                effective["reminder"].get("repayment_reminder_days_before")
+                or self.settings.repayment_reminder_days_before
+            )
+            if (legal_case.due_date - scan_date).days == legacy_offset:
+                reminders = [self.reminder_service.create_repayment_reminder(legal_case.id, legacy_offset)]
+        if not reminders:
+            return 0
         legal_case.repayment_reminder_created_at = now_tz()
         self.db.flush()
-        return True
+        return len(reminders)
 
     def mark_paid_if_fully_paid(self, legal_case: LegalCase) -> bool:
         if legal_case.status in {"paid", "closed"}:
@@ -153,15 +166,15 @@ class CaseLifecycleService:
         self.db.flush()
         return True
 
-    def ensure_default_upgrade_reminder(self, legal_case: LegalCase) -> bool:
-        if legal_case.status != "defaulted":
-            return False
-        if legal_case.default_upgrade_reminder_created_at is not None:
-            return False
-        self.reminder_service.create_default_upgrade_reminder(legal_case.id)
+    def ensure_default_upgrade_reminder(self, legal_case: LegalCase, scan_date: date | None = None) -> int:
+        if legal_case.status not in {"overdue", "defaulted"} or legal_case.overdue_at is None:
+            return 0
+        reminders = self.reminder_service.create_default_rules_for_date(legal_case.id, scan_date or now_tz().date())
+        if not reminders:
+            return 0
         legal_case.default_upgrade_reminder_created_at = now_tz()
         self.db.flush()
-        return True
+        return len(reminders)
 
     @staticmethod
     def _is_fully_paid(legal_case: LegalCase) -> bool:

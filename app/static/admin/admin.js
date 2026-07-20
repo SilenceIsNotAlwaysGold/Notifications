@@ -6,6 +6,7 @@ const state = {
   selectedReviewId: null,
   reviewStatusFilter: "pending",
   reviewPreviewUrl: null,
+  editingReminderId: null,
 };
 
 const titles = {
@@ -15,6 +16,7 @@ const titles = {
   "archive-groups": ["归档群", "企业微信会话发现与法务群白名单"],
   "ocr-reviews": ["人工复核", "核对识别结果并控制业务同步"],
   reminders: ["提醒", "查看提醒、手动触发到期提醒发送"],
+  "merchant-questions": ["商家提问", "跟踪外部消息回复时效"],
   events: ["事件", "查看系统抽取出的结构化法务事件"],
   media: ["媒体", "图片、PDF、文件和 OCR 状态"],
   sync: ["同步日志", "金山文档同步日志和重试结果"],
@@ -404,6 +406,28 @@ function archiveGroupStatusOptions(selected) {
     .join("");
 }
 
+function archiveGroupTypeOptions(selected) {
+  return [
+    ["merchant", "商家群"],
+    ["debtor", "债务人群"],
+    ["internal", "内部群"],
+    ["other", "其他"],
+  ]
+    .map(([value, label]) => `<option value="${value}" ${selected === value ? "selected" : ""}>${label}</option>`)
+    .join("");
+}
+
+function groupFeatureInputs(features = {}) {
+  const options = [
+    ["ocr", "OCR"],
+    ["document_sync", "文书同步"],
+    ["payment_tracking", "缴费跟踪"],
+    ["case_reminders", "案件提醒"],
+    ["question_timeout", "提问超时"],
+  ];
+  return `<div class="feature-checks">${options.map(([key, label]) => `<label><input type="checkbox" data-feature="${key}" ${features[key] !== false ? "checked" : ""} />${label}</label>`).join("")}</div>`;
+}
+
 async function renderArchiveGroups() {
   const data = await api("/api/v1/legal/wecom-archive/groups?page_size=200");
   const groups = data.items || [];
@@ -430,6 +454,10 @@ async function renderArchiveGroups() {
           <div class="field"><label>显示名称</label><input name="display_name" maxlength="255" /></div>
           <div class="field"><label>所属客户 ID</label><input name="tenant_id" maxlength="128" /></div>
           <div class="field"><label>状态</label><select name="status">${archiveGroupStatusOptions("enabled")}</select></div>
+          <div class="field"><label>群类型</label><select name="group_type">${archiveGroupTypeOptions("other")}</select></div>
+          <div class="field"><label>内部人员 ID</label><input name="internal_userids" placeholder="多个 ID 用逗号分隔" /></div>
+          <div class="field"><label>告警人员 ID</label><input name="alert_userids" placeholder="多个 ID 用逗号分隔" /></div>
+          <div class="field"><label>提问超时（分钟）</label><input name="question_timeout_minutes" type="number" min="1" max="1440" value="5" /></div>
           <div class="field field-command"><button type="submit">登记</button></div>
         </form>
         `,
@@ -466,6 +494,19 @@ async function renderArchiveGroups() {
               label: "状态",
               render: (row) => `<select class="compact-input" data-field="status">${archiveGroupStatusOptions(row.status)}</select>`,
             },
+            {
+              label: "群类型",
+              render: (row) => `<select class="compact-input" data-field="group_type">${archiveGroupTypeOptions(row.group_type)}</select>`,
+            },
+            {
+              label: "内部/告警人员",
+              render: (row) => `<input class="compact-input" data-field="internal_userids" value="${escapeHtml((row.internal_userids || []).join(","))}" placeholder="内部人员" /><input class="compact-input compact-stack" data-field="alert_userids" value="${escapeHtml((row.alert_userids || []).join(","))}" placeholder="告警人员" />`,
+            },
+            {
+              label: "超时",
+              render: (row) => `<input class="compact-input compact-number" type="number" min="1" max="1440" data-field="question_timeout_minutes" value="${escapeHtml(row.question_timeout_minutes || 5)}" />`,
+            },
+            { label: "群功能", render: (row) => groupFeatureInputs(row.features) },
             { label: "发现消息", key: "seen_message_count" },
             { label: "最后发现", key: "last_seen_at" },
             {
@@ -485,6 +526,9 @@ async function renderArchiveGroups() {
     for (const key of ["wecomapi_room_id", "display_name", "tenant_id"]) {
       if (!payload[key]) payload[key] = null;
     }
+    payload.internal_userids = payload.internal_userids ? payload.internal_userids.split(/[,，]/).map((value) => value.trim()).filter(Boolean) : [];
+    payload.alert_userids = payload.alert_userids ? payload.alert_userids.split(/[,，]/).map((value) => value.trim()).filter(Boolean) : [];
+    payload.question_timeout_minutes = Number(payload.question_timeout_minutes || 5);
     await api("/api/v1/legal/wecom-archive/groups", { method: "POST", body: JSON.stringify(payload) });
     showAlert("法务群已登记");
     renderArchiveGroups();
@@ -517,6 +561,13 @@ async function renderArchiveGroups() {
       const payload = {};
       row.querySelectorAll("[data-field]").forEach((field) => {
         payload[field.dataset.field] = field.value.trim() || null;
+      });
+      payload.internal_userids = payload.internal_userids ? payload.internal_userids.split(/[,，]/).map((value) => value.trim()).filter(Boolean) : [];
+      payload.alert_userids = payload.alert_userids ? payload.alert_userids.split(/[,，]/).map((value) => value.trim()).filter(Boolean) : [];
+      payload.question_timeout_minutes = Number(payload.question_timeout_minutes || 5);
+      payload.features = {};
+      row.querySelectorAll("[data-feature]").forEach((field) => {
+        payload.features[field.dataset.feature] = field.checked;
       });
       await api(`/api/v1/legal/wecom-archive/groups/${encodeURIComponent(button.dataset.saveArchiveGroup)}`, {
         method: "PATCH",
@@ -673,27 +724,143 @@ async function renderOCRReviews() {
 }
 
 async function renderReminders() {
-  const data = await api("/api/v1/legal/reminders?limit=50");
-  $("#content").innerHTML = panel(
-    "提醒列表",
-    table(
-      [
-        { label: "ID", key: "id" },
-        { label: "类型", key: "reminder_type" },
-        { label: "状态", render: (row) => badge(row.status) },
-        { label: "提醒时间", key: "remind_at" },
-        { label: "群", key: "group_id" },
-        { label: "内容", key: "content" },
-      ],
-      data.items || [],
-    ),
-    '<button id="run-due-btn">发送到期提醒</button>',
-  );
-  $("#run-due-btn").addEventListener("click", async () => {
-    const result = await api("/api/v1/legal/reminders/run-due", { method: "POST", body: "{}" });
-    showAlert(`扫描完成：sent=${result.sent}, failed=${result.failed}, retrying=${result.retrying}`);
+  const [data, rulesData] = await Promise.all([
+    api("/api/v1/legal/reminders?limit=100"),
+    api("/api/v1/legal/reminder-rules"),
+  ]);
+  const reminders = data.items || [];
+  const rules = rulesData.items || [];
+  const editing = reminders.find((item) => item.id === state.editingReminderId);
+  $("#content").innerHTML = `
+    <div class="grid">
+      ${panel(
+        "创建自定义提醒",
+        `<form id="custom-reminder-form" class="form-grid"><div class="field"><label>群 ID</label><input name="group_id" required /></div><div class="field"><label>提醒时间</label><input name="remind_at" type="datetime-local" required /></div><div class="field"><label>目标人员 ID</label><input name="target_userid" /></div><div class="field wide"><label>提醒内容</label><textarea name="content" required></textarea></div><div class="field"><button type="submit">创建提醒</button></div></form>`,
+      )}
+      ${
+        editing
+          ? panel(
+              `编辑自定义提醒 · ${editing.id}`,
+              `<form id="edit-reminder-form" class="form-grid"><div class="field"><label>提醒时间</label><input name="remind_at" type="datetime-local" value="${escapeHtml(editing.remind_at.slice(0, 16))}" required /></div><div class="field"><label>目标人员 ID</label><input name="target_userid" value="${escapeHtml(editing.target_userid || "")}" /></div><div class="field wide"><label>提醒内容</label><textarea name="content" required>${escapeHtml(editing.content)}</textarea></div><div class="field form-actions"><button type="submit">保存</button><button type="button" class="ghost" id="cancel-reminder-edit">取消</button></div></form>`,
+            )
+          : ""
+      }
+      ${panel(
+        "新增提醒规则",
+        `<form id="reminder-rule-form" class="form-grid"><div class="field"><label>规则名称</label><input name="name" required /></div><div class="field"><label>规则类型</label><select name="rule_type"><option value="repayment">还款</option><option value="default_upgrade">违约</option><option value="payment_tracking">缴费</option></select></div><div class="field"><label>偏移天数</label><input name="offset_days" type="number" min="0" max="365" value="0" required /></div><div class="field"><label>发送时间</label><input name="send_time" type="time" value="09:00" required /></div><div class="field"><label>目标角色</label><select name="target_role"><option value="debtor">债务人</option><option value="lawyer">法务</option><option value="both">双方</option></select></div><div class="field"><label>客户 ID（留空为全局）</label><input name="tenant_id" /></div><div class="field wide"><label>话术模板</label><textarea name="template" required>案件 {case_no} 请及时跟进。</textarea></div><div class="field"><button type="submit">新增规则</button></div></form>`,
+      )}
+      ${panel(
+        "提醒规则",
+        `${table(
+          [
+            { label: "名称", render: (row) => `<input class="compact-input" data-rule-field="name" value="${escapeHtml(row.name)}" />` },
+            { label: "类型", key: "rule_type" },
+            { label: "偏移天数", render: (row) => `<input class="compact-input compact-number" type="number" min="0" data-rule-field="offset_days" value="${row.offset_days}" />` },
+            { label: "发送时间", render: (row) => `<input class="compact-input" type="time" data-rule-field="send_time" value="${escapeHtml(row.send_time)}" />` },
+            { label: "目标", render: (row) => `<select class="compact-input" data-rule-field="target_role"><option value="debtor" ${row.target_role === "debtor" ? "selected" : ""}>债务人</option><option value="lawyer" ${row.target_role === "lawyer" ? "selected" : ""}>法务</option><option value="both" ${row.target_role === "both" ? "selected" : ""}>双方</option></select>` },
+            { label: "话术模板", render: (row) => `<textarea class="compact-template" data-rule-field="template">${escapeHtml(row.template)}</textarea>` },
+            { label: "启用", render: (row) => `<input type="checkbox" data-rule-field="enabled" ${row.enabled ? "checked" : ""} />` },
+            { label: "操作", render: (row) => `<button class="small" data-save-rule="${row.id}">保存</button>` },
+          ],
+          rules,
+        )}`,
+      )}
+      ${panel(
+        "提醒列表",
+        table(
+          [
+            { label: "ID", key: "id" },
+            { label: "类型", key: "reminder_type" },
+            { label: "状态", render: (row) => badge(row.status) },
+            { label: "提醒时间", key: "remind_at" },
+            { label: "群", key: "group_id" },
+            { label: "内容", key: "content" },
+            { label: "取消原因", key: "cancel_reason" },
+            { label: "操作", render: (row) => row.status === "pending" ? `<div class="row-actions">${row.reminder_type === "custom" ? `<button class="small ghost" data-edit-reminder="${row.id}">编辑</button>` : ""}<button class="small ghost" data-cancel-reminder="${row.id}">取消</button></div>` : "" },
+          ],
+          reminders,
+        ),
+        '<button id="run-due-btn">处理到期提醒</button>',
+      )}
+    </div>
+  `;
+  $("#custom-reminder-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const payload = Object.fromEntries(new FormData(event.currentTarget).entries());
+    if (!payload.target_userid) payload.target_userid = null;
+    await api("/api/v1/legal/reminders/custom", { method: "POST", body: JSON.stringify(payload) });
+    showAlert("自定义提醒已创建");
     renderReminders();
   });
+  $("#reminder-rule-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const payload = Object.fromEntries(new FormData(event.currentTarget).entries());
+    payload.offset_days = Number(payload.offset_days);
+    payload.tenant_id = payload.tenant_id || null;
+    await api("/api/v1/legal/reminder-rules", { method: "POST", body: JSON.stringify(payload) });
+    showAlert("提醒规则已新增");
+    renderReminders();
+  });
+  if (editing) {
+    $("#cancel-reminder-edit").addEventListener("click", () => { state.editingReminderId = null; renderReminders(); });
+    $("#edit-reminder-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const payload = Object.fromEntries(new FormData(event.currentTarget).entries());
+      if (!payload.target_userid) payload.target_userid = null;
+      await api(`/api/v1/legal/reminders/${editing.id}`, { method: "PATCH", body: JSON.stringify(payload) });
+      state.editingReminderId = null;
+      showAlert("自定义提醒已更新");
+      renderReminders();
+    });
+  }
+  document.querySelectorAll("[data-edit-reminder]").forEach((button) => button.addEventListener("click", () => { state.editingReminderId = Number(button.dataset.editReminder); renderReminders(); }));
+  document.querySelectorAll("[data-cancel-reminder]").forEach((button) => button.addEventListener("click", async () => {
+    await api(`/api/v1/legal/reminders/${button.dataset.cancelReminder}/cancel`, { method: "POST", body: JSON.stringify({ reason: "管理端人工取消" }) });
+    showAlert("提醒已取消");
+    renderReminders();
+  }));
+  document.querySelectorAll("[data-save-rule]").forEach((button) => button.addEventListener("click", async () => {
+    const row = button.closest("tr");
+    const payload = {};
+    row.querySelectorAll("[data-rule-field]").forEach((field) => {
+      payload[field.dataset.ruleField] = field.type === "checkbox" ? field.checked : field.value;
+    });
+    payload.offset_days = Number(payload.offset_days);
+    const result = await api(`/api/v1/legal/reminder-rules/${button.dataset.saveRule}`, { method: "PATCH", body: JSON.stringify(payload) });
+    showAlert(`规则已保存，重建待发送提醒 ${result.rebuilt_pending} 条`);
+    renderReminders();
+  }));
+  $("#run-due-btn").addEventListener("click", async () => {
+    const result = await api("/api/v1/legal/reminders/run-due", { method: "POST", body: "{}" });
+    showAlert(`扫描完成：真实发送 ${result.sent}，Mock 模拟 ${result.simulated}，失败 ${result.failed}，重试 ${result.retrying}`);
+    renderReminders();
+  });
+}
+
+async function renderMerchantQuestions() {
+  const data = await api("/api/v1/legal/merchant-questions?limit=200");
+  const items = data.items || [];
+  $("#content").innerHTML = panel(
+    "提问记录",
+    table(
+      [
+        { label: "状态", render: (row) => badge(row.status) },
+        { label: "群", key: "group_id" },
+        { label: "提问人", key: "sender_id" },
+        { label: "内容", key: "content" },
+        { label: "提问时间", key: "asked_at" },
+        { label: "截止时间", key: "deadline_at" },
+        { label: "告警人员", key: "assigned_userid" },
+        { label: "操作", render: (row) => ["open", "timed_out"].includes(row.status) ? `<button class="small ghost" data-close-question="${row.id}">人工关闭</button>` : "" },
+      ],
+      items,
+    ),
+  );
+  document.querySelectorAll("[data-close-question]").forEach((button) => button.addEventListener("click", async () => {
+    await api(`/api/v1/legal/merchant-questions/${button.dataset.closeQuestion}/close`, { method: "POST", body: JSON.stringify({ reason: "管理端人工关闭" }) });
+    showAlert("提问已关闭");
+    renderMerchantQuestions();
+  }));
 }
 
 async function renderEvents() {
@@ -760,6 +927,7 @@ async function loadView() {
     if (state.view === "archive-groups") await renderArchiveGroups();
     if (state.view === "ocr-reviews") await renderOCRReviews();
     if (state.view === "reminders") await renderReminders();
+    if (state.view === "merchant-questions") await renderMerchantQuestions();
     if (state.view === "events") await renderEvents();
     if (state.view === "media") await renderMedia();
     if (state.view === "sync") await renderSync();

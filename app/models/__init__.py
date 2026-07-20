@@ -5,8 +5,10 @@ from app.models.group_message import GroupMessage
 from app.models.legal_case import LegalCase
 from app.models.legal_event import LegalEvent
 from app.models.media_file import MediaFile
+from app.models.merchant_question import MerchantQuestion
 from app.models.operation_audit_log import OperationAuditLog
 from app.models.reminder import Reminder
+from app.models.reminder_rule import ReminderRule
 from app.models.reminder_send_log import ReminderSendLog
 from app.models.system_run_log import SystemRunLog
 from app.models.tenant import Tenant
@@ -21,8 +23,10 @@ __all__ = [
     "LegalCase",
     "LegalEvent",
     "MediaFile",
+    "MerchantQuestion",
     "OperationAuditLog",
     "Reminder",
+    "ReminderRule",
     "ReminderSendLog",
     "SystemRunLog",
     "Tenant",

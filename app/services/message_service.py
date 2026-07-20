@@ -14,9 +14,11 @@ from app.schemas.legal import MockMessageCreate
 from app.services.case_service import CaseService
 from app.services.document_sync_service import DocumentSyncService
 from app.services.media_file_service import MediaFileService
+from app.services.merchant_question_service import MerchantQuestionService
 from app.services.ocr_service import OCRService
 from app.services.reminder_service import ReminderService
 from app.services.tenant_settings_service import TenantSettingsService
+from app.services.wecom_archive_group_service import WeComArchiveGroupService
 from app.utils.datetime_utils import ensure_aware, now_tz, today_tz
 
 logger = logging.getLogger(__name__)
@@ -36,6 +38,7 @@ class MessageService:
 
     def handle_incoming_message(self, payload: MockMessageCreate) -> dict[str, Any]:
         group_message = self._save_group_message(payload)
+        MerchantQuestionService(self.db).handle_message(group_message)
         extracted = self._extract(payload, group_message.tenant_id)
         legal_case = self.case_service.find_case_for_message(
             extracted.get("case_no"),
@@ -51,6 +54,7 @@ class MessageService:
         event_types = [] if payload.msg_type in {"image", "file", "pdf"} else (extracted.get("event_types") or ["unknown"])
 
         event_ids: list[int] = []
+        events_by_type: dict[str, LegalEvent] = {}
         for event_type in event_types:
             event = self._create_event(
                 event_type=event_type,
@@ -62,11 +66,17 @@ class MessageService:
                 metadata=extracted.get("metadata") or {},
             )
             event_ids.append(event.id)
-            self.document_sync.sync_archive_event(event)
+            events_by_type[event_type] = event
+            if WeComArchiveGroupService(self.db).feature_enabled(group_message.group_id, "document_sync"):
+                self.document_sync.sync_archive_event(event)
 
         reminder_ids: list[int] = []
         if legal_case and "payment_screenshot" in event_types and extracted.get("amount") is not None:
             self.case_service.update_paid_amount(legal_case, extracted["amount"])
+            self.reminder_service.cancel_pending_payment_tracking(
+                legal_case.id,
+                f"付款完成消息已确认（消息 {group_message.id}）",
+            )
 
         if legal_case and "keyword" in event_types:
             text = extracted.get("extracted_text") or ""
@@ -75,11 +85,14 @@ class MessageService:
             elif "逾期" in text:
                 self.case_service.mark_overdue(legal_case)
 
-        if legal_case and "payment_notice" in event_types and self._payment_tracking_enabled(legal_case.tenant_id):
+        if legal_case and "payment_notice" in event_types and self._payment_tracking_enabled(legal_case.tenant_id, legal_case.group_id):
+            payment_event = events_by_type.get("payment_notice")
             reminders = self.reminder_service.create_payment_tracking(
                 legal_case.id,
-                start_date=today_tz() + timedelta(days=1),
+                start_date=today_tz(),
                 days=7,
+                source_event_id=payment_event.id if payment_event else None,
+                payment_amount=extracted.get("amount"),
             )
             reminder_ids.extend([reminder.id for reminder in reminders])
 
@@ -183,12 +196,16 @@ class MessageService:
             )
             if media_file:
                 self.media_file_service.download_media_file(media_file.id)
-                self.media_file_service.process_ocr(media_file.id)
+                if WeComArchiveGroupService(self.db).feature_enabled(group_message.group_id, "ocr"):
+                    self.media_file_service.process_ocr(media_file.id)
         except Exception:
             # 媒体处理不能阻断消息入库和事件归档。
             logger.exception("媒体消息处理失败 group_message_id=%s", group_message.id)
             self.db.flush()
 
-    def _payment_tracking_enabled(self, tenant_id: str | None) -> bool:
+    def _payment_tracking_enabled(self, tenant_id: str | None, group_id: str) -> bool:
         effective = TenantSettingsService(self.db).get_effective_settings(tenant_id)
-        return bool(effective["feature_flags"].get("enable_payment_tracking", True))
+        return bool(effective["feature_flags"].get("enable_payment_tracking", True)) and WeComArchiveGroupService(self.db).feature_enabled(
+            group_id,
+            "payment_tracking",
+        )

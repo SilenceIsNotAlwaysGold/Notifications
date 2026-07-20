@@ -28,6 +28,8 @@ EXPECTED_TABLES = {
     "tenants",
     "tenant_settings",
     "wecom_archive_groups",
+    "reminder_rules",
+    "merchant_questions",
 }
 
 
@@ -63,6 +65,8 @@ def test_alembic_upgrade_head_succeeds_with_temp_sqlite(tmp_path, monkeypatch):
         inspector = inspect(engine)
         assert EXPECTED_TABLES <= set(inspector.get_table_names())
         assert "wecomapi_room_id" in {column["name"] for column in inspector.get_columns("wecom_archive_groups")}
+        assert "dedupe_key" in {column["name"] for column in inspector.get_columns("reminders")}
+        assert "group_type" in {column["name"] for column in inspector.get_columns("wecom_archive_groups")}
     finally:
         engine.dispose()
         get_settings.cache_clear()

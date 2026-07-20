@@ -6,6 +6,7 @@ from app.core.config import get_settings
 from app.db.session import SessionLocal
 from app.adapters.wecom_archive import WeComArchiveAdapter
 from app.services.case_lifecycle_service import CaseLifecycleService
+from app.services.merchant_question_service import MerchantQuestionService
 from app.services.reminder_service import ReminderService
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,18 @@ def scan_case_statuses() -> None:
         db.close()
 
 
+def scan_merchant_questions() -> None:
+    db = SessionLocal()
+    try:
+        MerchantQuestionService(db).scan_timeouts()
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("定时扫描商家提问超时失败")
+    finally:
+        db.close()
+
+
 def start_scheduler() -> None:
     settings = get_settings()
     if not settings.scheduler_enabled:
@@ -56,6 +69,8 @@ def start_scheduler() -> None:
         return
     if not scheduler.get_job("send_due_reminders"):
         scheduler.add_job(scan_due_reminders, "interval", minutes=1, id="send_due_reminders")
+    if not scheduler.get_job("scan_merchant_questions"):
+        scheduler.add_job(scan_merchant_questions, "interval", minutes=1, id="scan_merchant_questions")
     if settings.wecom_archive_auto_pull and not scheduler.get_job("pull_wecom_archive_messages"):
         scheduler.add_job(pull_wecom_archive_messages, "interval", minutes=1, id="pull_wecom_archive_messages")
     if settings.case_status_scan_enabled and not scheduler.get_job("scan_case_statuses"):

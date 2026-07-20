@@ -1,4 +1,5 @@
 from datetime import datetime
+import json
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -10,6 +11,14 @@ from app.utils.datetime_utils import ensure_aware, now_tz
 
 
 ARCHIVE_GROUP_STATUSES = {"discovered", "enabled", "disabled"}
+ARCHIVE_GROUP_TYPES = {"merchant", "debtor", "internal", "other"}
+GROUP_FEATURE_DEFAULTS = {
+    "ocr": True,
+    "document_sync": True,
+    "payment_tracking": True,
+    "case_reminders": True,
+    "question_timeout": True,
+}
 
 
 class WeComArchiveGroupService:
@@ -45,6 +54,7 @@ class WeComArchiveGroupService:
         if self.get_group(room_id):
             raise ValueError("该群聊 roomid 已存在")
         self._validate_status(payload.status)
+        self._validate_group_type(payload.group_type)
         self._validate_tenant(payload.tenant_id)
         group = WeComArchiveGroup(
             room_id=room_id,
@@ -52,6 +62,11 @@ class WeComArchiveGroupService:
             display_name=self._clean_optional(payload.display_name),
             tenant_id=self._clean_optional(payload.tenant_id),
             status=payload.status,
+            group_type=payload.group_type,
+            features_json=json.dumps(self._normalize_features(payload.features), ensure_ascii=False),
+            internal_userids_json=json.dumps(self._normalize_userids(payload.internal_userids), ensure_ascii=False),
+            alert_userids_json=json.dumps(self._normalize_userids(payload.alert_userids), ensure_ascii=False),
+            question_timeout_minutes=payload.question_timeout_minutes,
         )
         self.db.add(group)
         self.db.flush()
@@ -64,11 +79,19 @@ class WeComArchiveGroupService:
         values = payload.model_dump(exclude_unset=True)
         if "status" in values:
             self._validate_status(values["status"])
+        if "group_type" in values:
+            self._validate_group_type(values["group_type"])
         if "tenant_id" in values:
             self._validate_tenant(values["tenant_id"])
         for field in ("wecomapi_room_id", "display_name", "tenant_id"):
             if field in values:
                 values[field] = self._clean_optional(values[field])
+        if "features" in values:
+            values["features_json"] = json.dumps(self._normalize_features(values.pop("features")), ensure_ascii=False)
+        if "internal_userids" in values:
+            values["internal_userids_json"] = json.dumps(self._normalize_userids(values.pop("internal_userids")), ensure_ascii=False)
+        if "alert_userids" in values:
+            values["alert_userids_json"] = json.dumps(self._normalize_userids(values.pop("alert_userids")), ensure_ascii=False)
         for field, value in values.items():
             setattr(group, field, value)
         group.updated_at = now_tz()
@@ -83,6 +106,8 @@ class WeComArchiveGroupService:
             group = WeComArchiveGroup(
                 room_id=room_id,
                 status="discovered",
+                group_type="other",
+                features_json=json.dumps(GROUP_FEATURE_DEFAULTS, ensure_ascii=False),
                 seen_message_count=1,
                 first_seen_at=observed_at,
                 last_seen_at=observed_at,
@@ -106,6 +131,31 @@ class WeComArchiveGroupService:
         self.db.flush()
         return True
 
+    def feature_enabled(self, room_id: str, feature: str) -> bool:
+        if feature not in GROUP_FEATURE_DEFAULTS:
+            raise ValueError(f"未知群功能：{feature}")
+        group = self.get_group(room_id)
+        if group is None:
+            return GROUP_FEATURE_DEFAULTS[feature]
+        features = self.features(group)
+        return bool(features.get(feature, GROUP_FEATURE_DEFAULTS[feature]))
+
+    @staticmethod
+    def features(group: WeComArchiveGroup) -> dict[str, bool]:
+        try:
+            configured = json.loads(group.features_json or "{}")
+        except (TypeError, ValueError):
+            configured = {}
+        return {**GROUP_FEATURE_DEFAULTS, **{key: bool(value) for key, value in configured.items() if key in GROUP_FEATURE_DEFAULTS}}
+
+    @staticmethod
+    def internal_userids(group: WeComArchiveGroup) -> list[str]:
+        return WeComArchiveGroupService._load_userids(group.internal_userids_json)
+
+    @staticmethod
+    def alert_userids(group: WeComArchiveGroup) -> list[str]:
+        return WeComArchiveGroupService._load_userids(group.alert_userids_json)
+
     def _validate_tenant(self, tenant_id: str | None) -> None:
         cleaned = self._clean_optional(tenant_id)
         if cleaned and not self.db.scalar(select(Tenant.id).where(Tenant.tenant_id == cleaned)):
@@ -115,6 +165,33 @@ class WeComArchiveGroupService:
     def _validate_status(status: str) -> None:
         if status not in ARCHIVE_GROUP_STATUSES:
             raise ValueError("群状态必须是 discovered、enabled 或 disabled")
+
+    @staticmethod
+    def _validate_group_type(group_type: str) -> None:
+        if group_type not in ARCHIVE_GROUP_TYPES:
+            raise ValueError("群类型必须是 merchant、debtor、internal 或 other")
+
+    @staticmethod
+    def _normalize_features(features: dict[str, bool] | None) -> dict[str, bool]:
+        configured = features or {}
+        unknown = set(configured) - set(GROUP_FEATURE_DEFAULTS)
+        if unknown:
+            raise ValueError(f"未知群功能：{', '.join(sorted(unknown))}")
+        if any(not isinstance(value, bool) for value in configured.values()):
+            raise ValueError("群功能开关必须是布尔值")
+        return {**GROUP_FEATURE_DEFAULTS, **configured}
+
+    @staticmethod
+    def _normalize_userids(userids: list[str] | None) -> list[str]:
+        return list(dict.fromkeys(value.strip() for value in (userids or []) if value and value.strip()))
+
+    @staticmethod
+    def _load_userids(raw: str | None) -> list[str]:
+        try:
+            values = json.loads(raw or "[]")
+        except (TypeError, ValueError):
+            return []
+        return [str(value) for value in values if value]
 
     @staticmethod
     def _clean_optional(value: str | None) -> str | None:

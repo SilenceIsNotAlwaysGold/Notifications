@@ -69,7 +69,7 @@ def test_run_due_creates_reminder_send_log(client, db_session):
 
     send_log = db_session.scalar(select(ReminderSendLog).where(ReminderSendLog.reminder_id == reminder_id))
     assert send_log is not None
-    assert send_log.status == "success"
+    assert send_log.status == "simulated"
     assert send_log.send_mode == "mock"
 
 

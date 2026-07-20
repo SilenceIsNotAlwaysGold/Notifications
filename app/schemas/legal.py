@@ -118,6 +118,22 @@ class CustomReminderCreate(BaseModel):
     case_id: int | None = None
 
 
+class CustomReminderUpdate(BaseModel):
+    remind_at: datetime | None = None
+    content: str | None = Field(default=None, min_length=1, max_length=4000)
+    target_userid: str | None = Field(default=None, max_length=128)
+
+    @model_validator(mode="after")
+    def require_update_field(self):
+        if not self.model_fields_set:
+            raise ValueError("至少提供一个待更新字段")
+        return self
+
+
+class ReminderCancel(BaseModel):
+    reason: str = Field(default="人工取消", min_length=1, max_length=1000)
+
+
 class ReminderOut(BaseModel):
     id: int
     tenant_id: str | None
@@ -127,6 +143,9 @@ class ReminderOut(BaseModel):
     remind_at: datetime
     content: str
     target_userid: str | None
+    rule_id: int | None
+    source_event_id: int | None
+    dedupe_key: str | None
     status: str
     retry_count: int
     last_error: str | None
@@ -146,9 +165,61 @@ class ReminderListOut(BaseModel):
 
 class RunDueOut(BaseModel):
     sent: int
+    simulated: int = 0
     failed: int
     retrying: int
     total: int
+
+
+class ReminderRuleCreate(BaseModel):
+    tenant_id: str | None = Field(default=None, max_length=128)
+    name: str = Field(min_length=1, max_length=128)
+    rule_type: Literal["repayment", "default_upgrade", "payment_tracking"]
+    offset_days: int = Field(ge=0, le=365)
+    send_time: str = Field(default="09:00", pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+    target_role: Literal["debtor", "lawyer", "both"] = "lawyer"
+    template: str = Field(min_length=1, max_length=4000)
+    sort_order: int = Field(default=0, ge=0, le=10000)
+    enabled: bool = True
+
+
+class ReminderRuleUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    rule_type: Literal["repayment", "default_upgrade", "payment_tracking"] | None = None
+    offset_days: int | None = Field(default=None, ge=0, le=365)
+    send_time: str | None = Field(default=None, pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+    target_role: Literal["debtor", "lawyer", "both"] | None = None
+    template: str | None = Field(default=None, min_length=1, max_length=4000)
+    sort_order: int | None = Field(default=None, ge=0, le=10000)
+    enabled: bool | None = None
+
+    @model_validator(mode="after")
+    def require_update_field(self):
+        if not self.model_fields_set:
+            raise ValueError("至少提供一个待更新字段")
+        return self
+
+
+class ReminderRuleOut(BaseModel):
+    id: int
+    tenant_id: str | None
+    name: str
+    rule_type: str
+    offset_days: int
+    send_time: str
+    target_role: str
+    template: str
+    sort_order: int
+    enabled: bool
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ReminderRuleListOut(BaseModel):
+    total: int
+    items: list[ReminderRuleOut]
 
 
 class EventOut(BaseModel):
@@ -222,6 +293,11 @@ class WeComArchiveGroupCreate(BaseModel):
     display_name: str | None = Field(default=None, max_length=255)
     tenant_id: str | None = Field(default=None, max_length=128)
     status: Literal["discovered", "enabled", "disabled"] = "enabled"
+    group_type: Literal["merchant", "debtor", "internal", "other"] = "other"
+    features: dict[str, bool] = Field(default_factory=dict)
+    internal_userids: list[str] = Field(default_factory=list)
+    alert_userids: list[str] = Field(default_factory=list)
+    question_timeout_minutes: int = Field(default=5, ge=1, le=1440)
 
 
 class WeComArchiveGroupUpdate(BaseModel):
@@ -229,6 +305,11 @@ class WeComArchiveGroupUpdate(BaseModel):
     display_name: str | None = Field(default=None, max_length=255)
     tenant_id: str | None = Field(default=None, max_length=128)
     status: Literal["discovered", "enabled", "disabled"] | None = None
+    group_type: Literal["merchant", "debtor", "internal", "other"] | None = None
+    features: dict[str, bool] | None = None
+    internal_userids: list[str] | None = None
+    alert_userids: list[str] | None = None
+    question_timeout_minutes: int | None = Field(default=None, ge=1, le=1440)
 
 
 class WeComArchiveGroupOut(BaseModel):
@@ -238,6 +319,11 @@ class WeComArchiveGroupOut(BaseModel):
     display_name: str | None
     tenant_id: str | None
     status: str
+    group_type: str
+    features: dict[str, bool] = Field(default_factory=dict)
+    internal_userids: list[str] = Field(default_factory=list)
+    alert_userids: list[str] = Field(default_factory=list)
+    question_timeout_minutes: int
     seen_message_count: int
     first_seen_at: datetime | None
     last_seen_at: datetime | None
@@ -246,10 +332,53 @@ class WeComArchiveGroupOut(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+    @classmethod
+    def model_validate(cls, obj, *args, **kwargs):
+        data = super().model_validate(obj, *args, **kwargs)
+        if hasattr(obj, "features_json"):
+            import json
+
+            data.features = json.loads(obj.features_json or "{}")
+            data.internal_userids = json.loads(obj.internal_userids_json or "[]")
+            data.alert_userids = json.loads(obj.alert_userids_json or "[]")
+        return data
+
 
 class WeComArchiveGroupListOut(BaseModel):
     total: int
     items: list[WeComArchiveGroupOut]
+
+
+class MerchantQuestionOut(BaseModel):
+    id: int
+    tenant_id: str | None
+    group_id: str
+    group_message_id: int
+    sender_id: str
+    content: str
+    asked_at: datetime
+    deadline_at: datetime
+    status: str
+    reply_message_id: int | None
+    replied_at: datetime | None
+    reminder_id: int | None
+    assigned_userid: str | None
+    closed_by: str | None
+    closed_at: datetime | None
+    close_reason: str | None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class MerchantQuestionListOut(BaseModel):
+    total: int
+    items: list[MerchantQuestionOut]
+
+
+class MerchantQuestionClose(BaseModel):
+    reason: str = Field(default="人工关闭", min_length=1, max_length=1000)
 
 
 class WeComArchiveReplayWithOcrOut(WeComArchivePullOut):

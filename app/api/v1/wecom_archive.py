@@ -60,7 +60,13 @@ def list_wecom_archive_groups(
 
 
 @router.post("/groups")
-def create_wecom_archive_group(payload: WeComArchiveGroupCreate, db: Session = Depends(get_db)):
+def create_wecom_archive_group(
+    payload: WeComArchiveGroupCreate,
+    db: Session = Depends(get_db),
+    operator_info: dict[str, object] = Depends(get_current_operator),
+):
+    if not has_group_access(operator_info, payload.room_id, payload.tenant_id):
+        raise_fail("无权限访问该资源", code=403, status_code=403)
     try:
         group = WeComArchiveGroupService(db).create_group(payload)
         db.commit()
@@ -75,7 +81,13 @@ def update_wecom_archive_group(
     room_id: str,
     payload: WeComArchiveGroupUpdate,
     db: Session = Depends(get_db),
+    operator_info: dict[str, object] = Depends(get_current_operator),
 ):
+    existing = WeComArchiveGroupService(db).get_group(room_id)
+    if not existing:
+        raise_fail("归档群不存在", code=1404, status_code=404)
+    if not has_group_access(operator_info, existing.room_id, existing.tenant_id):
+        raise_fail("无权限访问该资源", code=403, status_code=403)
     try:
         group = WeComArchiveGroupService(db).update_group(room_id, payload)
         db.commit()

@@ -7,8 +7,10 @@ from sqlalchemy.orm import Session
 
 from app.adapters.wecom_message import WeComMessageAdapter
 from app.models.legal_case import LegalCase
+from app.models.legal_event import LegalEvent
 from app.models.reminder import Reminder
 from app.models.reminder_send_log import ReminderSendLog
+from app.services.reminder_rule_service import ReminderRuleService
 from app.services.system_run_log_service import SystemRunLogService
 from app.services.tenant_settings_service import TenantSettingsService
 from app.utils.datetime_utils import app_timezone, ensure_aware, now_tz, start_of_day
@@ -25,7 +27,16 @@ class ReminderService:
         legal_case = self.db.get(LegalCase, case_id)
         if not legal_case:
             raise ValueError("案件不存在")
-        remind_at = self._default_today_remind_at()
+        target_date = legal_case.due_date - timedelta(days=days_before)
+        rule_reminders = ReminderRuleService(self.db).create_case_rules_for_date(
+            legal_case,
+            "repayment",
+            legal_case.due_date,
+            target_date,
+        )
+        if rule_reminders:
+            return rule_reminders[0]
+        remind_at = datetime.combine(target_date, datetime.min.time(), tzinfo=app_timezone()).replace(hour=9)
         existing = self._find_existing_same_day(legal_case.id, "repayment_before_due", remind_at)
         if existing:
             return existing
@@ -64,10 +75,51 @@ class ReminderService:
             target_userid=target_userid,
         )
 
-    def create_default_upgrade_reminder(self, case_id: int) -> Reminder:
+    def update_custom_reminder(
+        self,
+        reminder: Reminder,
+        remind_at: datetime | None = None,
+        content: str | None = None,
+        target_userid: str | None = None,
+        fields_set: set[str] | None = None,
+    ) -> Reminder:
+        if reminder.reminder_type != "custom":
+            raise ValueError("仅自定义提醒可以编辑")
+        if reminder.status != "pending":
+            raise ValueError("仅待发送提醒可以编辑")
+        fields = fields_set or set()
+        if "remind_at" in fields and remind_at is not None:
+            reminder.remind_at = ensure_aware(remind_at)
+        if "content" in fields and content is not None:
+            reminder.content = content.strip()
+        if "target_userid" in fields:
+            reminder.target_userid = target_userid.strip() if target_userid else None
+        self.db.flush()
+        return reminder
+
+    def cancel_reminder(self, reminder: Reminder, reason: str, operator: str | None = None) -> Reminder:
+        if reminder.status != "pending":
+            raise ValueError("仅待发送提醒可以取消")
+        reminder.status = "cancelled"
+        reminder.cancelled_at = now_tz()
+        reminder.cancel_reason = f"{reason.strip()}（操作人：{operator}）" if operator else reason.strip()
+        self.db.flush()
+        return reminder
+
+    def create_default_upgrade_reminder(self, case_id: int, scan_date: date | None = None) -> Reminder:
         legal_case = self.db.get(LegalCase, case_id)
         if not legal_case:
             raise ValueError("案件不存在")
+        reference_date = ensure_aware(legal_case.overdue_at).date() if legal_case.overdue_at else legal_case.due_date
+        target_date = scan_date or now_tz().date()
+        rule_reminders = ReminderRuleService(self.db).create_case_rules_for_date(
+            legal_case,
+            "default_upgrade",
+            reference_date,
+            target_date,
+        )
+        if rule_reminders:
+            return rule_reminders[0]
         remind_at = now_tz()
         existing = self._find_existing_same_day(legal_case.id, "default_upgrade", remind_at)
         if existing:
@@ -83,32 +135,49 @@ class ReminderService:
             target_userid=legal_case.lawyer_wecom_userid,
         )
 
-    def create_payment_tracking(self, case_id: int | None, start_date: date, days: int = 7) -> list[Reminder]:
+    def create_payment_tracking(
+        self,
+        case_id: int | None,
+        start_date: date,
+        days: int = 7,
+        source_event_id: int | None = None,
+        payment_amount: object = None,
+    ) -> list[Reminder]:
         legal_case = self.db.get(LegalCase, case_id) if case_id else None
         if case_id and not legal_case:
             raise ValueError("案件不存在")
         if not legal_case:
             return []
 
-        group_id = legal_case.group_id
-        case_no = legal_case.case_no
-        reminders = []
-        for day in range(days):
-            remind_at = start_of_day(start_date + timedelta(days=day))
-            reminders.append(
-                self._create(
-                    case_id=case_id,
-                    tenant_id=legal_case.tenant_id,
-                    group_id=group_id,
-                    reminder_type="payment_tracking",
-                    remind_at=remind_at,
-                    content=f"缴费通知跟踪提醒：案件{case_no}存在待缴费事项，请确认是否已完成缴费。",
-                    target_userid=legal_case.lawyer_wecom_userid,
-                    flush=False,
-                )
-            )
-        self.db.flush()
-        return reminders
+        source_event = self.db.get(LegalEvent, source_event_id) if source_event_id else None
+        return ReminderRuleService(self.db).create_payment_tracking(
+            legal_case,
+            start_date,
+            source_event=source_event,
+            payment_amount=payment_amount,
+        )
+
+    def create_repayment_rules_for_date(self, case_id: int, scan_date: date) -> list[Reminder]:
+        legal_case = self.db.get(LegalCase, case_id)
+        if not legal_case:
+            raise ValueError("案件不存在")
+        return ReminderRuleService(self.db).create_case_rules_for_date(
+            legal_case,
+            "repayment",
+            legal_case.due_date,
+            scan_date,
+        )
+
+    def create_default_rules_for_date(self, case_id: int, scan_date: date) -> list[Reminder]:
+        legal_case = self.db.get(LegalCase, case_id)
+        if not legal_case or not legal_case.overdue_at:
+            return []
+        return ReminderRuleService(self.db).create_case_rules_for_date(
+            legal_case,
+            "default_upgrade",
+            ensure_aware(legal_case.overdue_at).date(),
+            scan_date,
+        )
 
     def cancel_pending_payment_tracking(self, case_id: int, reason: str) -> int:
         reminders = list(
@@ -139,6 +208,7 @@ class ReminderService:
             ).all()
         )
         sent = 0
+        simulated = 0
         failed = 0
         retrying = 0
         try:
@@ -151,8 +221,12 @@ class ReminderService:
                     self._write_send_log(reminder, result, mentioned, None, attempt_no)
                     if not result.get("success"):
                         raise RuntimeError(result.get("error") or "企业微信发送失败")
-                    self.mark_sent(reminder)
-                    sent += 1
+                    if result.get("mode") == "mock":
+                        self.mark_simulated(reminder)
+                        simulated += 1
+                    else:
+                        self.mark_sent(reminder)
+                        sent += 1
                 except Exception as exc:
                     logger.exception("发送提醒失败，reminder_id=%s", reminder.id)
                     if result is None or result.get("success"):
@@ -168,20 +242,20 @@ class ReminderService:
                         failed += 1
                     else:
                         retrying += 1
-            summary = {"sent": sent, "failed": failed, "retrying": retrying, "total": len(due_reminders), **({"operator": operator} if operator else {})}
+            summary = {"sent": sent, "simulated": simulated, "failed": failed, "retrying": retrying, "total": len(due_reminders), **({"operator": operator} if operator else {})}
             if failed:
-                run_service.finish_partial(run_log, summary=summary, total_count=len(due_reminders), success_count=sent, failed_count=failed)
+                run_service.finish_partial(run_log, summary=summary, total_count=len(due_reminders), success_count=sent + simulated, failed_count=failed)
             else:
-                run_service.finish_success(run_log, summary=summary, total_count=len(due_reminders), success_count=sent, failed_count=failed)
+                run_service.finish_success(run_log, summary=summary, total_count=len(due_reminders), success_count=sent + simulated, failed_count=failed)
         except Exception as exc:
             run_service.finish_failed(
                 run_log,
                 str(exc),
-                summary={"sent": sent, "failed": failed, "retrying": retrying, "total": len(due_reminders), **({"operator": operator} if operator else {})},
+                summary={"sent": sent, "simulated": simulated, "failed": failed, "retrying": retrying, "total": len(due_reminders), **({"operator": operator} if operator else {})},
             )
             raise
         self.db.flush()
-        return {"sent": sent, "failed": failed, "retrying": retrying, "total": len(due_reminders)}
+        return {"sent": sent, "simulated": simulated, "failed": failed, "retrying": retrying, "total": len(due_reminders)}
 
     def list_reminders(
         self,
@@ -205,6 +279,11 @@ class ReminderService:
         reminder.status = "sent"
         reminder.last_error = None
         reminder.sent_at = now_tz()
+
+    def mark_simulated(self, reminder: Reminder) -> None:
+        reminder.status = "simulated"
+        reminder.last_error = None
+        reminder.sent_at = None
 
     def mark_failed(self, reminder: Reminder, error: str) -> None:
         reminder.status = "failed"
@@ -230,6 +309,9 @@ class ReminderService:
         remind_at: datetime,
         content: str,
         target_userid: str | None = None,
+        rule_id: int | None = None,
+        source_event_id: int | None = None,
+        dedupe_key: str | None = None,
         flush: bool = True,
     ) -> Reminder:
         reminder = Reminder(
@@ -240,6 +322,9 @@ class ReminderService:
             remind_at=ensure_aware(remind_at),
             content=content,
             target_userid=target_userid,
+            rule_id=rule_id,
+            source_event_id=source_event_id,
+            dedupe_key=dedupe_key,
             status="pending",
         )
         self.db.add(reminder)
@@ -284,7 +369,7 @@ class ReminderService:
             group_id=reminder.group_id,
             target_userid=reminder.target_userid,
             send_mode=str(result.get("mode") or getattr(self.wecom_adapter, "mode", "mock")),
-            status="success" if result.get("success") else "failed",
+            status="simulated" if result.get("success") and result.get("mode") == "mock" else ("success" if result.get("success") else "failed"),
             request_payload_json=json.dumps(request_payload, ensure_ascii=False),
             response_payload_json=json.dumps(
                 {

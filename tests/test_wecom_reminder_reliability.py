@@ -64,16 +64,16 @@ def test_wecom_webhook_without_url_fails_without_crash():
     assert "WECOM_WEBHOOK_URL" in result["error"]
 
 
-def test_run_due_success_marks_sent_and_returns_stats(client, db_session):
+def test_run_due_mock_marks_simulated_and_returns_stats(client, db_session):
     reset_settings(WECOM_SEND_MODE="mock", WECOM_WEBHOOK_URL="")
     reminder_id = create_due_reminder(client)
     response = client.post("/api/v1/legal/reminders/run-due")
     assert response.status_code == 200
-    assert response.json()["data"] == {"sent": 1, "failed": 0, "retrying": 0, "total": 1}
+    assert response.json()["data"] == {"sent": 0, "simulated": 1, "failed": 0, "retrying": 0, "total": 1}
 
     reminder = db_session.get(Reminder, reminder_id)
-    assert reminder.status == "sent"
-    assert reminder.sent_at is not None
+    assert reminder.status == "simulated"
+    assert reminder.sent_at is None
 
 
 def test_webhook_errcode_failure_increments_retry_count(client, db_session, monkeypatch):
@@ -86,7 +86,7 @@ def test_webhook_errcode_failure_increments_retry_count(client, db_session, monk
     monkeypatch.setattr("app.adapters.wecom_message.httpx.post", fake_post)
     response = client.post("/api/v1/legal/reminders/run-due")
 
-    assert response.json()["data"] == {"sent": 0, "failed": 0, "retrying": 1, "total": 1}
+    assert response.json()["data"] == {"sent": 0, "simulated": 0, "failed": 0, "retrying": 1, "total": 1}
     reminder = db_session.get(Reminder, reminder_id)
     assert reminder.status == "pending"
     assert reminder.retry_count == 1
@@ -103,7 +103,7 @@ def test_retry_count_reaches_max_retry_marks_failed(client, db_session, monkeypa
     monkeypatch.setattr("app.adapters.wecom_message.httpx.post", fake_post)
     response = client.post("/api/v1/legal/reminders/run-due")
 
-    assert response.json()["data"] == {"sent": 0, "failed": 1, "retrying": 0, "total": 1}
+    assert response.json()["data"] == {"sent": 0, "simulated": 0, "failed": 1, "retrying": 0, "total": 1}
     reminder = db_session.get(Reminder, reminder_id)
     assert reminder.status == "failed"
     assert reminder.retry_count == 1
@@ -136,7 +136,7 @@ def test_target_userid_is_passed_as_mentioned_userids(db_session):
     result = ReminderService(db_session, wecom_adapter=FakeWeComAdapter()).send_due_reminders()
     db_session.commit()
 
-    assert result == {"sent": 1, "failed": 0, "retrying": 0, "total": 1}
+    assert result == {"sent": 0, "simulated": 1, "failed": 0, "retrying": 0, "total": 1}
     assert captured["mentioned_userids"] == ["lawyer_001"]
     assert captured["mentioned_mobiles"] is None
 
@@ -155,4 +155,4 @@ def test_run_due_stats_include_sent_failed_retrying_total(client, monkeypatch):
     response = client.post("/api/v1/legal/reminders/run-due")
 
     assert response.status_code == 200
-    assert response.json()["data"] == {"sent": 1, "failed": 0, "retrying": 1, "total": 2}
+    assert response.json()["data"] == {"sent": 1, "simulated": 0, "failed": 0, "retrying": 1, "total": 2}

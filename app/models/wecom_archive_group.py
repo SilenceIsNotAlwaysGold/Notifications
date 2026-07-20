@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Integer, String
+from sqlalchemy import Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.session import Base
@@ -17,6 +17,11 @@ class WeComArchiveGroup(Base):
     display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     tenant_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(32), default="discovered", index=True)
+    group_type: Mapped[str] = mapped_column(String(32), default="other", index=True)
+    features_json: Mapped[str] = mapped_column(Text, default="{}")
+    internal_userids_json: Mapped[str] = mapped_column(Text, default="[]")
+    alert_userids_json: Mapped[str] = mapped_column(Text, default="[]")
+    question_timeout_minutes: Mapped[int] = mapped_column(Integer, default=5)
     seen_message_count: Mapped[int] = mapped_column(Integer, default=0)
     first_seen_at: Mapped[datetime | None] = mapped_column(AwareDateTime, nullable=True)
     last_seen_at: Mapped[datetime | None] = mapped_column(AwareDateTime, nullable=True)

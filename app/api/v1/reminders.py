@@ -4,9 +4,10 @@ from sqlalchemy.orm import Session
 from app.api.deps_auth import get_current_operator
 from app.api.v1.response import ok
 from app.api.v1.response import raise_fail
-from app.core.resource_permissions import allowed_tenant_ids, filter_by_case_or_group, has_case_access, has_group_access, has_tenant_data_access
+from app.core.resource_permissions import allowed_tenant_ids, filter_by_case_or_group, has_case_access, has_group_access, has_reminder_access, has_tenant_data_access
 from app.db.session import get_db
-from app.schemas.legal import CustomReminderCreate, ReminderListOut, ReminderOut, RunDueOut
+from app.models.reminder import Reminder
+from app.schemas.legal import CustomReminderCreate, CustomReminderUpdate, ReminderCancel, ReminderListOut, ReminderOut, RunDueOut
 from app.services.reminder_service import ReminderService
 
 router = APIRouter(prefix="/legal/reminders", tags=["legal-reminders"])
@@ -38,6 +39,54 @@ def create_custom_reminder(
     )
     db.commit()
     return ok("自定义提醒创建成功", ReminderOut.model_validate(reminder))
+
+
+@router.patch("/{reminder_id}")
+def update_custom_reminder(
+    reminder_id: int,
+    payload: CustomReminderUpdate,
+    db: Session = Depends(get_db),
+    operator_info: dict[str, object] = Depends(get_current_operator),
+):
+    reminder = db.get(Reminder, reminder_id)
+    if not reminder:
+        raise_fail("提醒不存在", code=1404, status_code=404)
+    if not has_reminder_access(db, operator_info, reminder):
+        raise_fail("无权限访问该资源", code=403, status_code=403)
+    try:
+        reminder = ReminderService(db).update_custom_reminder(
+            reminder,
+            remind_at=payload.remind_at,
+            content=payload.content,
+            target_userid=payload.target_userid,
+            fields_set=payload.model_fields_set,
+        )
+        db.commit()
+    except ValueError as exc:
+        db.rollback()
+        raise_fail(str(exc), code=1400)
+    return ok("自定义提醒更新成功", ReminderOut.model_validate(reminder))
+
+
+@router.post("/{reminder_id}/cancel")
+def cancel_reminder(
+    reminder_id: int,
+    payload: ReminderCancel,
+    db: Session = Depends(get_db),
+    operator_info: dict[str, object] = Depends(get_current_operator),
+):
+    reminder = db.get(Reminder, reminder_id)
+    if not reminder:
+        raise_fail("提醒不存在", code=1404, status_code=404)
+    if not has_reminder_access(db, operator_info, reminder):
+        raise_fail("无权限访问该资源", code=403, status_code=403)
+    try:
+        reminder = ReminderService(db).cancel_reminder(reminder, payload.reason, str(operator_info["operator"]))
+        db.commit()
+    except ValueError as exc:
+        db.rollback()
+        raise_fail(str(exc), code=1400)
+    return ok("提醒已取消", ReminderOut.model_validate(reminder))
 
 
 @router.post("/run-due")

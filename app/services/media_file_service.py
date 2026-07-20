@@ -22,6 +22,7 @@ from app.services.ocr_service import OCRService
 from app.services.reminder_service import ReminderService
 from app.services.system_run_log_service import SystemRunLogService
 from app.services.tenant_settings_service import TenantSettingsService
+from app.services.wecom_archive_group_service import WeComArchiveGroupService
 from app.utils.datetime_utils import now_tz
 from app.utils.media_storage import MediaStorage
 
@@ -396,11 +397,12 @@ class MediaFileService:
     ) -> dict[str, int]:
         if media_file.business_applied_at is not None:
             return {"created_reminders": 0, "cancelled_reminders": 0}
-        self.document_sync.sync_archive_event(event, media_file=media_file)
-        self._sync_kdocs_business(event, media_file, result, matched_case)
+        if WeComArchiveGroupService(self.db).feature_enabled(media_file.group_id, "document_sync"):
+            self.document_sync.sync_archive_event(event, media_file=media_file)
+            self._sync_kdocs_business(event, media_file, result, matched_case)
         created_reminders = 0
         cancelled_reminders = 0
-        if matched_case and result.get("event_type") == "payment_notice" and self._payment_tracking_enabled(matched_case.tenant_id):
+        if matched_case and result.get("event_type") == "payment_notice" and self._payment_tracking_enabled(matched_case.tenant_id, media_file.group_id):
             created_reminders = self._create_ocr_payment_tracking_once(matched_case, media_file, event.id)
         if matched_case and result.get("event_type") == "payment_screenshot":
             if result.get("amount") is not None:
@@ -464,7 +466,14 @@ class MediaFileService:
         )
         if existing:
             return 0
-        reminders = self.reminder_service.create_payment_tracking(legal_case.id, start_date=now_tz().date(), days=7)
+        source_event = self.db.get(LegalEvent, event_id)
+        reminders = self.reminder_service.create_payment_tracking(
+            legal_case.id,
+            start_date=now_tz().date(),
+            days=7,
+            source_event_id=event_id,
+            payment_amount=source_event.amount if source_event else None,
+        )
         marker = f" OCR:{media_file.group_message_id}:payment_notice:event:{event_id}"
         for reminder in reminders:
             reminder.content = f"{reminder.content}{marker}"
@@ -572,9 +581,12 @@ class MediaFileService:
     def _case_no(result: dict[str, Any], legal_case: LegalCase | None) -> str | None:
         return result.get("case_no") or (legal_case.case_no if legal_case else None)
 
-    def _payment_tracking_enabled(self, tenant_id: str | None) -> bool:
+    def _payment_tracking_enabled(self, tenant_id: str | None, group_id: str) -> bool:
         effective = TenantSettingsService(self.db).get_effective_settings(tenant_id)
-        return bool(effective["feature_flags"].get("enable_payment_tracking", True))
+        return bool(effective["feature_flags"].get("enable_payment_tracking", True)) and WeComArchiveGroupService(self.db).feature_enabled(
+            group_id,
+            "payment_tracking",
+        )
 
     @staticmethod
     def _ocr_summary(

@@ -8,11 +8,13 @@ from app.api.v1 import (
     events,
     health,
     media_files,
+    merchant_questions,
     messages,
     observability,
     ocr_reviews,
     operation_audit_logs,
     reminders,
+    reminder_rules,
     tenants,
     tenant_settings,
     wecom_archive,
@@ -25,6 +27,8 @@ legal_dependencies = [Depends(get_current_operator)]
 api_router.include_router(cases.router, dependencies=legal_dependencies)
 api_router.include_router(messages.router, dependencies=legal_dependencies)
 api_router.include_router(reminders.router, dependencies=legal_dependencies)
+api_router.include_router(reminder_rules.router, dependencies=legal_dependencies)
+api_router.include_router(merchant_questions.router, dependencies=legal_dependencies)
 api_router.include_router(events.router, dependencies=legal_dependencies)
 api_router.include_router(wecom_archive.router, dependencies=legal_dependencies)
 api_router.include_router(media_files.router, dependencies=legal_dependencies)

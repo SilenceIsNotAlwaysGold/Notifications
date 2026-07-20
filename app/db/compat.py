@@ -18,6 +18,8 @@ def ensure_sqlite_compat_columns(engine: Engine) -> None:
     _ensure_legal_case_columns(engine, inspector)
     _ensure_document_sync_log_columns(engine, inspector)
     _ensure_media_review_columns(engine, inspector)
+    _ensure_reminder_rule_columns(engine, inspector)
+    _ensure_archive_group_feature_columns(engine, inspector)
 
 
 def _ensure_legal_case_columns(engine: Engine, inspector) -> None:
@@ -75,3 +77,35 @@ def _ensure_media_review_columns(engine: Engine, inspector) -> None:
         for column_name, column_type in columns.items():
             if column_name not in column_names:
                 connection.execute(text(f"ALTER TABLE legal_media_files ADD COLUMN {column_name} {column_type}"))
+
+
+def _ensure_reminder_rule_columns(engine: Engine, inspector) -> None:
+    if "reminders" not in inspector.get_table_names():
+        return
+    column_names = {column["name"] for column in inspector.get_columns("reminders")}
+    columns = {
+        "rule_id": "INTEGER",
+        "source_event_id": "INTEGER",
+        "dedupe_key": "VARCHAR(255)",
+    }
+    with engine.begin() as connection:
+        for column_name, column_type in columns.items():
+            if column_name not in column_names:
+                connection.execute(text(f"ALTER TABLE reminders ADD COLUMN {column_name} {column_type}"))
+
+
+def _ensure_archive_group_feature_columns(engine: Engine, inspector) -> None:
+    if "wecom_archive_groups" not in inspector.get_table_names():
+        return
+    column_names = {column["name"] for column in inspector.get_columns("wecom_archive_groups")}
+    columns = {
+        "group_type": "VARCHAR(32) DEFAULT 'other'",
+        "features_json": "TEXT DEFAULT '{}'",
+        "internal_userids_json": "TEXT DEFAULT '[]'",
+        "alert_userids_json": "TEXT DEFAULT '[]'",
+        "question_timeout_minutes": "INTEGER DEFAULT 5",
+    }
+    with engine.begin() as connection:
+        for column_name, column_type in columns.items():
+            if column_name not in column_names:
+                connection.execute(text(f"ALTER TABLE wecom_archive_groups ADD COLUMN {column_name} {column_type}"))
