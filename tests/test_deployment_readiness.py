@@ -155,6 +155,49 @@ def test_tencent_doc_real_without_token_or_sheet_id_returns_config_error(monkeyp
     get_settings.cache_clear()
 
 
+def test_kdocs_mcp_real_requires_core_target_files(monkeypatch, tmp_path):
+    monkeypatch.setenv("KDOCS_MODE", "real")
+    monkeypatch.setenv("KDOCS_TRANSPORT", "mcp")
+    monkeypatch.setenv("KDOCS_ACCESS_TOKEN", "test-token")
+    monkeypatch.setenv("KDOCS_MCP_URL", "https://mcp.kdocs.test")
+    monkeypatch.setenv("KDOCS_MCP_CLIENT_ID", "client-001")
+    monkeypatch.setenv("KDOCS_DRIVE_ID", "drive-001")
+    monkeypatch.setenv("KDOCS_ENFORCEMENT_FILE_ID", "")
+    monkeypatch.setenv("KDOCS_COURT_TIME_FILE_ID", "")
+    monkeypatch.setenv("MEDIA_STORAGE_DIR", str(tmp_path / "media"))
+    get_settings.cache_clear()
+
+    result = validate_runtime_config(get_settings())
+
+    assert result["ok"] is False
+    assert "KDOCS_ENFORCEMENT_FILE_ID" in _messages(result)
+    assert "KDOCS_COURT_TIME_FILE_ID" in _messages(result)
+    get_settings.cache_clear()
+
+
+def test_kdocs_mcp_real_core_ready_warns_only_for_payment_target(monkeypatch, tmp_path):
+    monkeypatch.setenv("KDOCS_MODE", "real")
+    monkeypatch.setenv("KDOCS_TRANSPORT", "mcp")
+    monkeypatch.setenv("KDOCS_ACCESS_TOKEN", "test-token")
+    monkeypatch.setenv("KDOCS_MCP_URL", "https://mcp.kdocs.test")
+    monkeypatch.setenv("KDOCS_MCP_CLIENT_ID", "client-001")
+    monkeypatch.setenv("KDOCS_DRIVE_ID", "drive-001")
+    monkeypatch.setenv("KDOCS_ENFORCEMENT_FILE_ID", "enforcement-file")
+    monkeypatch.setenv("KDOCS_COURT_TIME_FILE_ID", "court-file")
+    monkeypatch.setenv("KDOCS_PAYMENT_FILE_ID", "")
+    monkeypatch.setenv("MEDIA_STORAGE_DIR", str(tmp_path / "media"))
+    get_settings.cache_clear()
+
+    result = validate_runtime_config(get_settings())
+
+    kdocs_item = next(item for item in result["items"] if item["name"] == "KDOCS_MODE")
+    payment_item = next(item for item in result["items"] if item["name"] == "KDOCS_PAYMENT_FILE_ID")
+    assert kdocs_item["status"] == "ok"
+    assert "real/mcp" in kdocs_item["message"]
+    assert payment_item["status"] == "warning"
+    get_settings.cache_clear()
+
+
 def test_wecom_archive_real_without_sidecar_returns_config_error(monkeypatch, tmp_path):
     monkeypatch.setenv("WECOM_ARCHIVE_MODE", "real")
     monkeypatch.setenv("WECOM_CORP_ID", "wwxxxx")

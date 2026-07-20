@@ -1,6 +1,6 @@
 # 金山文档封装网关协议
 
-主服务不直接绑定金山官方 API 细节，`KDOCS_MODE=real` 时统一请求封装网关：
+本协议仅用于兼容 `KDOCS_MODE=real` 且 `KDOCS_TRANSPORT=gateway` 的历史部署。当前项目优先使用 `KDOCS_TRANSPORT=mcp`，见 `docs/kdocs_mcp_integration.md`。
 
 ```env
 KDOCS_BASE_URL=https://your-kdocs-gateway.example.com

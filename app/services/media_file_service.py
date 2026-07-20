@@ -545,6 +545,10 @@ class MediaFileService:
             "文书类型": result.get("document_type"),
             "文件名": target_filename,
             "文件链接": upload_url or media_file.public_url or media_file.local_path,
+            "应还款时间": legal_case.due_date.isoformat() if legal_case else None,
+            "总金额": str(legal_case.total_amount) if legal_case else None,
+            "已还欠款": str(legal_case.paid_amount) if legal_case else None,
+            "案件状态": legal_case.status if legal_case else None,
             "识别摘要": (result.get("raw_text") or result.get("extracted_text") or "")[:500],
             "需人工复核": bool(result.get("requires_review")),
             "消息ID": media_file.msg_id,
@@ -554,8 +558,10 @@ class MediaFileService:
         court_time = result.get("court_time") or result.get("event_time")
         return {
             "案号": self._case_no(result, legal_case),
+            "原告": result.get("plaintiff"),
             "被告": legal_case.debtor_name if legal_case else result.get("defendant"),
             "开庭时间": court_time.isoformat() if hasattr(court_time, "isoformat") else court_time,
+            "金额": str(legal_case.total_amount) if legal_case else None,
             "文件链接": media_file.public_url or media_file.local_path,
             "识别摘要": (result.get("raw_text") or result.get("extracted_text") or "")[:500],
             "需人工复核": bool(result.get("requires_review")),

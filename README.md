@@ -965,9 +965,20 @@ LEGAL_LLM_FALLBACK_TO_REGEX=true
 
 ```env
 KDOCS_MODE=mock
-KDOCS_BASE_URL=
+KDOCS_TRANSPORT=mcp
 KDOCS_ACCESS_TOKEN=
-KDOCS_SPACE_ID=
+KDOCS_MCP_URL=https://mcp-center.wps.cn/skill_hub/mcp
+KDOCS_MCP_SKILL_VERSION=1.3.6
+KDOCS_MCP_CLIENT_ID=1c0529f7fbdcf731
+KDOCS_DRIVE_ID=2619775069
+KDOCS_ENFORCEMENT_FILE_ID=rNP24MBx3rMritppkrG7xxdBx8CtRoS4Z
+KDOCS_ENFORCEMENT_WORKSHEET_ID=10
+KDOCS_COURT_TIME_FILE_ID=2XZuheYq9xMWaLC6M2k1Bx54U98t13fsY
+KDOCS_COURT_TIME_WORKSHEET_ID=1
+KDOCS_PAYMENT_FILE_ID=
+KDOCS_PAYMENT_WORKSHEET_ID=1
+KDOCS_JUDGMENT_PARENT_ID=0
+KDOCS_JUDGMENT_PARENT_PATH=致和法务/判决书文件
 KDOCS_JUDGMENT_FOLDER_ID=致和法务/判决书文件
 KDOCS_COURT_TIME_SHEET_ID=致和法务/开庭时间
 KDOCS_ENFORCEMENT_SHEET_ID=致和法务/强制执行进度表格
@@ -975,7 +986,15 @@ KDOCS_PAYMENT_SHEET_ID=致和法务/缴费登记
 KDOCS_CASE_SHEET_ID=致和法务/案件台账
 ```
 
-`KDOCS_MODE=real` 时必须配置 `KDOCS_BASE_URL`、`KDOCS_ACCESS_TOKEN`、`KDOCS_SPACE_ID`。当前适配器会向 `{KDOCS_BASE_URL}/kdocs/{operation}` 发起请求，可直接指向金山文档官方 API 封装网关；网关协议见 [docs/kdocs_gateway_contract.md](docs/kdocs_gateway_contract.md)。
+本项目优先使用 `KDOCS_TRANSPORT=mcp`。强制执行进度按民初案号更新已有行或新增行，开庭传票新增后按 B 列开庭时间升序重排，字段按固定列号写入，不依赖重复或易变的中文表头。MCP 配置、真实文件映射和验收方法见 [docs/kdocs_mcp_integration.md](docs/kdocs_mcp_integration.md)。
+
+旧的封装网关仍可通过 `KDOCS_TRANSPORT=gateway` 使用，此时需要 `KDOCS_BASE_URL`、`KDOCS_ACCESS_TOKEN`、`KDOCS_SPACE_ID`，协议见 [docs/kdocs_gateway_contract.md](docs/kdocs_gateway_contract.md)。
+
+真实写入前可执行只读检查，不会修改金山文档：
+
+```bash
+uv run --with-requirements requirements.txt python scripts/check_kdocs_mcp.py
+```
 
 ## 腾讯文档同步
 

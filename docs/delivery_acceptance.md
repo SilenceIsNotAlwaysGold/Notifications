@@ -87,12 +87,20 @@ KDOCS_MODE=mock
 
 ```env
 KDOCS_MODE=real
-KDOCS_BASE_URL=https://your-kdocs-gateway.example.com
+KDOCS_TRANSPORT=mcp
 KDOCS_ACCESS_TOKEN=***
-KDOCS_SPACE_ID=***
+KDOCS_MCP_URL=https://mcp-center.wps.cn/skill_hub/mcp
+KDOCS_MCP_CLIENT_ID=***
+KDOCS_DRIVE_ID=***
+KDOCS_ENFORCEMENT_FILE_ID=***
+KDOCS_ENFORCEMENT_WORKSHEET_ID=10
+KDOCS_COURT_TIME_FILE_ID=***
+KDOCS_COURT_TIME_WORKSHEET_ID=1
+KDOCS_PAYMENT_FILE_ID=***
+KDOCS_PAYMENT_WORKSHEET_ID=1
 ```
 
-当前服务会向 `{KDOCS_BASE_URL}/kdocs/{operation}` 发起请求，建议先通过封装网关对接金山文档官方 API。网关协议见 `docs/kdocs_gateway_contract.md`。
+MCP 真实对接、固定列映射和安全边界见 `docs/kdocs_mcp_integration.md`。旧封装网关仍可通过 `KDOCS_TRANSPORT=gateway` 使用，协议见 `docs/kdocs_gateway_contract.md`。
 
 ### 企业微信会话存档
 

@@ -74,6 +74,19 @@ def _validate_database_url(settings: Settings, result: dict[str, Any]) -> None:
 
 
 def _missing_kdocs_settings(settings: Settings) -> list[str]:
+    if settings.kdocs_transport == "mcp":
+        return [
+            name
+            for name, value in {
+                "KDOCS_MCP_URL": settings.kdocs_mcp_url,
+                "KDOCS_MCP_CLIENT_ID": settings.kdocs_mcp_client_id,
+                "KDOCS_ACCESS_TOKEN": settings.kdocs_access_token,
+                "KDOCS_DRIVE_ID": settings.kdocs_drive_id,
+                "KDOCS_ENFORCEMENT_FILE_ID": settings.kdocs_enforcement_file_id,
+                "KDOCS_COURT_TIME_FILE_ID": settings.kdocs_court_time_file_id,
+            }.items()
+            if not value
+        ]
     return [
         name
         for name, value in {
@@ -209,10 +222,14 @@ def validate_runtime_config(settings: Settings) -> dict[str, Any]:
         missing = _missing_kdocs_settings(settings)
         if missing:
             _add_item(result, "KDOCS_MODE", "error", f"KDOCS_MODE=real 时缺少配置：{', '.join(missing)}")
-        elif urlparse(settings.kdocs_base_url or "").scheme not in {"http", "https"}:
+        elif settings.kdocs_transport == "gateway" and urlparse(settings.kdocs_base_url or "").scheme not in {"http", "https"}:
             _add_item(result, "KDOCS_MODE", "error", "KDOCS_BASE_URL 必须是 http 或 https URL")
+        elif settings.kdocs_transport == "mcp" and urlparse(settings.kdocs_mcp_url or "").scheme != "https":
+            _add_item(result, "KDOCS_MODE", "error", "KDOCS_MCP_URL 必须是 https URL")
         else:
-            _add_item(result, "KDOCS_MODE", "ok", "金山文档 real 模式必要配置已提供")
+            _add_item(result, "KDOCS_MODE", "ok", f"金山文档 real/{settings.kdocs_transport} 模式必要配置已提供")
+            if settings.kdocs_transport == "mcp" and not settings.kdocs_payment_file_id:
+                _add_item(result, "KDOCS_PAYMENT_FILE_ID", "warning", "缴费登记表尚未配置，缴费同步会明确失败并保留重试日志")
 
     if settings.ocr_provider == "mock":
         _add_item(result, "OCR_PROVIDER", "ok", "OCR 为 mock 模式")
