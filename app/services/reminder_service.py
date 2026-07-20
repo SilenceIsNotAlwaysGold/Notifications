@@ -110,6 +110,23 @@ class ReminderService:
         self.db.flush()
         return reminders
 
+    def cancel_pending_payment_tracking(self, case_id: int, reason: str) -> int:
+        reminders = list(
+            self.db.scalars(
+                select(Reminder)
+                .where(Reminder.case_id == case_id)
+                .where(Reminder.reminder_type == "payment_tracking")
+                .where(Reminder.status == "pending")
+            ).all()
+        )
+        cancelled_at = now_tz()
+        for reminder in reminders:
+            reminder.status = "cancelled"
+            reminder.cancelled_at = cancelled_at
+            reminder.cancel_reason = reason
+        self.db.flush()
+        return len(reminders)
+
     def send_due_reminders(self, trigger_type: str = "system", operator: str | None = None) -> dict[str, object]:
         run_service = SystemRunLogService(self.db)
         run_log = run_service.start_run("reminder_send", trigger_type, summary={"operator": operator} if operator else None)

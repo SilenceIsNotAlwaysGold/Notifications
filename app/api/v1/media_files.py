@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy.orm import Session
 
 from app.api.deps_auth import get_current_operator
@@ -54,6 +54,28 @@ def download_media_file(media_file_id: int, db: Session = Depends(get_db)):
     return ok("媒体文件下载处理完成", data)
 
 
+@router.get("/{media_file_id}/content")
+def preview_media_file(
+    media_file_id: int,
+    db: Session = Depends(get_db),
+    operator_info: dict[str, object] = Depends(get_current_operator),
+):
+    media_file = db.get(MediaFile, media_file_id)
+    if not media_file:
+        raise_fail("媒体文件不存在", code=1404, status_code=404)
+    if not has_media_access(db, operator_info, media_file):
+        raise_fail("无权限访问该资源", code=403, status_code=403)
+    if not media_file.local_path:
+        raise_fail("媒体文件尚未下载", code=1404, status_code=404)
+    try:
+        path = MediaFileService(db).storage.resolve_local_path(media_file.local_path)
+    except ValueError as exc:
+        raise_fail(str(exc), code=403, status_code=403)
+    if not path.is_file():
+        raise_fail("媒体文件不存在", code=1404, status_code=404)
+    return FileResponse(path, media_type=media_file.mime_type or "application/octet-stream")
+
+
 @router.post("/{media_file_id}/ocr")
 def process_media_ocr(
     media_file_id: int,
@@ -82,6 +104,8 @@ def process_media_ocr(
             parser=result.get("parser"),
             llm_status=result.get("llm_status"),
             created_reminders=result.get("created_reminders") or 0,
+            review_status=result.get("review_status") or "not_required",
+            business_applied=bool(result.get("business_applied")),
         )
         db.commit()
     except ValueError as exc:

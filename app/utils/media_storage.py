@@ -43,6 +43,9 @@ class MediaStorage:
     def file_exists(self, local_path: str) -> bool:
         return self._assert_inside_root(local_path).exists()
 
+    def resolve_local_path(self, local_path: str) -> Path:
+        return self._assert_inside_root(local_path)
+
     def get_public_url(self, local_path: str) -> str | None:
         if not self.public_base_url:
             return None

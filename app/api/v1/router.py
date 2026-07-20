@@ -10,6 +10,7 @@ from app.api.v1 import (
     media_files,
     messages,
     observability,
+    ocr_reviews,
     operation_audit_logs,
     reminders,
     tenants,
@@ -27,6 +28,7 @@ api_router.include_router(reminders.router, dependencies=legal_dependencies)
 api_router.include_router(events.router, dependencies=legal_dependencies)
 api_router.include_router(wecom_archive.router, dependencies=legal_dependencies)
 api_router.include_router(media_files.router, dependencies=legal_dependencies)
+api_router.include_router(ocr_reviews.router, dependencies=legal_dependencies)
 api_router.include_router(document_sync_logs.router, dependencies=legal_dependencies)
 api_router.include_router(observability.router, dependencies=legal_dependencies)
 api_router.include_router(operation_audit_logs.router, dependencies=legal_dependencies)

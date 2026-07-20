@@ -1,6 +1,8 @@
 import json
 import logging
 import re
+from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -102,6 +104,32 @@ class MediaFileService:
         run_service = SystemRunLogService(self.db)
         run_log = run_service.start_run("ocr_process", trigger_type, summary={"media_file_id": media_file_id, **({"operator": operator} if operator else {})})
         media_file = self._get_media_file(media_file_id)
+        if media_file.business_applied_at is not None:
+            result = self._load_result(media_file.review_result_json or media_file.ocr_result_json)
+            summary = self._ocr_summary(
+                media_file,
+                event_id=media_file.review_event_id,
+                matched_case_id=media_file.case_id,
+                event_type=result.get("event_type"),
+                amount=result.get("amount"),
+                result=result,
+                message="该材料业务已执行，禁止普通重跑",
+            )
+            run_service.finish_success(run_log, summary=self._run_summary(summary), total_count=1, success_count=1, failed_count=0)
+            return summary
+        if media_file.review_status in {"approved", "corrected", "rejected"}:
+            result = self._load_result(media_file.review_result_json or media_file.ocr_result_json)
+            summary = self._ocr_summary(
+                media_file,
+                event_id=media_file.review_event_id,
+                matched_case_id=media_file.case_id,
+                event_type=result.get("event_type"),
+                amount=result.get("amount"),
+                result=result,
+                message="该材料复核已结束，禁止普通重跑",
+            )
+            run_service.finish_success(run_log, summary=self._run_summary(summary), total_count=1, success_count=1, failed_count=0)
+            return summary
         if media_file.ocr_status == "processed" and not get_settings().ocr_enable_reprocess:
             summary = self._ocr_summary(media_file, message="OCR 已处理，当前配置不允许重复处理")
             run_service.finish_success(run_log, summary=self._run_summary(summary), total_count=1, success_count=1, failed_count=0)
@@ -128,7 +156,10 @@ class MediaFileService:
                 return summary
 
             extracted_text = result.get("raw_text") or result.get("extracted_text") or ""
+            result["requires_review"] = self._result_requires_review(result)
             media_file.extracted_text = extracted_text
+            media_file.ocr_result_json = self._dump_result(result)
+            media_file.review_result_json = None
             media_file.metadata_json = json.dumps(
                 {
                     **(result.get("metadata") or {}),
@@ -142,6 +173,7 @@ class MediaFileService:
             media_file.last_error = None
             event = None
             created_reminders = 0
+            cancelled_reminders = 0
             matched_case = self.case_service.find_case_for_message(
                 result.get("case_no"),
                 media_file.group_id,
@@ -152,13 +184,16 @@ class MediaFileService:
                 media_file.tenant_id = matched_case.tenant_id or media_file.tenant_id
                 self._backfill_group_message_events(media_file, matched_case.id, media_file.tenant_id)
             if extracted_text:
-                event = self._create_ocr_event(media_file, result)
-                self.document_sync.sync_archive_event(event, media_file=media_file)
-                self._sync_kdocs_business(event, media_file, result, matched_case)
-                if matched_case and result.get("event_type") == "payment_notice" and self._payment_tracking_enabled(matched_case.tenant_id):
-                    created_reminders = self._create_ocr_payment_tracking_once(matched_case, media_file, event.id)
-                if matched_case and result.get("event_type") == "payment_screenshot" and result.get("amount") is not None:
-                    self.case_service.update_paid_amount(matched_case, result["amount"])
+                event = self._upsert_ocr_event(media_file, result)
+                media_file.review_event_id = event.id
+                if result["requires_review"]:
+                    media_file.review_status = "pending"
+                else:
+                    media_file.review_status = "not_required"
+                    media_file.review_result_json = media_file.ocr_result_json
+                    applied = self._apply_ocr_business(media_file, event, result, matched_case)
+                    created_reminders = applied["created_reminders"]
+                    cancelled_reminders = applied["cancelled_reminders"]
         except Exception as exc:
             logger.exception("媒体 OCR 处理失败 media_file_id=%s", media_file.id)
             media_file.ocr_status = "failed"
@@ -177,8 +212,90 @@ class MediaFileService:
             result=result,
             created_reminders=created_reminders,
         )
+        summary["cancelled_reminders"] = cancelled_reminders
         run_service.finish_success(run_log, summary=self._run_summary(summary), total_count=1, success_count=1, failed_count=0)
         return summary
+
+    def list_ocr_reviews(
+        self,
+        review_status: str | None = None,
+        group_id: str | None = None,
+        case_id: int | None = None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> tuple[int, list[MediaFile]]:
+        query = select(MediaFile).where(MediaFile.ocr_result_json.is_not(None))
+        if review_status:
+            query = query.where(MediaFile.review_status == review_status)
+        if group_id:
+            query = query.where(MediaFile.group_id == group_id)
+        if case_id is not None:
+            query = query.where(MediaFile.case_id == case_id)
+        items = list(self.db.scalars(query.order_by(MediaFile.updated_at.desc(), MediaFile.id.desc())).all())
+        start = (page - 1) * page_size
+        return len(items), items[start : start + page_size]
+
+    def decide_ocr_review(
+        self,
+        media_file_id: int,
+        decision: str,
+        operator: str,
+        note: str | None = None,
+        corrections: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        media_file = self._get_media_file(media_file_id)
+        if media_file.review_status != "pending":
+            if media_file.review_status in {"approved", "corrected", "rejected"}:
+                return {
+                    "media_file": media_file,
+                    "already_decided": True,
+                    "created_reminders": 0,
+                    "cancelled_reminders": 0,
+                }
+            raise ValueError("该材料当前不需要人工复核")
+
+        result = self._load_result(media_file.ocr_result_json)
+        if decision == "rejected":
+            media_file.review_status = "rejected"
+            media_file.reviewed_by = operator
+            media_file.reviewed_at = now_tz()
+            media_file.review_note = note
+            media_file.review_result_json = self._dump_result(result)
+            self.db.flush()
+            return {
+                "media_file": media_file,
+                "already_decided": False,
+                "created_reminders": 0,
+                "cancelled_reminders": 0,
+            }
+
+        if decision == "corrected":
+            for key, value in (corrections or {}).items():
+                result[key] = value
+        result["requires_review"] = False
+        result.setdefault("metadata", {})["review_decision"] = decision
+        result["metadata"]["reviewed_by"] = operator
+        result["metadata"]["reviewed_at"] = now_tz().isoformat()
+
+        matched_case = self.case_service.find_case_for_message(
+            result.get("case_no"),
+            media_file.group_id,
+            media_file.tenant_id,
+        )
+        if matched_case:
+            media_file.case_id = matched_case.id
+            media_file.tenant_id = matched_case.tenant_id or media_file.tenant_id
+            self._backfill_group_message_events(media_file, matched_case.id, media_file.tenant_id)
+        event = self._upsert_ocr_event(media_file, result)
+        media_file.review_event_id = event.id
+        media_file.review_status = decision
+        media_file.reviewed_by = operator
+        media_file.reviewed_at = now_tz()
+        media_file.review_note = note
+        media_file.review_result_json = self._dump_result(result)
+        applied = self._apply_ocr_business(media_file, event, result, matched_case)
+        self.db.flush()
+        return {"media_file": media_file, "already_decided": False, **applied}
 
     def list_media_files(
         self,
@@ -239,35 +356,88 @@ class MediaFileService:
             "md5sum": file_payload.get("md5sum"),
         }
 
-    def _create_ocr_event(self, media_file: MediaFile, result: dict[str, Any]) -> LegalEvent:
-        event = LegalEvent(
-            case_id=media_file.case_id,
-            tenant_id=media_file.tenant_id,
-            group_message_id=media_file.group_message_id,
-            event_type=result.get("event_type") or "unknown",
-            event_time=result.get("event_time") or now_tz(),
-            amount=result.get("amount"),
-            extracted_text=result.get("raw_text") or result.get("extracted_text"),
-            metadata_json=json.dumps(
-                {
-                    "source": "media_ocr",
-                    "media_file_id": media_file.id,
-                    "provider": result.get("provider"),
-                    "confidence": result.get("confidence"),
-                    "document_type": result.get("document_type"),
-                    "plaintiff": result.get("plaintiff"),
-                    "defendant": result.get("defendant"),
-                    "court_time": result.get("court_time"),
-                    "requires_review": bool(result.get("requires_review")),
-                    **(result.get("metadata") or {}),
-                },
-                ensure_ascii=False,
-                default=str,
-            ),
+    def _upsert_ocr_event(self, media_file: MediaFile, result: dict[str, Any]) -> LegalEvent:
+        event = self.db.get(LegalEvent, media_file.review_event_id) if media_file.review_event_id else None
+        if event is None:
+            event = LegalEvent(group_message_id=media_file.group_message_id, event_type="unknown", metadata_json="{}")
+            self.db.add(event)
+        event.case_id = media_file.case_id
+        event.tenant_id = media_file.tenant_id
+        event.event_type = result.get("event_type") or "unknown"
+        event.event_time = result.get("court_time") or result.get("event_time") or event.event_time or now_tz()
+        event.amount = result.get("amount")
+        event.extracted_text = result.get("raw_text") or result.get("extracted_text") or media_file.extracted_text
+        event.metadata_json = json.dumps(
+            {
+                "source": "media_ocr",
+                "media_file_id": media_file.id,
+                "case_no": result.get("case_no"),
+                "provider": result.get("provider"),
+                "confidence": result.get("confidence"),
+                "document_type": result.get("document_type"),
+                "plaintiff": result.get("plaintiff"),
+                "defendant": result.get("defendant"),
+                "court_time": result.get("court_time"),
+                "requires_review": bool(result.get("requires_review")),
+                **(result.get("metadata") or {}),
+            },
+            ensure_ascii=False,
+            default=str,
         )
-        self.db.add(event)
         self.db.flush()
         return event
+
+    def _apply_ocr_business(
+        self,
+        media_file: MediaFile,
+        event: LegalEvent,
+        result: dict[str, Any],
+        matched_case: LegalCase | None,
+    ) -> dict[str, int]:
+        if media_file.business_applied_at is not None:
+            return {"created_reminders": 0, "cancelled_reminders": 0}
+        self.document_sync.sync_archive_event(event, media_file=media_file)
+        self._sync_kdocs_business(event, media_file, result, matched_case)
+        created_reminders = 0
+        cancelled_reminders = 0
+        if matched_case and result.get("event_type") == "payment_notice" and self._payment_tracking_enabled(matched_case.tenant_id):
+            created_reminders = self._create_ocr_payment_tracking_once(matched_case, media_file, event.id)
+        if matched_case and result.get("event_type") == "payment_screenshot":
+            if result.get("amount") is not None:
+                self.case_service.update_paid_amount(matched_case, result["amount"])
+            cancelled_reminders = self.reminder_service.cancel_pending_payment_tracking(
+                matched_case.id,
+                f"付款完成材料已确认（媒体 {media_file.id}）",
+            )
+        media_file.business_applied_at = now_tz()
+        self.db.flush()
+        return {"created_reminders": created_reminders, "cancelled_reminders": cancelled_reminders}
+
+    @staticmethod
+    def _result_requires_review(result: dict[str, Any]) -> bool:
+        return bool(result.get("requires_review")) or (result.get("event_type") or "unknown") == "unknown"
+
+    @staticmethod
+    def _dump_result(result: dict[str, Any]) -> str:
+        return json.dumps(result, ensure_ascii=False, default=str)
+
+    @staticmethod
+    def _load_result(raw: str | None) -> dict[str, Any]:
+        if not raw:
+            return {}
+        result = json.loads(raw)
+        if result.get("amount") is not None:
+            result["amount"] = Decimal(str(result["amount"]))
+        if isinstance(result.get("amounts"), list):
+            result["amounts"] = [Decimal(str(value)) for value in result["amounts"]]
+        for key in ("court_time", "event_time"):
+            value = result.get(key)
+            if isinstance(value, str):
+                try:
+                    result[key] = datetime.fromisoformat(value)
+                except ValueError:
+                    pass
+        return result
 
     def _backfill_group_message_events(self, media_file: MediaFile, case_id: int, tenant_id: str | None) -> None:
         if media_file.group_message_id is None:
@@ -437,6 +607,8 @@ class MediaFileService:
             "parser": ((result or {}).get("metadata") or {}).get("parser"),
             "llm_status": ((result or {}).get("metadata") or {}).get("llm_status"),
             "created_reminders": created_reminders,
+            "review_status": media_file.review_status,
+            "business_applied": media_file.business_applied_at is not None,
             "error": error,
             "message": message,
         }
@@ -459,5 +631,7 @@ class MediaFileService:
             "parser": summary.get("parser"),
             "llm_status": summary.get("llm_status"),
             "created_reminders": summary.get("created_reminders"),
+            "review_status": summary.get("review_status"),
+            "business_applied": summary.get("business_applied"),
             "error": summary.get("error"),
         }

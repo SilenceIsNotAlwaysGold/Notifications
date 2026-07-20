@@ -45,7 +45,10 @@ class MessageService:
         tenant_id = legal_case.tenant_id if legal_case else group_message.tenant_id
         if tenant_id and group_message.tenant_id != tenant_id:
             group_message.tenant_id = tenant_id
-        event_types = extracted.get("event_types") or ["unknown"]
+        # Media messages are classified after their bytes have been downloaded
+        # and OCR has completed. Creating an eager unknown event here would
+        # bypass the review gate and duplicate the media OCR event.
+        event_types = [] if payload.msg_type in {"image", "file", "pdf"} else (extracted.get("event_types") or ["unknown"])
 
         event_ids: list[int] = []
         for event_type in event_types:

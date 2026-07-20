@@ -3,6 +3,9 @@ const state = {
   apiKey: localStorage.getItem("legal_wecom_api_key") || "",
   data: {},
   editingCaseId: null,
+  selectedReviewId: null,
+  reviewStatusFilter: "pending",
+  reviewPreviewUrl: null,
 };
 
 const titles = {
@@ -10,6 +13,7 @@ const titles = {
   cases: ["案件", "创建、查询和同步案件"],
   messages: ["消息", "模拟企业微信群消息进入识别链路"],
   "archive-groups": ["归档群", "企业微信会话发现与法务群白名单"],
+  "ocr-reviews": ["人工复核", "核对识别结果并控制业务同步"],
   reminders: ["提醒", "查看提醒、手动触发到期提醒发送"],
   events: ["事件", "查看系统抽取出的结构化法务事件"],
   media: ["媒体", "图片、PDF、文件和 OCR 状态"],
@@ -109,7 +113,8 @@ function badge(value) {
     : ["pending", "retrying", "degraded"].includes(text)
       ? "warn"
       : "";
-  return `<span class="badge ${cls}">${escapeHtml(text)}</span>`;
+  const finalCls = ["rejected", "failed", "cancelled"].includes(text) ? "danger" : cls;
+  return `<span class="badge ${finalCls}">${escapeHtml(text)}</span>`;
 }
 
 function table(columns, rows) {
@@ -523,6 +528,150 @@ async function renderArchiveGroups() {
   });
 }
 
+function reviewFieldValue(result, key) {
+  const value = result && result[key];
+  if (value === null || value === undefined) return "";
+  if (key === "court_time" && typeof value === "string") return value.slice(0, 16);
+  return String(value);
+}
+
+function reviewDetail(review) {
+  const result = review.final_result || review.ocr_result || {};
+  const editable = review.review_status === "pending";
+  const eventTypes = [
+    ["judgment", "判决/调解/裁定"],
+    ["court_notice", "开庭传票"],
+    ["payment_notice", "缴费通知"],
+    ["payment_screenshot", "付款完成"],
+    ["keyword", "业务关键词"],
+    ["unknown", "未知"],
+  ];
+  const documentTypes = ["", "判决书", "调解书", "裁定书", "开庭传票"];
+  return `
+    <div class="review-detail-header">
+      <div><strong>${escapeHtml(review.original_filename || `媒体 ${review.media_file_id}`)}</strong><div class="muted mono">${escapeHtml(review.msg_id || "无消息 ID")}</div></div>
+      ${badge(review.review_status)}
+    </div>
+    <div class="review-detail-grid">
+      <section class="review-preview"><div id="review-preview" class="preview-placeholder">加载预览中...</div></section>
+      <section class="review-fields">
+        <form id="review-form" data-media-id="${review.media_file_id}">
+          <div class="form-grid review-form-grid">
+            <div class="field"><label>案号</label><input name="case_no" value="${escapeHtml(reviewFieldValue(result, "case_no"))}" ${editable ? "" : "disabled"} /></div>
+            <div class="field"><label>材料类型</label><select name="event_type" ${editable ? "" : "disabled"}>${eventTypes.map(([value, label]) => `<option value="${value}" ${result.event_type === value ? "selected" : ""}>${label}</option>`).join("")}</select></div>
+            <div class="field"><label>文书类型</label><select name="document_type" ${editable ? "" : "disabled"}>${documentTypes.map((value) => `<option value="${value}" ${result.document_type === value ? "selected" : ""}>${value || "无"}</option>`).join("")}</select></div>
+            <div class="field"><label>原告</label><input name="plaintiff" value="${escapeHtml(reviewFieldValue(result, "plaintiff"))}" ${editable ? "" : "disabled"} /></div>
+            <div class="field"><label>被告</label><input name="defendant" value="${escapeHtml(reviewFieldValue(result, "defendant"))}" ${editable ? "" : "disabled"} /></div>
+            <div class="field"><label>金额</label><input name="amount" type="number" min="0" step="0.01" value="${escapeHtml(reviewFieldValue(result, "amount"))}" ${editable ? "" : "disabled"} /></div>
+            <div class="field"><label>开庭时间</label><input name="court_time" type="datetime-local" value="${escapeHtml(reviewFieldValue(result, "court_time"))}" ${editable ? "" : "disabled"} /></div>
+            <div class="field wide"><label>复核备注</label><textarea name="note" ${editable ? "" : "disabled"}>${escapeHtml(review.review_note || "")}</textarea></div>
+          </div>
+          ${
+            editable
+              ? '<div class="review-actions"><button type="button" data-review-decision="approved">批准原结果</button><button type="button" class="ghost" data-review-decision="corrected">保存修正并执行</button><button type="button" class="danger-button" data-review-decision="rejected">驳回</button></div>'
+              : `<div class="review-audit muted">复核人：${escapeHtml(review.reviewed_by || "-")} · 复核时间：${escapeHtml(review.reviewed_at || "-")} · 业务执行：${escapeHtml(review.business_applied_at || "未执行")}</div>`
+          }
+        </form>
+        <div class="ocr-text-block"><div class="field-label">OCR 原文</div><pre>${escapeHtml(review.extracted_text || "无识别文本")}</pre></div>
+      </section>
+    </div>
+  `;
+}
+
+async function loadReviewPreview(review) {
+  const container = $("#review-preview");
+  if (!container || !review.preview_url) {
+    if (container) container.textContent = "无可预览文件";
+    return;
+  }
+  if (state.reviewPreviewUrl) URL.revokeObjectURL(state.reviewPreviewUrl);
+  const headers = state.apiKey ? { "X-API-Key": state.apiKey } : {};
+  const response = await fetch(review.preview_url, { headers });
+  if (!response.ok) {
+    container.textContent = "预览加载失败";
+    return;
+  }
+  state.reviewPreviewUrl = URL.createObjectURL(await response.blob());
+  if ((review.mime_type || "").startsWith("image/")) {
+    container.innerHTML = `<img src="${state.reviewPreviewUrl}" alt="待复核原图" />`;
+  } else {
+    container.innerHTML = `<iframe src="${state.reviewPreviewUrl}" title="待复核 PDF"></iframe>`;
+  }
+}
+
+async function submitReviewDecision(review, decision) {
+  const form = $("#review-form");
+  const values = Object.fromEntries(new FormData(form).entries());
+  const payload = { decision, note: values.note.trim() || null };
+  if (decision === "rejected" && !payload.note) {
+    showAlert("驳回时必须填写复核备注", "error");
+    return;
+  }
+  if (decision === "corrected") {
+    for (const key of ["case_no", "event_type", "document_type", "plaintiff", "defendant", "amount", "court_time"]) {
+      if (values[key] !== "") payload[key] = values[key];
+    }
+  }
+  const result = await api(`/api/v1/legal/ocr-reviews/${review.media_file_id}/decision`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  showAlert(`复核完成：生成提醒 ${result.created_reminders} 条，取消提醒 ${result.cancelled_reminders} 条`);
+  await renderOCRReviews();
+}
+
+async function renderOCRReviews() {
+  const query = state.reviewStatusFilter ? `?review_status=${encodeURIComponent(state.reviewStatusFilter)}&page_size=100` : "?page_size=100";
+  const data = await api(`/api/v1/legal/ocr-reviews${query}`);
+  const items = data.items || [];
+  if (!items.some((item) => item.media_file_id === state.selectedReviewId)) {
+    state.selectedReviewId = items[0] ? items[0].media_file_id : null;
+  }
+  const selected = items.find((item) => item.media_file_id === state.selectedReviewId);
+  $("#content").innerHTML = `
+    <div class="review-toolbar">
+      <label for="review-status-filter">状态</label>
+      <select id="review-status-filter">
+        <option value="pending" ${state.reviewStatusFilter === "pending" ? "selected" : ""}>待复核</option>
+        <option value="approved" ${state.reviewStatusFilter === "approved" ? "selected" : ""}>已批准</option>
+        <option value="corrected" ${state.reviewStatusFilter === "corrected" ? "selected" : ""}>已修正</option>
+        <option value="rejected" ${state.reviewStatusFilter === "rejected" ? "selected" : ""}>已驳回</option>
+        <option value="" ${state.reviewStatusFilter === "" ? "selected" : ""}>全部</option>
+      </select>
+      <span class="muted">${items.length} 条</span>
+    </div>
+    <div class="review-workspace">
+      <aside class="review-list-pane">
+        ${
+          items.length
+            ? items
+                .map(
+                  (item) => `<button class="review-list-item ${item.media_file_id === state.selectedReviewId ? "active" : ""}" data-review-id="${item.media_file_id}"><span>${escapeHtml(item.original_filename || `媒体 ${item.media_file_id}`)}</span><small>${escapeHtml(item.ocr_result.event_type || "unknown")} · ${escapeHtml(item.updated_at)}</small></button>`,
+                )
+                .join("")
+            : '<div class="empty-state">当前状态暂无材料</div>'
+        }
+      </aside>
+      <main class="review-detail-pane">${selected ? reviewDetail(selected) : '<div class="empty-state">请选择待复核材料</div>'}</main>
+    </div>
+  `;
+  $("#review-status-filter").addEventListener("change", (event) => {
+    state.reviewStatusFilter = event.target.value;
+    state.selectedReviewId = null;
+    renderOCRReviews();
+  });
+  document.querySelectorAll("[data-review-id]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.selectedReviewId = Number(button.dataset.reviewId);
+      renderOCRReviews();
+    });
+  });
+  document.querySelectorAll("[data-review-decision]").forEach((button) => {
+    button.addEventListener("click", () => submitReviewDecision(selected, button.dataset.reviewDecision));
+  });
+  if (selected) await loadReviewPreview(selected);
+}
+
 async function renderReminders() {
   const data = await api("/api/v1/legal/reminders?limit=50");
   $("#content").innerHTML = panel(
@@ -609,6 +758,7 @@ async function loadView() {
     if (state.view === "cases") await renderCases();
     if (state.view === "messages") await renderMessages();
     if (state.view === "archive-groups") await renderArchiveGroups();
+    if (state.view === "ocr-reviews") await renderOCRReviews();
     if (state.view === "reminders") await renderReminders();
     if (state.view === "events") await renderEvents();
     if (state.view === "media") await renderMedia();

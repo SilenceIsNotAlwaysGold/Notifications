@@ -23,6 +23,8 @@ class Reminder(Base):
     retry_count: Mapped[int] = mapped_column(Integer, default=0)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     sent_at: Mapped[datetime | None] = mapped_column(AwareDateTime, nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(AwareDateTime, nullable=True)
+    cancel_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(AwareDateTime, default=now_tz)
     updated_at: Mapped[datetime] = mapped_column(AwareDateTime, default=now_tz, onupdate=now_tz)
 

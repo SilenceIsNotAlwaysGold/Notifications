@@ -131,6 +131,8 @@ class ReminderOut(BaseModel):
     retry_count: int
     last_error: str | None
     sent_at: datetime | None
+    cancelled_at: datetime | None
+    cancel_reason: str | None
     created_at: datetime
     updated_at: datetime
 
@@ -283,6 +285,12 @@ class MediaFileOut(BaseModel):
     ocr_status: str
     extracted_text: str | None
     metadata_json: str | None
+    review_status: str
+    review_event_id: int | None
+    reviewed_by: str | None
+    reviewed_at: datetime | None
+    review_note: str | None
+    business_applied_at: datetime | None
     last_error: str | None
     created_at: datetime
     updated_at: datetime
@@ -312,6 +320,80 @@ class MediaOCRResultOut(BaseModel):
     parser: str | None = None
     llm_status: str | None = None
     created_reminders: int = 0
+    review_status: str = "not_required"
+    business_applied: bool = False
+
+
+class OCRReviewDecision(BaseModel):
+    decision: Literal["approved", "corrected", "rejected"]
+    note: str | None = Field(default=None, max_length=1000)
+    case_no: str | None = Field(default=None, max_length=128)
+    event_type: Literal[
+        "judgment",
+        "court_notice",
+        "payment_notice",
+        "payment_screenshot",
+        "keyword",
+        "unknown",
+    ] | None = None
+    document_type: Literal["判决书", "调解书", "裁定书", "开庭传票"] | None = None
+    plaintiff: str | None = Field(default=None, max_length=255)
+    defendant: str | None = Field(default=None, max_length=255)
+    amount: Decimal | None = Field(default=None, ge=0)
+    court_time: datetime | None = None
+
+    @model_validator(mode="after")
+    def validate_decision(self):
+        correction_fields = {
+            "case_no",
+            "event_type",
+            "document_type",
+            "plaintiff",
+            "defendant",
+            "amount",
+            "court_time",
+        }
+        if self.decision == "corrected" and not (self.model_fields_set & correction_fields):
+            raise ValueError("修正复核至少需要修改一个识别字段")
+        if self.decision == "rejected" and not (self.note or "").strip():
+            raise ValueError("驳回复核必须填写备注")
+        return self
+
+
+class OCRReviewOut(BaseModel):
+    media_file_id: int
+    tenant_id: str | None
+    case_id: int | None
+    group_id: str
+    msg_id: str | None
+    media_type: str
+    original_filename: str | None
+    mime_type: str | None
+    ocr_status: str
+    review_status: str
+    event_id: int | None
+    extracted_text: str | None
+    ocr_result: dict[str, Any]
+    final_result: dict[str, Any] | None
+    preview_url: str | None
+    reviewed_by: str | None
+    reviewed_at: datetime | None
+    review_note: str | None
+    business_applied_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class OCRReviewListOut(BaseModel):
+    total: int
+    items: list[OCRReviewOut]
+
+
+class OCRReviewDecisionOut(BaseModel):
+    review: OCRReviewOut
+    already_decided: bool = False
+    created_reminders: int = 0
+    cancelled_reminders: int = 0
 
 
 class SystemRunLogOut(BaseModel):

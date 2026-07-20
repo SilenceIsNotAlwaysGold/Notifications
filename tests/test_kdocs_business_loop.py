@@ -126,14 +126,13 @@ def test_judgment_missing_party_is_marked_for_review(client, db_session):
         "民事判决书\n案号：(2026)黔0281民初3118号\n原告：李四\n判决如下。",
     )
 
+    media_file = db_session.scalar(select(MediaFile).where(MediaFile.msg_id == "msg_review"))
     enforcement_log = db_session.scalar(
-        select(DocumentSyncLog)
-        .where(DocumentSyncLog.sync_type == "enforcement_progress")
-        .order_by(DocumentSyncLog.id.desc())
+        select(DocumentSyncLog).where(DocumentSyncLog.sync_type == "enforcement_progress")
     )
-    row = json.loads(enforcement_log.request_payload_json)["payload"]["row"]
-    assert row["需人工复核"] is True
-    assert row["文件名"] == "李四-未知被告{判决书}.pdf"
+    assert media_file.review_status == "pending"
+    assert media_file.business_applied_at is None
+    assert enforcement_log is None
 
 
 @pytest.mark.parametrize(

@@ -8,11 +8,16 @@ def ensure_sqlite_compat_columns(engine: Engine) -> None:
     inspector = inspect(engine)
     if "reminders" in inspector.get_table_names():
         column_names = {column["name"] for column in inspector.get_columns("reminders")}
-        if "sent_at" not in column_names:
-            with engine.begin() as connection:
+        with engine.begin() as connection:
+            if "sent_at" not in column_names:
                 connection.execute(text("ALTER TABLE reminders ADD COLUMN sent_at DATETIME"))
+            if "cancelled_at" not in column_names:
+                connection.execute(text("ALTER TABLE reminders ADD COLUMN cancelled_at DATETIME"))
+            if "cancel_reason" not in column_names:
+                connection.execute(text("ALTER TABLE reminders ADD COLUMN cancel_reason TEXT"))
     _ensure_legal_case_columns(engine, inspector)
     _ensure_document_sync_log_columns(engine, inspector)
+    _ensure_media_review_columns(engine, inspector)
 
 
 def _ensure_legal_case_columns(engine: Engine, inspector) -> None:
@@ -50,3 +55,23 @@ def _ensure_document_sync_log_columns(engine: Engine, inspector) -> None:
         for column_name, column_type in columns.items():
             if column_name not in column_names:
                 connection.execute(text(f"ALTER TABLE document_sync_logs ADD COLUMN {column_name} {column_type}"))
+
+
+def _ensure_media_review_columns(engine: Engine, inspector) -> None:
+    if "legal_media_files" not in inspector.get_table_names():
+        return
+    column_names = {column["name"] for column in inspector.get_columns("legal_media_files")}
+    columns = {
+        "ocr_result_json": "TEXT",
+        "review_result_json": "TEXT",
+        "review_status": "VARCHAR(32) DEFAULT 'not_required'",
+        "review_event_id": "INTEGER",
+        "reviewed_by": "VARCHAR(128)",
+        "reviewed_at": "DATETIME",
+        "review_note": "TEXT",
+        "business_applied_at": "DATETIME",
+    }
+    with engine.begin() as connection:
+        for column_name, column_type in columns.items():
+            if column_name not in column_names:
+                connection.execute(text(f"ALTER TABLE legal_media_files ADD COLUMN {column_name} {column_type}"))
