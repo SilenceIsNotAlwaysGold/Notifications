@@ -113,7 +113,19 @@ WECOM_ARCHIVE_SECRET=***
 WECOM_ARCHIVE_PRIVATE_KEY_PATH=./private_key.pem
 WECOM_ARCHIVE_PUBLIC_KEY_VER=***
 WECOM_ARCHIVE_SIDECAR_URL=http://127.0.0.1:9001/wecom-archive
+WECOM_ARCHIVE_SIDECAR_BACKEND=wecom_archive_sidecar.sdk_backend:create_backend
+WECOM_FINANCE_SDK_LIBRARY=./wecom_archive_sidecar/sdk/libWeWorkFinanceSdk_C.so
 ```
+
+在 Linux x86 / OpenSSL 3 服务器安装企业微信官方 SDK v3.0：
+
+```bash
+scripts/install_wecom_sdk.sh
+```
+
+真实模式必须持续拉取；企业微信官方接口只允许获取最近 5 天内的会话记录。
+
+真实群聊必须经过管理后台“归档群”白名单确认：首次消息只发现 `roomid`，不保存正文。可发送 `#群名识别群 群名称` 自动更新对应记录的显示名称，该特殊消息也不得进入业务库或改变启用状态。将群状态改为“已启用”后重新发送测试材料，才会进入 OCR 和业务同步。未启用群及单聊消息必须显示为 `skipped`，且不得生成消息、媒体或事件记录。
 
 等待真实 Secret/SDK 期间，可使用 sidecar mock 验收 M4 拉取链路：
 
@@ -179,6 +191,6 @@ LIVE_BASE_URL=http://127.0.0.1:8000 RUN_TESTS=false RUN_ALEMBIC=false scripts/re
 
 ## 7. 当前非阻塞项
 
-- 企业微信真实 Secret、公钥版本号、官方 SDK sidecar 尚未接入，不影响 mock 验收。
+- 企业微信官方 SDK backend 已内置；真实环境仍需填写 Secret、公钥版本号、私钥并完成服务器联调。
 - 金山真实 API 网关尚未配置，不影响 mock 同步日志验收。
 - OCR 结构化当前以规则为主，后续可接 LLM 提升复杂文书准确率。

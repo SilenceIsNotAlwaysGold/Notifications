@@ -1,0 +1,21 @@
+[Unit]
+Description=Legal WeCom Official Bot Sidecar
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/legal-wecom-bot-sidecar
+EnvironmentFile=/etc/legal-wecom-bot-sidecar.env
+ExecStart=/usr/bin/node server.mjs
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

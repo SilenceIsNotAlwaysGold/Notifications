@@ -26,6 +26,8 @@ env/
 *.sqlite
 *.sqlite3
 wecom_archive_seq.txt
+wecom_archive_sidecar/sdk/*
+!wecom_archive_sidecar/sdk/.gitkeep
 
 # Runtime storage
 storage/media/*
@@ -37,6 +39,9 @@ build/
 *.egg-info/
 *.zip
 *.tar.gz
+
+# External reference repositories
+wxarchive/
 
 # OS and editor files
 .DS_Store

@@ -13,6 +13,7 @@ from app.models import (
     SystemRunLog,
     Tenant,
     TenantSetting,
+    WeComArchiveGroup,
 )
 
 __all__ = [
@@ -30,4 +31,5 @@ __all__ = [
     "SystemRunLog",
     "Tenant",
     "TenantSetting",
+    "WeComArchiveGroup",
 ]

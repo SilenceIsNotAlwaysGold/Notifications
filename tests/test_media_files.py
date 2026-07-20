@@ -44,7 +44,15 @@ def pdf_message(seq=3, msgid="msg_file_001"):
 def test_replay_image_creates_media_file(client, db_session):
     result = replay_message(client, image_message())
 
-    assert result == {"pulled": 1, "processed": 1, "failed": 0, "last_seq": 2}
+    assert result == {
+        "pulled": 1,
+        "processed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "discovered": 0,
+        "identified": 0,
+        "last_seq": 2,
+    }
     media_file = db_session.scalar(select(MediaFile).where(MediaFile.msg_id == "msg_img_001"))
     assert media_file is not None
     assert media_file.media_type == "image"
@@ -128,7 +136,15 @@ def test_media_download_failure_does_not_block_group_message(client, db_session,
     monkeypatch.setattr("app.adapters.wecom_media.WeComMediaAdapter.download_media", fail_download)
     result = replay_message(client, image_message(seq=9, msgid="msg_img_fail"))
 
-    assert result == {"pulled": 1, "processed": 1, "failed": 0, "last_seq": 9}
+    assert result == {
+        "pulled": 1,
+        "processed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "discovered": 0,
+        "identified": 0,
+        "last_seq": 9,
+    }
     group_message = db_session.scalar(select(GroupMessage).where(GroupMessage.msg_type == "image"))
     media_file = db_session.scalar(select(MediaFile).where(MediaFile.msg_id == "msg_img_fail"))
     assert group_message is not None

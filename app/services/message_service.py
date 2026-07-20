@@ -37,7 +37,11 @@ class MessageService:
     def handle_incoming_message(self, payload: MockMessageCreate) -> dict[str, Any]:
         group_message = self._save_group_message(payload)
         extracted = self._extract(payload, group_message.tenant_id)
-        legal_case = self.case_service.find_case_by_case_no(extracted.get("case_no"))
+        legal_case = self.case_service.find_case_for_message(
+            extracted.get("case_no"),
+            group_message.group_id,
+            group_message.tenant_id,
+        )
         tenant_id = legal_case.tenant_id if legal_case else group_message.tenant_id
         if tenant_id and group_message.tenant_id != tenant_id:
             group_message.tenant_id = tenant_id

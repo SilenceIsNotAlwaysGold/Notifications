@@ -27,6 +27,119 @@ def test_webhook_mode_without_webhook_url_returns_config_error(monkeypatch, tmp_
     get_settings.cache_clear()
 
 
+def test_wecomapi_mode_without_dedicated_account_config_returns_error(monkeypatch, tmp_path):
+    monkeypatch.setenv("WECOM_SEND_MODE", "wecomapi")
+    monkeypatch.setenv("WECOMAPI_BASE_URL", "")
+    monkeypatch.setenv("WECOMAPI_TOKEN", "")
+    monkeypatch.setenv("WECOMAPI_GUID", "")
+    monkeypatch.setenv("MEDIA_STORAGE_DIR", str(tmp_path / "media"))
+    get_settings.cache_clear()
+
+    result = validate_runtime_config(get_settings())
+
+    assert result["ok"] is False
+    assert "WECOMAPI_BASE_URL" in _messages(result)
+    assert "WECOMAPI_TOKEN" in _messages(result)
+    assert "WECOMAPI_GUID" in _messages(result)
+    get_settings.cache_clear()
+
+
+def test_wecomapi_mode_with_https_config_returns_risk_warning(monkeypatch, tmp_path):
+    monkeypatch.setenv("WECOM_SEND_MODE", "wecomapi")
+    monkeypatch.setenv("WECOMAPI_BASE_URL", "https://gateway.example.test")
+    monkeypatch.setenv("WECOMAPI_TOKEN", "test-token")
+    monkeypatch.setenv("WECOMAPI_GUID", "test-guid")
+    monkeypatch.setenv("MEDIA_STORAGE_DIR", str(tmp_path / "media"))
+    get_settings.cache_clear()
+
+    result = validate_runtime_config(get_settings())
+
+    item = next(item for item in result["items"] if item["name"] == "WECOM_SEND_MODE")
+    assert item["status"] == "warning"
+    assert "非官方兼容网关" in item["message"]
+    assert "Android RPA" in item["message"]
+    get_settings.cache_clear()
+
+
+def test_wecom_cli_mode_without_binary_returns_config_error(monkeypatch, tmp_path):
+    monkeypatch.setenv("WECOM_SEND_MODE", "wecom_cli")
+    monkeypatch.setenv("WECOM_CLI_BINARY", "missing-wecom-cli")
+    monkeypatch.setenv("WECOM_CLI_CONFIG_DIR", str(tmp_path / "wecom"))
+    monkeypatch.setenv("MEDIA_STORAGE_DIR", str(tmp_path / "media"))
+    monkeypatch.setattr("app.core.config_validator.shutil.which", lambda _: None)
+    get_settings.cache_clear()
+
+    result = validate_runtime_config(get_settings())
+
+    assert result["ok"] is False
+    assert "@wecom/cli" in _messages(result)
+    get_settings.cache_clear()
+
+
+def test_wecom_cli_mode_requires_initialization(monkeypatch, tmp_path):
+    config_dir = tmp_path / "wecom"
+    monkeypatch.setenv("WECOM_SEND_MODE", "wecom_cli")
+    monkeypatch.setenv("WECOM_CLI_CONFIG_DIR", str(config_dir))
+    monkeypatch.setenv("MEDIA_STORAGE_DIR", str(tmp_path / "media"))
+    monkeypatch.setattr("app.core.config_validator.shutil.which", lambda _: "/usr/local/bin/wecom-cli")
+    get_settings.cache_clear()
+
+    result = validate_runtime_config(get_settings())
+
+    assert result["ok"] is False
+    assert "wecom-cli init" in _messages(result)
+    get_settings.cache_clear()
+
+
+def test_wecom_cli_mode_initialized_returns_permission_warning(monkeypatch, tmp_path):
+    config_dir = tmp_path / "wecom"
+    config_dir.mkdir()
+    (config_dir / "bot.enc").write_text("encrypted", encoding="utf-8")
+    (config_dir / "mcp_config.enc").write_text("encrypted", encoding="utf-8")
+    monkeypatch.setenv("WECOM_SEND_MODE", "wecom_cli")
+    monkeypatch.setenv("WECOM_CLI_CONFIG_DIR", str(config_dir))
+    monkeypatch.setenv("MEDIA_STORAGE_DIR", str(tmp_path / "media"))
+    monkeypatch.setattr("app.core.config_validator.shutil.which", lambda _: "/usr/local/bin/wecom-cli")
+    get_settings.cache_clear()
+
+    result = validate_runtime_config(get_settings())
+
+    item = next(item for item in result["items"] if item["name"] == "WECOM_SEND_MODE")
+    assert item["status"] == "warning"
+    assert "wecom-cli msg --help" in item["message"]
+    get_settings.cache_clear()
+
+
+def test_wecom_bot_mode_requires_sidecar_config(monkeypatch, tmp_path):
+    monkeypatch.setenv("WECOM_SEND_MODE", "wecom_bot")
+    monkeypatch.setenv("WECOM_BOT_SIDECAR_URL", "")
+    monkeypatch.setenv("WECOM_BOT_SIDECAR_TOKEN", "")
+    monkeypatch.setenv("MEDIA_STORAGE_DIR", str(tmp_path / "media"))
+    get_settings.cache_clear()
+
+    result = validate_runtime_config(get_settings())
+
+    assert result["ok"] is False
+    assert "WECOM_BOT_SIDECAR_URL" in _messages(result)
+    assert "WECOM_BOT_SIDECAR_TOKEN" in _messages(result)
+    get_settings.cache_clear()
+
+
+def test_wecom_bot_mode_with_local_sidecar_is_ready(monkeypatch, tmp_path):
+    monkeypatch.setenv("WECOM_SEND_MODE", "wecom_bot")
+    monkeypatch.setenv("WECOM_BOT_SIDECAR_URL", "http://127.0.0.1:8788")
+    monkeypatch.setenv("WECOM_BOT_SIDECAR_TOKEN", "test-sidecar-token-123456")
+    monkeypatch.setenv("MEDIA_STORAGE_DIR", str(tmp_path / "media"))
+    get_settings.cache_clear()
+
+    result = validate_runtime_config(get_settings())
+
+    item = next(item for item in result["items"] if item["name"] == "WECOM_SEND_MODE")
+    assert item["status"] == "ok"
+    assert "官方智能机器人 WebSocket sidecar" in item["message"]
+    get_settings.cache_clear()
+
+
 def test_tencent_doc_real_without_token_or_sheet_id_returns_config_error(monkeypatch, tmp_path):
     monkeypatch.setenv("TENCENT_DOC_MODE", "real")
     monkeypatch.setenv("TENCENT_DOC_ACCESS_TOKEN", "")
@@ -183,6 +296,37 @@ def test_aliyun_ocr_with_sidecar_returns_ok(monkeypatch, tmp_path):
     get_settings.cache_clear()
 
 
+def test_llm_extraction_without_gateway_config_returns_error(monkeypatch, tmp_path):
+    monkeypatch.setenv("LEGAL_EXTRACTION_MODE", "llm")
+    monkeypatch.setenv("LEGAL_LLM_BASE_URL", "")
+    monkeypatch.setenv("LEGAL_LLM_MODEL", "")
+    monkeypatch.setenv("MEDIA_STORAGE_DIR", str(tmp_path / "media"))
+    get_settings.cache_clear()
+
+    result = validate_runtime_config(get_settings())
+
+    item = next(item for item in result["items"] if item["name"] == "LEGAL_EXTRACTION_MODE")
+    assert item["status"] == "error"
+    assert "LEGAL_LLM_BASE_URL" in item["message"]
+    get_settings.cache_clear()
+
+
+def test_llm_extraction_with_authenticated_gateway_returns_ok(monkeypatch, tmp_path):
+    monkeypatch.setenv("LEGAL_EXTRACTION_MODE", "llm")
+    monkeypatch.setenv("LEGAL_LLM_BASE_URL", "https://llm.example.test/v1")
+    monkeypatch.setenv("LEGAL_LLM_API_KEY", "test-key")
+    monkeypatch.setenv("LEGAL_LLM_MODEL", "legal-extractor-test")
+    monkeypatch.setenv("MEDIA_STORAGE_DIR", str(tmp_path / "media"))
+    get_settings.cache_clear()
+
+    result = validate_runtime_config(get_settings())
+
+    item = next(item for item in result["items"] if item["name"] == "LEGAL_EXTRACTION_MODE")
+    assert item["status"] == "ok"
+    assert "LLM" in item["message"]
+    get_settings.cache_clear()
+
+
 def test_db_auto_create_true_returns_warning(monkeypatch, tmp_path):
     monkeypatch.setenv("DB_AUTO_CREATE", "true")
     monkeypatch.setenv("MEDIA_STORAGE_DIR", str(tmp_path / "media"))
@@ -232,11 +376,21 @@ def test_admin_console_static_files_available(client):
     js_response = client.get("/admin/admin.js")
     assert js_response.status_code == 200
     assert "legal_wecom_api_key" in js_response.text
+    assert "legal_wecom_view" in js_response.text
+    assert "window.location.hash" in js_response.text
+    assert 'window.addEventListener("popstate"' in js_response.text
+
+    css_response = client.get("/admin/styles.css")
+    assert css_response.status_code == 200
+    assert "position: sticky" in css_response.text
+    assert "height: 100vh" in css_response.text
+    assert "overflow-y: auto" in css_response.text
 
 
 def test_health_detail_does_not_expose_sensitive_values(client, monkeypatch):
     monkeypatch.setenv("WECOM_SEND_MODE", "webhook")
     monkeypatch.setenv("WECOM_WEBHOOK_URL", "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=SECRET_WEBHOOK_KEY")
+    monkeypatch.setenv("WECOMAPI_TOKEN", "SECRET_WECOMAPI_TOKEN")
     monkeypatch.setenv("TENCENT_DOC_MODE", "real")
     monkeypatch.setenv("TENCENT_DOC_ACCESS_TOKEN", "SECRET_DOC_TOKEN")
     monkeypatch.setenv("TENCENT_DOC_SHEET_ID", "SECRET_SHEET_ID")
@@ -246,6 +400,7 @@ def test_health_detail_does_not_expose_sensitive_values(client, monkeypatch):
 
     body_text = response.text
     assert "SECRET_WEBHOOK_KEY" not in body_text
+    assert "SECRET_WECOMAPI_TOKEN" not in body_text
     assert "SECRET_DOC_TOKEN" not in body_text
     assert "SECRET_SHEET_ID" not in body_text
     get_settings.cache_clear()

@@ -77,6 +77,10 @@ def process_media_ocr(
             defendant=result.get("defendant"),
             court_time=result.get("court_time"),
             requires_review=bool(result.get("requires_review")),
+            extraction_confidence=result.get("extraction_confidence"),
+            review_reasons=result.get("review_reasons") or [],
+            parser=result.get("parser"),
+            llm_status=result.get("llm_status"),
             created_reminders=result.get("created_reminders") or 0,
         )
         db.commit()

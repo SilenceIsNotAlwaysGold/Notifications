@@ -142,7 +142,11 @@ class MediaFileService:
             media_file.last_error = None
             event = None
             created_reminders = 0
-            matched_case = self.case_service.find_case_by_case_no(result.get("case_no"))
+            matched_case = self.case_service.find_case_for_message(
+                result.get("case_no"),
+                media_file.group_id,
+                media_file.tenant_id,
+            )
             if matched_case:
                 media_file.case_id = matched_case.id
                 media_file.tenant_id = matched_case.tenant_id or media_file.tenant_id
@@ -428,6 +432,10 @@ class MediaFileService:
             "defendant": (result or {}).get("defendant"),
             "court_time": court_time.isoformat() if hasattr(court_time, "isoformat") else court_time,
             "requires_review": bool((result or {}).get("requires_review")),
+            "extraction_confidence": (result or {}).get("extraction_confidence"),
+            "review_reasons": (result or {}).get("review_reasons") or [],
+            "parser": ((result or {}).get("metadata") or {}).get("parser"),
+            "llm_status": ((result or {}).get("metadata") or {}).get("llm_status"),
             "created_reminders": created_reminders,
             "error": error,
             "message": message,
@@ -446,6 +454,10 @@ class MediaFileService:
             "defendant": summary.get("defendant"),
             "court_time": summary.get("court_time"),
             "requires_review": summary.get("requires_review"),
+            "extraction_confidence": summary.get("extraction_confidence"),
+            "review_reasons": summary.get("review_reasons"),
+            "parser": summary.get("parser"),
+            "llm_status": summary.get("llm_status"),
             "created_reminders": summary.get("created_reminders"),
             "error": summary.get("error"),
         }

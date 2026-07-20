@@ -18,6 +18,8 @@ ROLE_PERMISSIONS: dict[str, list[PermissionRule]] = {
         PermissionRule("GET", r"/api/v1/legal/cases"),
         PermissionRule("GET", r"/api/v1/legal/cases/\d+"),
         PermissionRule("POST", r"/api/v1/legal/cases"),
+        PermissionRule("PATCH", r"/api/v1/legal/cases/\d+"),
+        PermissionRule("GET", r"/api/v1/legal/wecom-archive/groups"),
         PermissionRule("GET", r"/api/v1/legal/events"),
         PermissionRule("GET", r"/api/v1/legal/reminders"),
         PermissionRule("POST", r"/api/v1/legal/reminders/custom"),

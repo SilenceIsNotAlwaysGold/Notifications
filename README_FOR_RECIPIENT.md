@@ -80,6 +80,6 @@ scripts/release_check.sh
 
 ## 注意事项
 
-本交付包不包含本地 SQLite 数据库、`.env`、缓存文件、媒体存储内容、私钥、公钥或 Python 编译缓存。默认外部系统配置为 mock 模式；真实企业微信会话存档、真实媒体下载、真实金山文档写入和真实 OCR 仍需按业务环境进一步接入。
+本交付包不包含本地 SQLite 数据库、`.env`、缓存文件、媒体存储内容、私钥、公钥、企业微信 SDK 二进制或 Python 编译缓存。默认外部系统配置为 mock 模式；仓库已内置企业微信官方 SDK backend，Linux x86 部署时运行 `scripts/install_wecom_sdk.sh` 安装官方 SDK，再按业务环境填写真实凭证。真实金山文档仍需配置 API 网关与目标表格 ID。
 
 详细验收步骤见 `docs/delivery_acceptance.md`。

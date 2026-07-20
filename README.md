@@ -120,6 +120,14 @@ OCR_PROVIDER=mock
 OCR_SIDECAR_URL=
 OCR_ENABLE_REPROCESS=true
 OCR_MAX_TEXT_LENGTH=20000
+LEGAL_EXTRACTION_MODE=regex
+LEGAL_LLM_BASE_URL=
+LEGAL_LLM_API_KEY=
+LEGAL_LLM_MODEL=
+LEGAL_LLM_TIMEOUT_SECONDS=30
+LEGAL_LLM_MAX_TEXT_LENGTH=16000
+LEGAL_LLM_MIN_CONFIDENCE=0.75
+LEGAL_LLM_FALLBACK_TO_REGEX=true
 ```
 
 ## 运行
@@ -294,7 +302,7 @@ curl 'http://127.0.0.1:8000/api/v1/legal/cases' \
 系统内置四种角色：
 
 - `admin`：管理员，拥有 `/api/v1/legal/*` 全部权限。
-- `legal`：法务操作员，可查看/创建案件、创建自定义提醒、查看提醒/事件/媒体/同步日志，并可手动 OCR；不能 replay、重试同步、同步案件快照、查看审计日志或管理 API Key。
+- `legal`：法务操作员，可查看/创建/编辑案件、创建自定义提醒、查看提醒/事件/媒体/同步日志，并可手动 OCR；不能 replay、重试同步、同步案件快照、查看审计日志或管理 API Key。
 - `auditor`：审计只读，可查看案件、提醒、事件、媒体、同步日志、运行日志、状态历史、发送日志和操作审计；不能修改业务数据。
 - `system`：系统内部调用，可执行 run-due、scan-status、归档 pull、媒体 OCR、同步重试；不能管理 API Key 或查看操作审计。
 
@@ -561,7 +569,7 @@ alembic history
 
 本地快速体验仍可使用 `DB_AUTO_CREATE=true`，应用启动时会执行 `create_all`。已有的 SQLite 兼容补列逻辑会继续作为老版本本地库的兜底，但新环境和正式部署建议以 Alembic 为准。
 
-## 企业微信群机器人发送
+## 企业微信发送通道
 
 默认 mock 模式，不会请求企业微信，只会记录发送结果日志：
 
@@ -569,6 +577,38 @@ alembic history
 WECOM_SEND_MODE=mock
 WECOM_WEBHOOK_URL=
 ```
+
+对于官方 CLI 已向企业开放“消息”能力的场景，优先使用官方 `wecom-cli`。它直接使用会话内容存档发现的 `wr...` / `wc...` 群 ID，不需要维护另一套发送群映射：
+
+```bash
+npm install -g @wecom/cli
+WECOM_CLI_CONFIG_DIR=~/.config/wecom wecom-cli init
+wecom-cli msg --help
+```
+
+```env
+WECOM_SEND_MODE=wecom_cli
+WECOM_CLI_BINARY=wecom-cli
+WECOM_CLI_CONFIG_DIR=~/.config/wecom
+WECOM_CLI_MIN_INTERVAL_SECONDS=1
+WECOM_CLI_DAILY_LIMIT=200
+WECOM_CLI_GROUP_DAILY_LIMIT=10
+```
+
+当前官方说明中，10 人及以下企业可获得消息等完整 CLI 能力；10 人以上企业默认只列出文档和待办能力。因此 `wecom-cli msg --help` 和测试群实发是启用条件，不能只凭扫码初始化成功判断可用。系统还会要求目标群已在管理端“归档群”中启用，并对文本执行 2048 字节限制、单群/全局每日上限和失败熔断。详细操作见 [官方企业微信 CLI 发送方案](docs/wecom_official_cli.md)。
+
+如果 CLI 消息品类未授权，可使用已集成的官方智能机器人 WebSocket sidecar。它复用扫码生成的加密机器人凭据，不要求手机常驻：
+
+```env
+WECOM_SEND_MODE=wecom_bot
+WECOM_BOT_SIDECAR_URL=http://127.0.0.1:8788
+WECOM_BOT_SIDECAR_TOKEN=与sidecar一致的随机字符串
+WECOM_BOT_MIN_INTERVAL_SECONDS=1
+WECOM_BOT_DAILY_LIMIT=200
+WECOM_BOT_GROUP_DAILY_LIMIT=10
+```
+
+sidecar 必须只监听本机，并单独配置 `WECOM_BOT_ALLOWED_ROOM_IDS`。目标群还必须在管理端“归档群”中启用，两道白名单同时通过才会发送。部署和渐进启用步骤见 [官方企业微信智能机器人发送](docs/wecom_official_bot.md)。
 
 启用真实群机器人 webhook 发送：
 
@@ -579,7 +619,29 @@ WECOM_TIMEOUT_SECONDS=8
 WECOM_MAX_RETRY=3
 ```
 
-当前只支持通过群机器人发送 text 消息和 @ 用户，不支持群消息监听，也未接企业微信会话内容存档。日志不会打印完整 webhook URL，避免泄露 key。
+当官方 CLI 未开放消息能力，且官方智能机器人也无法加入目标外部群时，项目另提供可选的 `wecomapi` 兼容发送模式，用于专用通知账号向已映射的外部群发送文本。该模式可以连接第三方网关，也可以连接项目内置的自托管 Android RPA 网关：
+
+```env
+WECOM_SEND_MODE=wecomapi
+WECOMAPI_BASE_URL=http://127.0.0.1:8092
+WECOMAPI_API_PATH=/wecom/finder/api
+WECOMAPI_TOKEN=自托管网关Token
+WECOMAPI_GUID=自托管网关robot_id
+WECOMAPI_MIN_INTERVAL_SECONDS=3
+WECOMAPI_DAILY_LIMIT=200
+WECOMAPI_FAILURE_THRESHOLD=3
+WECOMAPI_COOLDOWN_SECONDS=300
+```
+
+启用前必须在管理端“归档群”页面，为每个官方归档 `roomid` 单独填写发送目标白名单 ID。缺少映射、群未启用或网关配置缺失时，系统会阻止发送。该模式按专用账号串行限速，并带进程内每日上限和连续失败熔断。
+
+自托管网关启动命令：
+
+```bash
+uvicorn wecom_sender_sidecar.main:app --host 127.0.0.1 --port 8092
+```
+
+该通道通过非官方 UI 自动化完成外部群发送。生产环境应使用独立的“致和法务通知助手”账号，只发送必要的文字提醒，不通过该通道传输判决书、身份证明等敏感文件。详细操作见 [企业微信外部群自托管发送方案](docs/wecom_self_hosted_sender.md) 和 [企业微信专用通知账号接入](docs/wecom_dedicated_sender.md)。
 
 ## 企业微信真实接入风险
 
@@ -591,7 +653,7 @@ WECOM_MAX_RETRY=3
 - 读取群消息必须优先走企业微信官方会话内容存档。
 - 没有会话内容存档权限，就无法通过官方方式读取企业微信群消息。
 - 会话内容存档还需要确认是否覆盖外部群、群内员工和图片/PDF/文件等媒体。
-- 不建议使用个人号 hook、cookie、网页版模拟或非官方客户端监听，原因是不稳定、合规风险高且容易触发封控。
+- 非官方 UI 自动化通道仅作为可选外发能力，默认关闭，不承担会话读取和文件传输。
 - 当前系统支持 replay 模拟消息进入业务链路，但 replay 成功不代表已经真实接入企业微信生产环境。
 
 企业微信 POC 文档：
@@ -668,18 +730,52 @@ WECOM_ARCHIVE_SIDECAR_URL=http://127.0.0.1:9001/wecom-archive
 python3 scripts/acceptance_wecom_sidecar_mock.py
 ```
 
-生产接入官方 SDK 时，实现一个 Python factory，并设置 `WECOM_ARCHIVE_SIDECAR_BACKEND=module:function`。factory 返回的对象需要实现：
+仓库已内置企业微信官方 Linux x86 SDK v3.0 backend。Ubuntu 24.04 / OpenSSL 3 环境可直接安装官方 SDK：
 
-```python
-class Backend:
-    def fetch_messages(self, request):
-        ...
-
-    def download_media(self, request):
-        ...
+```bash
+scripts/install_wecom_sdk.sh
 ```
 
-其中 `fetch_messages` 返回企业微信归档消息列表，`download_media` 返回媒体文件 bytes。
+脚本仅从企业微信官方 CDN 下载固定版本，并校验压缩包 SHA256 和动态库 MD5。SDK 二进制不会进入 Git。sidecar 真实模式配置：
+
+```env
+WECOM_ARCHIVE_SIDECAR_BACKEND=wecom_archive_sidecar.sdk_backend:create_backend
+WECOM_FINANCE_SDK_LIBRARY=./wecom_archive_sidecar/sdk/libWeWorkFinanceSdk_C.so
+WECOM_FINANCE_SDK_TIMEOUT_SECONDS=10
+WECOM_ARCHIVE_MEDIA_MAX_BYTES=52428800
+```
+
+启动 sidecar：
+
+```bash
+uvicorn wecom_archive_sidecar.main:app --host 127.0.0.1 --port 9001
+```
+
+backend 按官方流程执行 `GetChatData`、RSA/PKCS1 随机密钥解密、`DecryptData` 和 `GetMediaData` 分片下载。消息只能获取最近 5 天内尚未过期的数据，生产环境必须持续拉取并持久化 `seq`。官方接口说明：[获取会话内容](https://developer.work.weixin.qq.com/document/path/91774)。
+
+### 法务群白名单
+
+企业微信后台配置的是“哪些员工允许存档”，本系统另外维护“哪些群允许进入法务业务”的 `roomid` 白名单。真实拉取遵循以下规则：
+
+- 新 `roomid` 首次出现时仅登记为 `discovered`，只保存群 ID、首次/最后发现时间和消息数量，不保存消息正文或媒体。
+- 可在管理后台生成 `#群名识别群 群名称` 特殊消息并发送到目标群；系统会自动更新对应 `roomid` 的显示名称，特殊消息本身不会进入业务库，也不会改变群的启用状态。
+- 只有管理后台“归档群”页面中状态为 `enabled` 的群，才会保存消息并进入 OCR、提醒和金山文档同步。
+- `disabled` 群和没有 `roomid` 的单聊消息直接跳过，但仍推进归档 `seq`，避免重复拉取。
+- 首条用于发现群聊的消息不会补处理；管理员启用群后，应重新发送测试材料。
+- 管理员也可在“归档群”列表修改显示名称、所属客户和状态。
+- replay 和演示接口不执行白名单过滤，便于独立验收 mock 业务链路。
+
+管理 API：
+
+```bash
+curl http://127.0.0.1:8000/api/v1/legal/wecom-archive/groups \
+  -H 'X-API-Key: admin-key'
+
+curl -X PATCH http://127.0.0.1:8000/api/v1/legal/wecom-archive/groups/wrxxxxxxxx \
+  -H 'Content-Type: application/json' \
+  -H 'X-API-Key: admin-key' \
+  -d '{"display_name":"法务执行群","status":"enabled"}'
+```
 
 本地可以通过 replay 接口模拟真实归档消息进入系统：
 
@@ -830,6 +926,27 @@ TENCENT_OCR_REGION=ap-guangzhou \
 uvicorn ocr_sidecar.main:app --host 127.0.0.1 --port 9002
 ```
 
+## OCR 后的 LLM 结构化抽取
+
+腾讯 OCR 负责把图片或 PDF 转成文字；案号、原告、被告、材料类型、金额和开庭时间仍需从文字中结构化提取。默认使用正则，不调用外部模型：
+
+```env
+LEGAL_EXTRACTION_MODE=regex
+```
+
+生产环境可以接入 OpenAI 兼容的模型网关：
+
+```env
+LEGAL_EXTRACTION_MODE=llm
+LEGAL_LLM_BASE_URL=https://llm-gateway.example.com/v1
+LEGAL_LLM_API_KEY=replace-me
+LEGAL_LLM_MODEL=your-model
+LEGAL_LLM_MIN_CONFIDENCE=0.75
+LEGAL_LLM_FALLBACK_TO_REGEX=true
+```
+
+系统只把 OCR 文书文本交给 LLM，不会默认发送普通群聊文本。模型输出会经过材料类型、案号、金额、时间和置信度校验；缺少关键字段、与正则结果冲突或低于置信度阈值时会设置 `requires_review=true`。模型请求失败时默认回退到正则，同时记录 `llm_status=fallback` 和复核原因，OCR 主链路不会因此中断。
+
 生产环境建议把腾讯云密钥写入 systemd 环境文件，不要提交到代码仓库。
 
 ## 腾讯文档同步
@@ -968,6 +1085,16 @@ curl -X POST http://127.0.0.1:8000/api/v1/legal/cases \
   -H 'Content-Type: application/json' \
   -d '{"case_no":"(2026)黔0281民初3118号","debtor_name":"张三","group_id":"group_001","debtor_wecom_userid":"debtor_001","lawyer_wecom_userid":"lawyer_001","due_date":"2026-06-30","total_amount":"1000.00"}'
 ```
+
+绑定真实归档群和企微成员：
+
+```bash
+curl -X PATCH http://127.0.0.1:8000/api/v1/legal/cases/1 \
+  -H 'Content-Type: application/json' \
+  -d '{"tenant_id":"tenant_001","group_id":"wrxxxxxxxx","debtor_wecom_userid":"debtor_001","lawyer_wecom_userid":"lawyer_001"}'
+```
+
+更新绑定后，系统会迁移该案件尚未发送的提醒。目标群只绑定一个案件时，还会把该群内尚未关联的历史媒体和事件回填到案件；一群多案时不会猜测归属，需要依靠案号识别或人工复核。
 
 查询案件：
 

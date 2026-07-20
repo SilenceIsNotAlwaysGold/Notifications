@@ -1,0 +1,17 @@
+{
+  "name": "legal-wecom-bot-sidecar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "probe": "node probe.mjs",
+    "test": "node --test sidecar.test.mjs"
+  },
+  "dependencies": {
+    "@wecom/aibot-node-sdk": "1.0.6"
+  }
+}

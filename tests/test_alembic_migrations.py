@@ -27,6 +27,7 @@ EXPECTED_TABLES = {
     "api_keys",
     "tenants",
     "tenant_settings",
+    "wecom_archive_groups",
 }
 
 
@@ -59,7 +60,9 @@ def test_alembic_upgrade_head_succeeds_with_temp_sqlite(tmp_path, monkeypatch):
 
     engine = create_engine(database_url, future=True)
     try:
-        assert EXPECTED_TABLES <= set(inspect(engine).get_table_names())
+        inspector = inspect(engine)
+        assert EXPECTED_TABLES <= set(inspector.get_table_names())
+        assert "wecomapi_room_id" in {column["name"] for column in inspector.get_columns("wecom_archive_groups")}
     finally:
         engine.dispose()
         get_settings.cache_clear()

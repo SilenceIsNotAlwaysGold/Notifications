@@ -1,0 +1,125 @@
+import json
+from typing import Any
+from urllib.parse import urljoin
+
+import httpx
+
+from app.core.config import Settings, get_settings
+
+
+class LegalLLMError(RuntimeError):
+    pass
+
+
+class LegalLLMAdapter:
+    def __init__(self, settings: Settings | None = None) -> None:
+        self.settings = settings or get_settings()
+
+    def extract(self, text: str, regex_hints: dict[str, Any]) -> dict[str, Any]:
+        if not self.settings.legal_llm_base_url:
+            raise LegalLLMError("未配置 LEGAL_LLM_BASE_URL")
+        if not self.settings.legal_llm_model:
+            raise LegalLLMError("未配置 LEGAL_LLM_MODEL")
+
+        endpoint = urljoin(self.settings.legal_llm_base_url.rstrip("/") + "/", "chat/completions")
+        headers = {"Content-Type": "application/json"}
+        if self.settings.legal_llm_api_key:
+            headers["Authorization"] = f"Bearer {self.settings.legal_llm_api_key}"
+
+        prompt_text = text[: self.settings.legal_llm_max_text_length]
+        payload = {
+            "model": self.settings.legal_llm_model,
+            "temperature": 0,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "你是中国法律文书结构化抽取器。只输出 JSON 对象，不得输出解释。"
+                        "event_type 只能是 judgment、court_notice、payment_notice、"
+                        "payment_screenshot、keyword、unknown；document_type 只能是判决书、"
+                        "调解书、裁定书、开庭传票或 null。court_time 使用带时区的 ISO 8601；"
+                        "amount 使用阿拉伯数字；confidence 是 0 到 1。不得猜测原文中没有的信息。"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "task": "抽取法律材料字段",
+                            "output_schema": {
+                                "event_type": "string",
+                                "document_type": "string|null",
+                                "case_no": "string|null",
+                                "plaintiff": "string|null",
+                                "defendant": "string|null",
+                                "court_time": "string|null",
+                                "amount": "number|null",
+                                "confidence": "number",
+                                "requires_review": "boolean",
+                                "review_reasons": "string[]",
+                            },
+                            "regex_hints": self._json_safe_hints(regex_hints),
+                            "ocr_text": prompt_text,
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+        }
+
+        try:
+            response = httpx.post(
+                endpoint,
+                headers=headers,
+                json=payload,
+                timeout=self.settings.legal_llm_timeout_seconds,
+            )
+            response.raise_for_status()
+            data = response.json()
+            content = data["choices"][0]["message"]["content"]
+        except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as exc:
+            raise LegalLLMError(f"LLM 抽取请求失败：{type(exc).__name__}") from exc
+
+        parsed = self._decode_json_object(content)
+        parsed["_response_metadata"] = {
+            "model": data.get("model") or self.settings.legal_llm_model,
+            "finish_reason": data.get("choices", [{}])[0].get("finish_reason"),
+            "truncated": len(text) > self.settings.legal_llm_max_text_length,
+        }
+        return parsed
+
+    @staticmethod
+    def _decode_json_object(content: Any) -> dict[str, Any]:
+        if isinstance(content, list):
+            content = "".join(str(item.get("text", "")) if isinstance(item, dict) else str(item) for item in content)
+        if not isinstance(content, str):
+            raise LegalLLMError("LLM 抽取响应不是文本")
+        cleaned = content.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.removeprefix("```json").removeprefix("```")
+            cleaned = cleaned.removesuffix("```").strip()
+        try:
+            parsed = json.loads(cleaned)
+        except json.JSONDecodeError as exc:
+            raise LegalLLMError("LLM 抽取响应不是有效 JSON") from exc
+        if not isinstance(parsed, dict):
+            raise LegalLLMError("LLM 抽取响应必须是 JSON 对象")
+        return parsed
+
+    @staticmethod
+    def _json_safe_hints(regex_hints: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: str(value) if key in {"amount", "court_time", "event_time"} and value is not None else value
+            for key, value in regex_hints.items()
+            if key
+            in {
+                "event_type",
+                "document_type",
+                "case_no",
+                "plaintiff",
+                "defendant",
+                "court_time",
+                "amount",
+            }
+        }

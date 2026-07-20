@@ -1,3 +1,4 @@
+import shutil
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -93,6 +94,29 @@ def _missing_wecom_archive_sdk_settings(settings: Settings) -> list[str]:
     ]
 
 
+def _missing_wecomapi_settings(settings: Settings) -> list[str]:
+    return [
+        name
+        for name, value in {
+            "WECOMAPI_BASE_URL": settings.wecomapi_base_url,
+            "WECOMAPI_TOKEN": settings.wecomapi_token,
+            "WECOMAPI_GUID": settings.wecomapi_guid,
+        }.items()
+        if not value
+    ]
+
+
+def _missing_wecom_bot_settings(settings: Settings) -> list[str]:
+    return [
+        name
+        for name, value in {
+            "WECOM_BOT_SIDECAR_URL": settings.wecom_bot_sidecar_url,
+            "WECOM_BOT_SIDECAR_TOKEN": settings.wecom_bot_sidecar_token,
+        }.items()
+        if not value
+    ]
+
+
 def _validate_wecom_archive_sidecar_url(settings: Settings, result: dict[str, Any], item_name: str) -> bool:
     if urlparse(settings.wecom_archive_sidecar_url or "").scheme not in {"http", "https"}:
         _add_item(result, item_name, "error", "WECOM_ARCHIVE_SIDECAR_URL 必须是 http 或 https URL")
@@ -105,10 +129,59 @@ def validate_runtime_config(settings: Settings) -> dict[str, Any]:
 
     if settings.wecom_send_mode == "mock":
         _add_item(result, "WECOM_SEND_MODE", "ok", "企业微信发送为 mock 模式")
-    elif settings.wecom_webhook_url:
+    elif settings.wecom_send_mode == "webhook" and settings.wecom_webhook_url:
         _add_item(result, "WECOM_SEND_MODE", "ok", "企业微信发送为 webhook 模式，Webhook URL 已配置")
-    else:
+    elif settings.wecom_send_mode == "webhook":
         _add_item(result, "WECOM_SEND_MODE", "error", "WECOM_SEND_MODE=webhook 时必须配置 WECOM_WEBHOOK_URL")
+    elif settings.wecom_send_mode == "wecom_cli":
+        config_dir = Path(settings.wecom_cli_config_dir).expanduser()
+        if not shutil.which(settings.wecom_cli_binary):
+            _add_item(
+                result,
+                "WECOM_SEND_MODE",
+                "error",
+                f"未找到官方企业微信 CLI：{settings.wecom_cli_binary}，请先安装 @wecom/cli",
+            )
+        elif not (config_dir / "bot.enc").is_file() or not (config_dir / "mcp_config.enc").is_file():
+            _add_item(
+                result,
+                "WECOM_SEND_MODE",
+                "error",
+                f"官方企业微信 CLI 尚未初始化，请使用 WECOM_CLI_CONFIG_DIR={config_dir} 执行 wecom-cli init",
+            )
+        else:
+            _add_item(
+                result,
+                "WECOM_SEND_MODE",
+                "warning",
+                "官方企业微信 CLI 已安装并初始化；消息能力由企业规模和官方授权动态决定，启用前须执行 wecom-cli msg --help 验证",
+            )
+    elif settings.wecom_send_mode == "wecom_bot":
+        missing = _missing_wecom_bot_settings(settings)
+        parsed_url = urlparse(settings.wecom_bot_sidecar_url or "")
+        if missing:
+            _add_item(
+                result,
+                "WECOM_SEND_MODE",
+                "error",
+                f"WECOM_SEND_MODE=wecom_bot 时缺少配置：{', '.join(missing)}",
+            )
+        elif parsed_url.scheme not in {"http", "https"}:
+            _add_item(result, "WECOM_SEND_MODE", "error", "WECOM_BOT_SIDECAR_URL 必须是 http 或 https URL")
+        elif parsed_url.scheme == "http" and parsed_url.hostname not in {"127.0.0.1", "localhost", "::1"}:
+            _add_item(result, "WECOM_SEND_MODE", "warning", "官方机器人 sidecar 使用远程 HTTP，建议改为 HTTPS 或仅监听本机")
+        else:
+            _add_item(result, "WECOM_SEND_MODE", "ok", "企业微信发送使用官方智能机器人 WebSocket sidecar")
+    else:
+        missing = _missing_wecomapi_settings(settings)
+        if missing:
+            _add_item(result, "WECOM_SEND_MODE", "error", f"WECOM_SEND_MODE=wecomapi 时缺少配置：{', '.join(missing)}")
+        elif urlparse(settings.wecomapi_base_url or "").scheme not in {"http", "https"}:
+            _add_item(result, "WECOM_SEND_MODE", "error", "WECOMAPI_BASE_URL 必须是 http 或 https URL")
+        elif urlparse(settings.wecomapi_base_url or "").scheme == "http":
+            _add_item(result, "WECOM_SEND_MODE", "warning", "兼容发送网关已配置但使用 HTTP，生产环境应使用 HTTPS 或私有内网")
+        else:
+            _add_item(result, "WECOM_SEND_MODE", "warning", "企业微信发送使用非官方兼容网关，可连接自托管 Android RPA；已启用限速、上限和熔断")
 
     if settings.tencent_doc_mode == "mock":
         _add_item(result, "TENCENT_DOC_MODE", "ok", "腾讯文档为 mock 模式")
@@ -139,6 +212,17 @@ def validate_runtime_config(settings: Settings) -> dict[str, Any]:
             _add_item(result, "OCR_PROVIDER", "error", "OCR_SIDECAR_URL 必须是 http 或 https URL")
         else:
             _add_item(result, "OCR_PROVIDER", "ok", f"OCR_PROVIDER={settings.ocr_provider} 将通过 OCR sidecar 识别")
+
+    if settings.legal_extraction_mode == "regex":
+        _add_item(result, "LEGAL_EXTRACTION_MODE", "ok", "法律文书字段使用正则抽取；复杂版式可切换 LLM")
+    elif not settings.legal_llm_base_url or not settings.legal_llm_model:
+        _add_item(result, "LEGAL_EXTRACTION_MODE", "error", "LEGAL_EXTRACTION_MODE=llm 时必须配置 LEGAL_LLM_BASE_URL 和 LEGAL_LLM_MODEL")
+    elif urlparse(settings.legal_llm_base_url).scheme not in {"http", "https"}:
+        _add_item(result, "LEGAL_EXTRACTION_MODE", "error", "LEGAL_LLM_BASE_URL 必须是 http 或 https URL")
+    elif not settings.legal_llm_api_key:
+        _add_item(result, "LEGAL_EXTRACTION_MODE", "warning", "LLM 抽取已启用但未配置 API Key，仅适用于无需鉴权的内网模型网关")
+    else:
+        _add_item(result, "LEGAL_EXTRACTION_MODE", "ok", "腾讯 OCR 文本将通过 LLM 结构化抽取，失败时按配置回退正则")
 
     if settings.wecom_archive_mode == "mock":
         _add_item(result, "WECOM_ARCHIVE_MODE", "ok", "企业微信会话内容存档为 mock 模式")

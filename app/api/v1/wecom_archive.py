@@ -1,21 +1,88 @@
 from pathlib import Path
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.adapters.wecom_archive import WeComArchiveAdapter
 from app.api.deps_auth import get_current_operator
-from app.api.v1.response import ok
+from app.api.v1.response import ok, raise_fail
+from app.core.resource_permissions import has_group_access
 from app.db.session import get_db
 from app.models.legal_case import LegalCase
 from app.models.media_file import MediaFile
-from app.schemas.legal import CaseCreate, WeComArchiveDemoReplayOut, WeComArchivePullOut, WeComArchiveReplayRequest, WeComArchiveReplayWithOcrOut, WeComArchiveReplayWithOcrRequest
+from app.schemas.legal import (
+    CaseCreate,
+    WeComArchiveDemoReplayOut,
+    WeComArchiveGroupCreate,
+    WeComArchiveGroupListOut,
+    WeComArchiveGroupOut,
+    WeComArchiveGroupUpdate,
+    WeComArchivePullOut,
+    WeComArchiveReplayRequest,
+    WeComArchiveReplayWithOcrOut,
+    WeComArchiveReplayWithOcrRequest,
+)
 from app.services.case_service import CaseService
 from app.services.media_file_service import MediaFileService
+from app.services.wecom_archive_group_service import WeComArchiveGroupService
 
 router = APIRouter(prefix="/legal/wecom-archive", tags=["legal-wecom-archive"])
+
+
+@router.get("/groups")
+def list_wecom_archive_groups(
+    status: str | None = None,
+    tenant_id: str | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=200),
+    db: Session = Depends(get_db),
+    operator_info: dict[str, object] = Depends(get_current_operator),
+):
+    try:
+        _total, groups = WeComArchiveGroupService(db).list_groups(
+            status=status,
+            tenant_id=tenant_id,
+            page=page,
+            page_size=page_size,
+        )
+    except ValueError as exc:
+        raise_fail(str(exc), code=1400)
+    groups = [group for group in groups if has_group_access(operator_info, group.room_id, group.tenant_id)]
+    return ok(
+        "归档群查询成功",
+        WeComArchiveGroupListOut(
+            total=len(groups),
+            items=[WeComArchiveGroupOut.model_validate(group) for group in groups],
+        ),
+    )
+
+
+@router.post("/groups")
+def create_wecom_archive_group(payload: WeComArchiveGroupCreate, db: Session = Depends(get_db)):
+    try:
+        group = WeComArchiveGroupService(db).create_group(payload)
+        db.commit()
+    except ValueError as exc:
+        db.rollback()
+        raise_fail(str(exc), code=1400)
+    return ok("归档群创建成功", WeComArchiveGroupOut.model_validate(group))
+
+
+@router.patch("/groups/{room_id}")
+def update_wecom_archive_group(
+    room_id: str,
+    payload: WeComArchiveGroupUpdate,
+    db: Session = Depends(get_db),
+):
+    try:
+        group = WeComArchiveGroupService(db).update_group(room_id, payload)
+        db.commit()
+    except ValueError as exc:
+        db.rollback()
+        raise_fail(str(exc), code=1404)
+    return ok("归档群更新成功", WeComArchiveGroupOut.model_validate(group))
 
 
 @router.post("/pull")

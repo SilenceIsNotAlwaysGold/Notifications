@@ -22,6 +22,10 @@ os.environ["TENCENT_DOC_MODE"] = "mock"
 os.environ["KDOCS_MODE"] = "mock"
 os.environ["OCR_PROVIDER"] = "mock"
 os.environ["OCR_SIDECAR_URL"] = ""
+os.environ["LEGAL_EXTRACTION_MODE"] = "regex"
+os.environ["LEGAL_LLM_BASE_URL"] = ""
+os.environ["LEGAL_LLM_API_KEY"] = ""
+os.environ["LEGAL_LLM_MODEL"] = ""
 
 from app.core.config import get_settings
 from app.db.base import Base
@@ -45,6 +49,15 @@ def reset_database():
     os.environ["ADMIN_API_KEYS"] = ""
     os.environ["PUBLIC_ENDPOINTS"] = "/api/v1/health,/api/v1/health/detail"
     os.environ["WECOM_SEND_MODE"] = "mock"
+    os.environ["WECOMAPI_BASE_URL"] = ""
+    os.environ["WECOMAPI_TOKEN"] = ""
+    os.environ["WECOMAPI_GUID"] = ""
+    os.environ["WECOMAPI_MIN_INTERVAL_SECONDS"] = "0"
+    os.environ["WECOM_CLI_BINARY"] = "wecom-cli"
+    os.environ["WECOM_CLI_CONFIG_DIR"] = "~/.config/wecom"
+    os.environ["WECOM_CLI_MIN_INTERVAL_SECONDS"] = "0"
+    os.environ["WECOM_CLI_DAILY_LIMIT"] = "200"
+    os.environ["WECOM_CLI_GROUP_DAILY_LIMIT"] = "10"
     os.environ["WECOM_ARCHIVE_MODE"] = "mock"
     os.environ["WECOM_ARCHIVE_SIDECAR_URL"] = ""
     os.environ["WECOM_ARCHIVE_SEQ_FILE"] = "./test_wecom_archive_seq.txt"
@@ -62,7 +75,20 @@ def reset_database():
     os.environ["OCR_SIDECAR_URL"] = ""
     os.environ["OCR_ENABLE_REPROCESS"] = "true"
     os.environ["OCR_MAX_TEXT_LENGTH"] = "20000"
+    os.environ["LEGAL_EXTRACTION_MODE"] = "regex"
+    os.environ["LEGAL_LLM_BASE_URL"] = ""
+    os.environ["LEGAL_LLM_API_KEY"] = ""
+    os.environ["LEGAL_LLM_MODEL"] = ""
+    os.environ["LEGAL_LLM_TIMEOUT_SECONDS"] = "30"
+    os.environ["LEGAL_LLM_MAX_TEXT_LENGTH"] = "16000"
+    os.environ["LEGAL_LLM_MIN_CONFIDENCE"] = "0.75"
+    os.environ["LEGAL_LLM_FALLBACK_TO_REGEX"] = "true"
     get_settings.cache_clear()
+    from app.adapters.wecomapi import WeComApiAdapter
+    from app.adapters.wecom_cli import WeComCliAdapter
+
+    WeComApiAdapter.reset_safety_state()
+    WeComCliAdapter.reset_safety_state()
     if TEST_SEQ_PATH.exists():
         TEST_SEQ_PATH.unlink()
     if TEST_STORAGE_PATH.exists():

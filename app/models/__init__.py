@@ -11,6 +11,7 @@ from app.models.reminder_send_log import ReminderSendLog
 from app.models.system_run_log import SystemRunLog
 from app.models.tenant import Tenant
 from app.models.tenant_setting import TenantSetting
+from app.models.wecom_archive_group import WeComArchiveGroup
 
 __all__ = [
     "CaseStatusHistory",
@@ -26,4 +27,5 @@ __all__ = [
     "SystemRunLog",
     "Tenant",
     "TenantSetting",
+    "WeComArchiveGroup",
 ]

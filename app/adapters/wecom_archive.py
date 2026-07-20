@@ -9,6 +9,7 @@ from app.core.config import get_settings
 from app.schemas.legal import MockMessageCreate
 from app.services.message_service import MessageService
 from app.services.system_run_log_service import SystemRunLogService
+from app.services.wecom_archive_group_service import WeComArchiveGroupService
 from app.utils.datetime_utils import app_timezone, ensure_aware
 from app.utils.seq_store import SeqStore
 
@@ -71,7 +72,13 @@ class WeComArchiveAdapter:
         current_seq = self.seq_store.read()
         try:
             messages = self.fetch_messages(seq=current_seq, limit=self.settings.wecom_archive_limit)
-            result = self.process_messages(db, messages, update_seq=True, initial_seq=current_seq)
+            result = self.process_messages(
+                db,
+                messages,
+                update_seq=True,
+                initial_seq=current_seq,
+                enforce_group_scope=self.settings.wecom_archive_mode == "real",
+            )
             summary = {**result, **({"operator": operator} if operator else {})}
             status_method = run_service.finish_partial if result["failed"] else run_service.finish_success
             status_method(
@@ -95,15 +102,51 @@ class WeComArchiveAdapter:
         messages: list[dict[str, Any]],
         update_seq: bool = True,
         initial_seq: int = 0,
+        enforce_group_scope: bool = False,
     ) -> dict[str, int]:
         processed = 0
         failed = 0
+        skipped = 0
+        discovered = 0
+        identified = 0
         last_seq = initial_seq
         message_service = MessageService(db)
+        archive_group_service = WeComArchiveGroupService(db)
         for raw_message in messages:
             seq = int(raw_message.get("seq") or last_seq)
             try:
-                payload = MockMessageCreate(**self.normalize_message(raw_message))
+                message_to_process = raw_message
+                if enforce_group_scope:
+                    room_id = str(raw_message.get("roomid") or raw_message.get("group_id") or "").strip()
+                    if not room_id:
+                        skipped += 1
+                        last_seq = max(last_seq, seq)
+                        if update_seq:
+                            self.seq_store.write(last_seq)
+                        continue
+                    seen_at = datetime.fromisoformat(self._normalize_received_at(raw_message.get("msgtime")))
+                    archive_group, was_discovered = archive_group_service.discover_group(room_id, seen_at)
+                    discovered += int(was_discovered)
+                    identification_name = self._extract_group_identification_name(raw_message)
+                    if identification_name:
+                        identified += int(
+                            archive_group_service.identify_group(archive_group, identification_name)
+                        )
+                        skipped += 1
+                        last_seq = max(last_seq, seq)
+                        if update_seq:
+                            self.seq_store.write(last_seq)
+                        continue
+                    if archive_group.status != "enabled":
+                        skipped += 1
+                        last_seq = max(last_seq, seq)
+                        if update_seq:
+                            self.seq_store.write(last_seq)
+                        continue
+                    if archive_group.tenant_id and not raw_message.get("tenant_id"):
+                        message_to_process = {**raw_message, "tenant_id": archive_group.tenant_id}
+
+                payload = MockMessageCreate(**self.normalize_message(message_to_process))
                 message_service.handle_incoming_message(payload)
                 processed += 1
                 last_seq = max(last_seq, seq)
@@ -112,7 +155,26 @@ class WeComArchiveAdapter:
             except Exception:
                 failed += 1
                 logger.exception("处理企业微信归档消息失败 seq=%s", seq)
-        return {"pulled": len(messages), "processed": processed, "failed": failed, "last_seq": last_seq}
+        return {
+            "pulled": len(messages),
+            "processed": processed,
+            "failed": failed,
+            "skipped": skipped,
+            "discovered": discovered,
+            "identified": identified,
+            "last_seq": last_seq,
+        }
+
+    @staticmethod
+    def _extract_group_identification_name(raw_message: dict[str, Any]) -> str | None:
+        if raw_message.get("msgtype") != "text":
+            return None
+        content = str((raw_message.get("text") or {}).get("content") or "").strip()
+        command = "#群名识别群"
+        if not content.startswith(f"{command} "):
+            return None
+        display_name = " ".join(content[len(command) :].split())
+        return display_name[:64] or None
 
     @staticmethod
     def _normalize_msg_type(msgtype: str, raw_message: dict[str, Any]) -> str:

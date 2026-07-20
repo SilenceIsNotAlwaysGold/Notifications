@@ -1,8 +1,8 @@
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ApiResponse(BaseModel):
@@ -20,6 +20,22 @@ class CaseCreate(BaseModel):
     lawyer_wecom_userid: str | None = None
     due_date: date
     total_amount: Decimal = Field(default=Decimal("0.00"), ge=0)
+
+
+class CaseUpdate(BaseModel):
+    debtor_name: str | None = Field(default=None, min_length=1, max_length=128)
+    tenant_id: str | None = Field(default=None, max_length=128)
+    group_id: str | None = Field(default=None, min_length=1, max_length=128)
+    debtor_wecom_userid: str | None = Field(default=None, max_length=128)
+    lawyer_wecom_userid: str | None = Field(default=None, max_length=128)
+    due_date: date | None = None
+    total_amount: Decimal | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def require_update_field(self):
+        if not self.model_fields_set:
+            raise ValueError("至少提供一个待更新字段")
+        return self
 
 
 class CaseOut(BaseModel):
@@ -49,6 +65,15 @@ class CaseOut(BaseModel):
 class CaseListOut(BaseModel):
     total: int
     items: list[CaseOut]
+
+
+class CaseUpdateOut(BaseModel):
+    case: CaseOut
+    updated_pending_reminders: int = 0
+    linked_media_files: int = 0
+    linked_events: int = 0
+    updated_group_messages: int = 0
+    backfill_skipped_reason: str | None = None
 
 
 class CaseLifecycleScanOut(BaseModel):
@@ -183,7 +208,46 @@ class WeComArchivePullOut(BaseModel):
     pulled: int
     processed: int
     failed: int
+    skipped: int = 0
+    discovered: int = 0
+    identified: int = 0
     last_seq: int
+
+
+class WeComArchiveGroupCreate(BaseModel):
+    room_id: str = Field(min_length=1, max_length=128)
+    wecomapi_room_id: str | None = Field(default=None, max_length=128)
+    display_name: str | None = Field(default=None, max_length=255)
+    tenant_id: str | None = Field(default=None, max_length=128)
+    status: Literal["discovered", "enabled", "disabled"] = "enabled"
+
+
+class WeComArchiveGroupUpdate(BaseModel):
+    wecomapi_room_id: str | None = Field(default=None, max_length=128)
+    display_name: str | None = Field(default=None, max_length=255)
+    tenant_id: str | None = Field(default=None, max_length=128)
+    status: Literal["discovered", "enabled", "disabled"] | None = None
+
+
+class WeComArchiveGroupOut(BaseModel):
+    id: int
+    room_id: str
+    wecomapi_room_id: str | None
+    display_name: str | None
+    tenant_id: str | None
+    status: str
+    seen_message_count: int
+    first_seen_at: datetime | None
+    last_seen_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class WeComArchiveGroupListOut(BaseModel):
+    total: int
+    items: list[WeComArchiveGroupOut]
 
 
 class WeComArchiveReplayWithOcrOut(WeComArchivePullOut):
@@ -243,6 +307,10 @@ class MediaOCRResultOut(BaseModel):
     defendant: str | None = None
     court_time: str | None = None
     requires_review: bool = False
+    extraction_confidence: float | None = None
+    review_reasons: list[str] = Field(default_factory=list)
+    parser: str | None = None
+    llm_status: str | None = None
     created_reminders: int = 0
 
 
@@ -438,7 +506,7 @@ class TenantListOut(BaseModel):
 
 
 class TenantSettingsIn(BaseModel):
-    wecom_send_mode: str | None = None
+    wecom_send_mode: Literal["mock", "webhook", "wecomapi", "wecom_cli", "wecom_bot"] | None = None
     wecom_webhook_url: str | None = None
     wecom_timeout_seconds: int | None = None
     wecom_max_retry: int | None = None

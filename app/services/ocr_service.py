@@ -3,13 +3,16 @@ from typing import Any
 from app.adapters.ocr_providers import AliyunOCRProvider, LocalTextOCRProvider, MockOCRProvider, TencentOCRProvider
 from app.core.config import get_settings
 from app.db.session import SessionLocal
+from app.services.legal_text_extraction_service import LegalTextExtractionService
 from app.services.tenant_settings_service import TenantSettingsService
 from app.utils.regex_parser import parse_legal_text
+
 
 class OCRService:
     def __init__(self) -> None:
         self.settings = get_settings()
         self.provider = self._build_provider(self.settings.ocr_provider)
+        self.legal_text_extractor = LegalTextExtractionService(self.settings)
 
     def extract_from_text(self, text: str | None, tenant_id: str | None = None) -> dict[str, Any]:
         keyword_config = self._keyword_config(tenant_id)
@@ -81,7 +84,7 @@ class OCRService:
                 "error": str(exc),
             }
         raw_text = provider_result.get("raw_text") or ""
-        parsed = parse_legal_text(raw_text, keyword_config=effective["keyword_config"])
+        parsed = self.legal_text_extractor.extract(raw_text, keyword_config=effective["keyword_config"])
         metadata = provider_result.get("metadata") or {}
         return {
             "success": bool(provider_result.get("success")),
@@ -107,6 +110,12 @@ class OCRService:
                 "provider_success": bool(provider_result.get("success")),
                 "provider_error": provider_result.get("error"),
                 "parser": parsed.get("metadata", {}).get("parser"),
+                "regex_parser": parsed.get("metadata", {}).get("regex_parser"),
+                "llm_status": parsed.get("metadata", {}).get("llm_status"),
+                "llm_model": parsed.get("metadata", {}).get("llm_model"),
+                "llm_error": parsed.get("metadata", {}).get("llm_error"),
+                "extraction_confidence": parsed.get("extraction_confidence"),
+                "review_reasons": parsed.get("review_reasons") or [],
                 "tenant_settings_source": effective["source"],
                 "payment_keyword_conflict": parsed.get("metadata", {}).get("payment_keyword_conflict"),
                 "document_type": parsed.get("document_type"),

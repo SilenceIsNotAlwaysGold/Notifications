@@ -102,7 +102,15 @@ def test_replay_processes_text_message_and_creates_business_records(client, db_s
     )
 
     assert response.status_code == 200
-    assert response.json()["data"] == {"pulled": 1, "processed": 1, "failed": 0, "last_seq": 1}
+    assert response.json()["data"] == {
+        "pulled": 1,
+        "processed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "discovered": 0,
+        "identified": 0,
+        "last_seq": 1,
+    }
 
     message = db_session.scalar(select(GroupMessage).where(GroupMessage.group_id == "group_001"))
     event = db_session.scalar(select(LegalEvent).where(LegalEvent.group_message_id == message.id))
@@ -185,7 +193,15 @@ def test_pull_mock_mode_returns_empty_without_error(client):
     response = client.post("/api/v1/legal/wecom-archive/pull")
 
     assert response.status_code == 200
-    assert response.json()["data"] == {"pulled": 0, "processed": 0, "failed": 0, "last_seq": 0}
+    assert response.json()["data"] == {
+        "pulled": 0,
+        "processed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "discovered": 0,
+        "identified": 0,
+        "last_seq": 0,
+    }
 
 
 def test_fetch_real_mode_uses_sidecar(monkeypatch):

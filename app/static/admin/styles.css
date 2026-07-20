@@ -42,6 +42,11 @@ textarea {
 }
 
 .sidebar {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  height: 100vh;
+  overflow-y: auto;
   background: #101828;
   color: #fff;
   padding: 24px 16px;
@@ -276,6 +281,46 @@ button.ghost:hover {
 
 .form-grid .wide {
   grid-column: span 3;
+}
+
+.form-grid .wide-command {
+  grid-column: span 1;
+}
+
+.field-command {
+  display: flex;
+  align-items: flex-end;
+}
+
+.form-actions {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.case-group-cell {
+  display: grid;
+  gap: 3px;
+  min-width: 180px;
+}
+
+.case-group-cell strong {
+  font-size: 13px;
+}
+
+.archive-group-grid {
+  margin-top: 14px;
+}
+
+.compact-input {
+  min-width: 132px;
+  padding: 7px 8px;
+  font-size: 13px;
+}
+
+button.small {
+  padding: 7px 10px;
+  font-size: 13px;
 }
 
 .field label {
