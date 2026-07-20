@@ -10,8 +10,14 @@ echo "== syntax checks =="
 bash -n scripts/preflight.sh
 bash -n scripts/smoke_demo.sh
 bash -n scripts/release_check.sh
-python3 -m py_compile scripts/acceptance_ocr_samples.py scripts/acceptance_wecom_sidecar_mock.py
+python3 -m py_compile scripts/acceptance_ocr_samples.py scripts/acceptance_wecom_sidecar_mock.py scripts/backup.py scripts/restore.py
 python3 -m compileall -q app wecom_archive_sidecar
+node --test wecom_bot_sidecar/sidecar.test.mjs
+
+if command -v docker >/dev/null 2>&1; then
+  echo "== docker compose config =="
+  docker compose config >/dev/null
+fi
 
 echo "== sensitive tracked files check =="
 if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then

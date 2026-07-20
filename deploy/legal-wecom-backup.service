@@ -1,0 +1,9 @@
+[Unit]
+Description=Legal WeCom Automation consistent backup
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/legal-wecom-automation
+ExecStart=/usr/bin/docker compose --profile operations run --rm backup

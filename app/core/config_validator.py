@@ -44,6 +44,19 @@ def _validate_media_storage(settings: Settings, result: dict[str, Any]) -> None:
         _add_item(result, "MEDIA_STORAGE_DIR", "ok", "MEDIA_STORAGE_DIR 存在且可写")
 
 
+def _validate_backup_storage(settings: Settings, result: dict[str, Any]) -> None:
+    backup_dir = Path(settings.ops_backup_dir)
+    try:
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        probe_file = backup_dir / ".write_test"
+        probe_file.write_text("ok", encoding="utf-8")
+        probe_file.unlink(missing_ok=True)
+    except Exception as exc:
+        _add_item(result, "OPS_BACKUP_DIR", "error", f"OPS_BACKUP_DIR 不可写：{exc}")
+        return
+    _add_item(result, "OPS_BACKUP_DIR", "ok", "OPS_BACKUP_DIR 存在且可写")
+
+
 def _validate_database_url(settings: Settings, result: dict[str, Any]) -> None:
     database_url = settings.database_url
     if not database_url:
@@ -251,6 +264,14 @@ def validate_runtime_config(settings: Settings) -> dict[str, Any]:
             _add_item(result, "MEDIA_DOWNLOAD_MODE", "ok", "企业微信媒体下载 real 模式必要配置已提供，将通过 SDK sidecar 下载")
 
     _validate_media_storage(settings, result)
+    _validate_backup_storage(settings, result)
+
+    if settings.ops_webhook_url and urlparse(settings.ops_webhook_url).scheme not in {"http", "https"}:
+        _add_item(result, "OPS_WEBHOOK_URL", "error", "OPS_WEBHOOK_URL 必须是 http 或 https URL")
+    elif settings.ops_webhook_url:
+        _add_item(result, "OPS_WEBHOOK_URL", "ok", "系统告警 Webhook 已配置")
+    else:
+        _add_item(result, "OPS_WEBHOOK_URL", "warning", "系统告警仅在管理后台展示，未配置外部 Webhook")
 
     if settings.db_auto_create:
         _add_item(result, "DB_AUTO_CREATE", "warning", "DB_AUTO_CREATE=true 适合本地开发，不推荐生产环境")

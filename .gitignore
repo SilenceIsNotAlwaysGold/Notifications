@@ -20,6 +20,8 @@ env/
 .env.*
 !.env.example
 *.pem
+*.key
+secrets/
 
 # Local databases and runtime state
 *.db
@@ -32,6 +34,8 @@ wecom_archive_sidecar/sdk/*
 # Runtime storage
 storage/media/*
 !storage/media/.gitkeep
+storage/backups/
+storage/wecom-bot/
 
 # Build and packaged artifacts
 dist/

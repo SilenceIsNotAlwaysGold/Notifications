@@ -1159,6 +1159,17 @@ curl 'http://127.0.0.1:8000/api/v1/legal/reminders?status=pending'
 curl 'http://127.0.0.1:8000/api/v1/legal/events?event_type=payment_notice'
 ```
 
+## 运维交付
+
+生产 Compose 包含 API、OCR sidecar、归档 sidecar、迁移任务和备份任务；企业微信机器人通过 `robot` profile 可选启用。只有 API 对宿主机暴露端口。
+
+```bash
+docker compose up --build -d
+docker compose --profile operations run --rm backup
+```
+
+管理端“系统告警”页面覆盖归档停滞、OCR/LLM/金山连续失败、机器人离线、备份过期和磁盘不足。备份校验、恢复、回滚及 systemd timer 安装步骤见 [运维文档](docs/operations.md)。
+
 ## 测试
 
 ```bash

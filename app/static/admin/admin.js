@@ -17,6 +17,7 @@ const titles = {
   "ocr-reviews": ["人工复核", "核对识别结果并控制业务同步"],
   reminders: ["提醒", "查看提醒、手动触发到期提醒发送"],
   "merchant-questions": ["商家提问", "跟踪外部消息回复时效"],
+  "system-alerts": ["系统告警", "归档、识别、同步、机器人、备份和磁盘健康"],
   events: ["事件", "查看系统抽取出的结构化法务事件"],
   media: ["媒体", "图片、PDF、文件和 OCR 状态"],
   sync: ["同步日志", "金山文档同步日志和重试结果"],
@@ -110,12 +111,12 @@ function fmt(value) {
 
 function badge(value) {
   const text = String(value || "-");
-  const cls = ["ok", "success", "sent", "paid", "normal", "downloaded", "processed"].includes(text)
+  const cls = ["ok", "success", "sent", "paid", "normal", "downloaded", "processed", "resolved"].includes(text)
     ? "ok"
-    : ["pending", "retrying", "degraded"].includes(text)
+    : ["pending", "retrying", "degraded", "acknowledged", "warning"].includes(text)
       ? "warn"
       : "";
-  const finalCls = ["rejected", "failed", "cancelled"].includes(text) ? "danger" : cls;
+  const finalCls = ["rejected", "failed", "cancelled", "critical", "open"].includes(text) ? "danger" : cls;
   return `<span class="badge ${finalCls}">${escapeHtml(text)}</span>`;
 }
 
@@ -863,6 +864,51 @@ async function renderMerchantQuestions() {
   }));
 }
 
+async function renderSystemAlerts() {
+  const data = await api("/api/v1/legal/system-alerts?page_size=200");
+  const items = data.items || [];
+  const openCount = items.filter((item) => item.status === "open").length;
+  const acknowledgedCount = items.filter((item) => item.status === "acknowledged").length;
+  const resolvedCount = items.filter((item) => item.status === "resolved").length;
+  $("#content").innerHTML = `
+    <div class="grid cols-3">
+      <div class="panel stat"><div class="stat-label">待处理</div><div class="stat-value ${openCount ? "status-warning" : "status-ok"}">${openCount}</div></div>
+      <div class="panel stat"><div class="stat-label">已确认</div><div class="stat-value">${acknowledgedCount}</div></div>
+      <div class="panel stat"><div class="stat-label">已恢复</div><div class="stat-value status-ok">${resolvedCount}</div></div>
+    </div>
+    <div style="margin-top:14px">
+      ${panel(
+        "告警记录",
+        table(
+          [
+            { label: "级别", render: (row) => badge(row.severity) },
+            { label: "状态", render: (row) => badge(row.status) },
+            { label: "告警", render: (row) => `<strong>${escapeHtml(row.title)}</strong><div class="muted">${escapeHtml(row.message)}</div>` },
+            { label: "来源", key: "source" },
+            { label: "次数", key: "occurrence_count" },
+            { label: "最近发现", key: "last_detected_at" },
+            { label: "确认人", key: "acknowledged_by" },
+            { label: "恢复时间", key: "resolved_at" },
+            { label: "操作", render: (row) => row.status === "open" ? `<button class="small ghost" data-ack-alert="${row.id}">确认</button>` : "" },
+          ],
+          items,
+        ),
+        '<button id="scan-alerts-btn" class="ghost">立即扫描</button>',
+      )}
+    </div>
+  `;
+  $("#scan-alerts-btn").addEventListener("click", async () => {
+    const result = await api("/api/v1/legal/system-alerts/scan", { method: "POST", body: "{}" });
+    showAlert(`扫描完成：当前异常 ${result.active}，新告警 ${result.opened}，已恢复 ${result.resolved}`);
+    renderSystemAlerts();
+  });
+  document.querySelectorAll("[data-ack-alert]").forEach((button) => button.addEventListener("click", async () => {
+    await api(`/api/v1/legal/system-alerts/${button.dataset.ackAlert}/ack`, { method: "POST", body: "{}" });
+    showAlert("系统告警已确认");
+    renderSystemAlerts();
+  }));
+}
+
 async function renderEvents() {
   const data = await api("/api/v1/legal/events?limit=50");
   $("#content").innerHTML = panel(
@@ -928,6 +974,7 @@ async function loadView() {
     if (state.view === "ocr-reviews") await renderOCRReviews();
     if (state.view === "reminders") await renderReminders();
     if (state.view === "merchant-questions") await renderMerchantQuestions();
+    if (state.view === "system-alerts") await renderSystemAlerts();
     if (state.view === "events") await renderEvents();
     if (state.view === "media") await renderMedia();
     if (state.view === "sync") await renderSync();

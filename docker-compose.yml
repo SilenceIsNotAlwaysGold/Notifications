@@ -1,10 +1,124 @@
+name: legal-wecom-automation
+
+x-python-service: &python-service
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: legal-wecom-automation:local
+  env_file:
+    - .env
+  networks:
+    - legal-internal
+
+x-app-environment: &app-environment
+  DATABASE_URL: sqlite:////app/data/legal_wecom.db
+  DB_AUTO_CREATE: "false"
+  MEDIA_STORAGE_DIR: /app/storage/media
+  OPS_BACKUP_DIR: /app/backups
+  WECOM_ARCHIVE_SEQ_FILE: /app/data/wecom_archive_seq.txt
+  WECOM_ARCHIVE_PRIVATE_KEY_PATH: /run/secrets/archive_private_key.pem
+  OCR_SIDECAR_URL: http://ocr-sidecar:8011
+  WECOM_ARCHIVE_SIDECAR_URL: http://archive-sidecar:8012/wecom-archive
+  WECOM_BOT_SIDECAR_URL: http://wecom-bot:8788
+
+x-app-volumes: &app-volumes
+  - legal-data:/app/data
+  - media-data:/app/storage
+  - backup-data:/app/backups
+
 services:
-  legal-wecom-api:
-    build: .
+  migrate:
+    <<: *python-service
+    environment: *app-environment
+    volumes: *app-volumes
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+
+  ocr-sidecar:
+    <<: *python-service
+    command: ["uvicorn", "ocr_sidecar.main:app", "--host", "0.0.0.0", "--port", "8011"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8011/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  archive-sidecar:
+    <<: *python-service
+    environment:
+      WECOM_ARCHIVE_PRIVATE_KEY_PATH: ${WECOM_ARCHIVE_PRIVATE_KEY_PATH:-/run/secrets/archive_private_key.pem}
+    volumes:
+      - ./secrets:/run/secrets:ro
+    command: ["uvicorn", "wecom_archive_sidecar.main:app", "--host", "0.0.0.0", "--port", "8012"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8012/wecom-archive/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  api:
+    <<: *python-service
+    environment: *app-environment
+    volumes: *app-volumes
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      ocr-sidecar:
+        condition: service_healthy
+      archive-sidecar:
+        condition: service_healthy
+    ports:
+      - "${API_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  wecom-bot:
+    build:
+      context: ./wecom_bot_sidecar
+      dockerfile: Dockerfile
+    image: legal-wecom-bot-sidecar:local
+    profiles: ["robot"]
     env_file:
       - .env
-    ports:
-      - "8000:8000"
+    environment:
+      WECOM_BOT_CONFIG_DIR: /app/config
+      WECOM_BOT_LISTEN_HOST: 0.0.0.0
+      WECOM_BOT_LISTEN_PORT: 8788
     volumes:
-      - ./storage:/app/storage
-      - ./legal_wecom.db:/app/legal_wecom.db
+      - ${WECOM_BOT_CONFIG_HOST_DIR:-./storage/wecom-bot}:/app/config:ro
+    networks:
+      - legal-internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8788/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  backup:
+    <<: *python-service
+    environment: *app-environment
+    volumes: *app-volumes
+    profiles: ["operations"]
+    command: ["python", "-m", "app.ops.backup"]
+    restart: "no"
+
+networks:
+  legal-internal:
+    driver: bridge
+
+volumes:
+  legal-data:
+  media-data:
+  backup-data:

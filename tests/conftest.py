@@ -26,6 +26,9 @@ os.environ["LEGAL_EXTRACTION_MODE"] = "regex"
 os.environ["LEGAL_LLM_BASE_URL"] = ""
 os.environ["LEGAL_LLM_API_KEY"] = ""
 os.environ["LEGAL_LLM_MODEL"] = ""
+os.environ["OPS_BACKUP_DIR"] = "./test_storage/backups"
+os.environ["OPS_DISK_FREE_MIN_GB"] = "0"
+os.environ["OPS_WEBHOOK_URL"] = ""
 
 from app.core.config import get_settings
 from app.db.base import Base
@@ -83,6 +86,9 @@ def reset_database():
     os.environ["LEGAL_LLM_MAX_TEXT_LENGTH"] = "16000"
     os.environ["LEGAL_LLM_MIN_CONFIDENCE"] = "0.75"
     os.environ["LEGAL_LLM_FALLBACK_TO_REGEX"] = "true"
+    os.environ["OPS_BACKUP_DIR"] = "./test_storage/backups"
+    os.environ["OPS_DISK_FREE_MIN_GB"] = "0"
+    os.environ["OPS_WEBHOOK_URL"] = ""
     get_settings.cache_clear()
     from app.adapters.wecomapi import WeComApiAdapter
     from app.adapters.wecom_cli import WeComCliAdapter

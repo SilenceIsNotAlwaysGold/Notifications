@@ -809,3 +809,30 @@ class WeComArchiveCheckOut(BaseModel):
     ready: bool
     missing_fields: list[str]
     warnings: list[str]
+
+
+class SystemAlertOut(BaseModel):
+    id: int
+    tenant_id: str | None
+    alert_type: str
+    severity: str
+    source: str
+    status: str
+    title: str
+    message: str
+    details_json: str
+    occurrence_count: int
+    first_detected_at: datetime
+    last_detected_at: datetime
+    acknowledged_at: datetime | None
+    acknowledged_by: str | None
+    resolved_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SystemAlertListOut(BaseModel):
+    total: int
+    items: list[SystemAlertOut]

@@ -465,6 +465,38 @@ def test_release_check_script_covers_core_delivery_checks():
     assert "python3 -m app.cli check-config" in content
     assert "acceptance_ocr_samples.py" in content
     assert "LIVE_BASE_URL" in content
+    assert "docker compose config" in content
+    assert "scripts/backup.py" in content
+    assert "scripts/restore.py" in content
+
+
+def test_production_compose_contains_internal_sidecars_and_operations_tasks():
+    compose = (PROJECT_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+
+    for service in ["api:", "ocr-sidecar:", "archive-sidecar:", "wecom-bot:", "migrate:", "backup:"]:
+        assert service in compose
+    assert compose.count("ports:") == 1
+    assert 'profiles: ["robot"]' in compose
+    assert 'profiles: ["operations"]' in compose
+    assert "service_completed_successfully" in compose
+    assert "service_healthy" in compose
+
+
+def test_backup_restore_and_systemd_delivery_files_exist():
+    for relative_path in [
+        "scripts/backup.py",
+        "scripts/restore.py",
+        "deploy/legal-wecom-backup.service",
+        "deploy/legal-wecom-backup.timer",
+        "docs/operations.md",
+        "wecom_bot_sidecar/Dockerfile",
+    ]:
+        assert (PROJECT_ROOT / relative_path).exists()
+
+    timer = (PROJECT_ROOT / "deploy/legal-wecom-backup.timer").read_text(encoding="utf-8")
+    service = (PROJECT_ROOT / "deploy/legal-wecom-backup.service").read_text(encoding="utf-8")
+    assert "OnCalendar=" in timer
+    assert "docker compose --profile operations run --rm backup" in service
 
 
 def test_github_actions_ci_runs_pytest_and_alembic():

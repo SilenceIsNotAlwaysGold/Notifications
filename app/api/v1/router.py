@@ -15,6 +15,7 @@ from app.api.v1 import (
     operation_audit_logs,
     reminders,
     reminder_rules,
+    system_alerts,
     tenants,
     tenant_settings,
     wecom_archive,
@@ -29,6 +30,7 @@ api_router.include_router(messages.router, dependencies=legal_dependencies)
 api_router.include_router(reminders.router, dependencies=legal_dependencies)
 api_router.include_router(reminder_rules.router, dependencies=legal_dependencies)
 api_router.include_router(merchant_questions.router, dependencies=legal_dependencies)
+api_router.include_router(system_alerts.router, dependencies=legal_dependencies)
 api_router.include_router(events.router, dependencies=legal_dependencies)
 api_router.include_router(wecom_archive.router, dependencies=legal_dependencies)
 api_router.include_router(media_files.router, dependencies=legal_dependencies)

@@ -51,7 +51,30 @@ scripts/smoke_demo.sh
 
 ```bash
 cp .env.example .env
-docker compose up --build
+mkdir -p secrets
+docker compose up --build -d
+docker compose ps
+```
+
+仅启用可选企业微信机器人 sidecar：
+
+```bash
+docker compose --profile robot up --build -d
+```
+
+手工执行一致性备份：
+
+```bash
+docker compose --profile operations run --rm backup
+```
+
+恢复前应停止 API，然后显式校验并恢复指定备份：
+
+```bash
+docker compose stop api
+docker compose --profile operations run --rm backup \
+  python -m app.ops.restore /app/backups/20260720T023000Z --force
+docker compose up -d api
 ```
 
 ## 上线前建议
@@ -77,6 +100,7 @@ scripts/release_check.sh
 - `AUTH_ENABLED=true`
 - `ADMIN_API_KEYS=your-long-secret-key`
 - 使用外部持久化数据库和安全的密钥管理方案
+- 安装 `deploy/legal-wecom-backup.service` 和 `.timer`，确认每日备份可恢复
 
 ## 注意事项
 

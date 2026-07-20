@@ -108,6 +108,15 @@ class Settings(BaseSettings):
     legal_llm_max_text_length: int = Field(default=16000, ge=1000, alias="LEGAL_LLM_MAX_TEXT_LENGTH")
     legal_llm_min_confidence: float = Field(default=0.75, ge=0, le=1, alias="LEGAL_LLM_MIN_CONFIDENCE")
     legal_llm_fallback_to_regex: bool = Field(default=True, alias="LEGAL_LLM_FALLBACK_TO_REGEX")
+    ops_alerts_enabled: bool = Field(default=True, alias="OPS_ALERTS_ENABLED")
+    ops_scan_interval_minutes: int = Field(default=5, ge=1, alias="OPS_SCAN_INTERVAL_MINUTES")
+    ops_failure_threshold: int = Field(default=3, ge=1, alias="OPS_FAILURE_THRESHOLD")
+    ops_archive_stale_minutes: int = Field(default=10, ge=1, alias="OPS_ARCHIVE_STALE_MINUTES")
+    ops_backup_dir: str = Field(default="./storage/backups", alias="OPS_BACKUP_DIR")
+    ops_backup_stale_hours: int = Field(default=26, ge=1, alias="OPS_BACKUP_STALE_HOURS")
+    ops_backup_retention_days: int = Field(default=14, ge=1, alias="OPS_BACKUP_RETENTION_DAYS")
+    ops_disk_free_min_gb: float = Field(default=2.0, ge=0, alias="OPS_DISK_FREE_MIN_GB")
+    ops_webhook_url: str | None = Field(default=None, alias="OPS_WEBHOOK_URL")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", populate_by_name=True)
 

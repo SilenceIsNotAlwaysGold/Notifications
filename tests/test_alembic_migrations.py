@@ -30,6 +30,7 @@ EXPECTED_TABLES = {
     "wecom_archive_groups",
     "reminder_rules",
     "merchant_questions",
+    "system_alerts",
 }
 
 
@@ -142,6 +143,63 @@ def test_sync_idempotency_migration_keeps_first_key_and_renames_legacy_duplicate
         assert keys[1].startswith("legacy:2:duplicate-key")
         assert keys[2].startswith("legacy:3:duplicate-key")
         assert index["unique"] == 1
+    finally:
+        engine.dispose()
+        get_settings.cache_clear()
+
+
+def test_upgrade_from_0009_preserves_old_ocr_and_reminder_rows(tmp_path, monkeypatch):
+    database_url = f"sqlite:///{tmp_path / 'upgrade_from_0009.db'}"
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    get_settings.cache_clear()
+    config = _alembic_config(database_url)
+    command.upgrade(config, "0009_add_wecomapi_room_id")
+    engine = create_engine(database_url, future=True)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO legal_media_files (
+                        group_id, media_type, source, download_status, ocr_status,
+                        extracted_text, created_at, updated_at
+                    ) VALUES (
+                        'group_legacy', 'pdf', 'wecom_archive', 'downloaded', 'processed',
+                        '历史判决书 OCR', '2026-07-01 09:00:00', '2026-07-01 09:05:00'
+                    )
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO reminders (
+                        group_id, reminder_type, remind_at, content, status,
+                        retry_count, created_at, updated_at
+                    ) VALUES (
+                        'group_legacy', 'payment_tracking', '2026-07-02 09:00:00',
+                        '历史缴费提醒', 'pending', 0,
+                        '2026-07-01 09:00:00', '2026-07-01 09:00:00'
+                    )
+                    """
+                )
+            )
+
+        command.upgrade(config, "head")
+
+        with engine.connect() as connection:
+            media = connection.execute(
+                text("SELECT extracted_text, review_status, business_applied_at FROM legal_media_files")
+            ).mappings().one()
+            reminder = connection.execute(
+                text("SELECT content, cancelled_at, dedupe_key FROM reminders")
+            ).mappings().one()
+        assert media["extracted_text"] == "历史判决书 OCR"
+        assert media["review_status"] == "approved"
+        assert media["business_applied_at"] is not None
+        assert reminder["content"] == "历史缴费提醒"
+        assert reminder["cancelled_at"] is None
+        assert reminder["dedupe_key"] is None
     finally:
         engine.dispose()
         get_settings.cache_clear()

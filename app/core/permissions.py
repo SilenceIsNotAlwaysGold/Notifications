@@ -50,6 +50,7 @@ ROLE_PERMISSIONS: dict[str, list[PermissionRule]] = {
         PermissionRule("GET", r"/api/v1/legal/reminders"),
         PermissionRule("GET", r"/api/v1/legal/reminder-rules"),
         PermissionRule("GET", r"/api/v1/legal/merchant-questions"),
+        PermissionRule("GET", r"/api/v1/legal/system-alerts"),
         PermissionRule("GET", r"/api/v1/legal/media-files"),
         PermissionRule("GET", r"/api/v1/legal/media-files/\d+/content"),
         PermissionRule("GET", r"/api/v1/legal/ocr-reviews"),
@@ -68,6 +69,7 @@ ROLE_PERMISSIONS: dict[str, list[PermissionRule]] = {
         PermissionRule("POST", r"/api/v1/legal/media-files/\d+/ocr"),
         PermissionRule("POST", r"/api/v1/legal/document-sync-logs/\d+/retry"),
         PermissionRule("POST", r"/api/v1/legal/merchant-questions/scan-timeouts"),
+        PermissionRule("POST", r"/api/v1/legal/system-alerts/scan"),
     ],
 }
 
