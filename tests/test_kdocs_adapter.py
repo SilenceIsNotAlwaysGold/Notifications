@@ -43,6 +43,8 @@ def test_real_gateway_upload_uses_multipart_contract(tmp_path, monkeypatch):
     assert captured["data"]["space_id"] == "space_001"
     assert captured["data"]["folder_id"] == "致和法务/判决书文件"
     assert captured["data"]["target_filename"] == "李四-张三{判决书}.pdf"
+    assert captured["data"]["conflict_strategy"] == "rename"
+    assert result["request_payload"]["conflict_strategy"] == "rename"
     assert json.loads(captured["data"]["metadata"])["requires_review"] is False
     assert captured["files"]["file"][0] == "李四-张三{判决书}.pdf"
 

@@ -10,6 +10,7 @@ from app.models.document_sync_log import DocumentSyncLog
 from app.models.legal_case import LegalCase
 from app.models.legal_event import LegalEvent
 from app.services.case_service import CaseService
+from app.services.document_sync_service import DocumentSyncService
 
 
 def reset_settings(**values):
@@ -265,3 +266,59 @@ def test_manual_case_snapshot_sync_api(client):
     data = response.json()["data"]
     assert data["sync_type"] == "case_snapshot"
     assert data["status"] == "success"
+
+
+class CountingKDocsAdapter:
+    def __init__(self, fail: bool = False, final_filename: str | None = None):
+        self.calls = 0
+        self.fail = fail
+        self.final_filename = final_filename
+
+    def append_court_time_row(self, row, tenant_id=None):
+        self.calls += 1
+        payload = {"tenant_id": tenant_id, "sheet_id": "court-sheet", "row": row}
+        return {
+            "success": not self.fail,
+            "sync_target": "kdocs",
+            "operation": "append_court_time_row",
+            "request_payload": payload,
+            "response": {"row_id": "row-1"} if not self.fail else None,
+            "error": "temporary failure" if self.fail else None,
+        }
+
+
+def test_duplicate_sync_returns_reserved_log_without_second_gateway_call(db_session):
+    event = LegalEvent(event_type="court_notice", metadata_json="{}")
+    db_session.add(event)
+    db_session.flush()
+    adapter = CountingKDocsAdapter()
+    service = DocumentSyncService(db_session, adapter=adapter)
+    row = {"案号": "(2026)黔0281民初3118号", "开庭时间": "2026-07-02T15:00:00+08:00"}
+
+    first = service.sync_court_time(event, row)
+    second = service.sync_court_time(event, row)
+
+    assert first.id == second.id
+    assert first.status == "success"
+    assert adapter.calls == 1
+    assert len(list(db_session.scalars(select(DocumentSyncLog)).all())) == 1
+
+
+def test_failed_sync_requires_retry_and_reuses_original_log(db_session):
+    event = LegalEvent(event_type="court_notice", metadata_json="{}")
+    db_session.add(event)
+    db_session.flush()
+    adapter = CountingKDocsAdapter(fail=True)
+    service = DocumentSyncService(db_session, adapter=adapter)
+    row = {"案号": "(2026)黔0281民初3118号", "开庭时间": "2026-07-02T15:00:00+08:00"}
+
+    failed = service.sync_court_time(event, row)
+    duplicate = service.sync_court_time(event, row)
+    adapter.fail = False
+    retried = service.retry_failed_sync(failed.id)
+
+    assert duplicate.id == failed.id == retried.id
+    assert retried.status == "success"
+    assert retried.retry_count == 1
+    assert adapter.calls == 2
+    assert len(list(db_session.scalars(select(DocumentSyncLog)).all())) == 1

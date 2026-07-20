@@ -79,13 +79,18 @@ class KDocsAdapter:
             "target_filename": target_filename,
             "local_path": local_path,
             "metadata": metadata,
+            "conflict_strategy": "rename",
         }
         if self.mode == "mock":
             file_id = f"mock-kdocs-file-{Path(target_filename).stem}"
             return self._mock_result(
                 "upload_legal_document",
                 payload,
-                response={"file_id": file_id, "url": f"kdocs://{self.settings.kdocs_judgment_folder_id}/{target_filename}"},
+                response={
+                    "file_id": file_id,
+                    "final_filename": target_filename,
+                    "url": f"kdocs://{self.settings.kdocs_judgment_folder_id}/{target_filename}",
+                },
             )
         missing = self._missing_real_config()
         if missing:
@@ -99,6 +104,7 @@ class KDocsAdapter:
                         "folder_id": self.settings.kdocs_judgment_folder_id,
                         "target_filename": target_filename,
                         "metadata": self._stringify(metadata),
+                        "conflict_strategy": "rename",
                     },
                     files={"file": (target_filename, file_obj)},
                     headers=self._headers(),

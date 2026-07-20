@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.adapters.wecom_media import WeComMediaAdapter
 from app.core.config import get_settings
+from app.models.document_sync_log import DocumentSyncLog
 from app.models.group_message import GroupMessage
 from app.models.legal_case import LegalCase
 from app.models.legal_event import LegalEvent
@@ -499,6 +500,13 @@ class MediaFileService:
                 try:
                     upload_response = json.loads(upload_log.response_payload_json or "{}")
                     upload_url = upload_response.get("url") or upload_response.get("file_url")
+                    target_filename = (
+                        upload_response.get("final_filename")
+                        or upload_response.get("filename")
+                        or upload_response.get("name")
+                        or upload_log.external_row_key
+                        or target_filename
+                    )
                 except Exception:
                     upload_url = None
             self.document_sync.sync_enforcement_progress(event, self._enforcement_row(result, legal_case, media_file, target_filename, upload_url))
@@ -571,7 +579,28 @@ class MediaFileService:
         defendant = self._safe_kdocs_filename_part(result.get("defendant") or "未知被告")
         document_type = result.get("document_type") or "文书"
         ext = media_file.file_ext or Path(media_file.original_filename or "").suffix or ".pdf"
-        return f"{plaintiff}-{defendant}{{{document_type}}}{ext}"
+        stem = f"{plaintiff}-{defendant}{{{document_type}}}"
+        used_names = set(
+            self.db.scalars(
+                select(DocumentSyncLog.external_row_key)
+                .where(DocumentSyncLog.sync_type == "legal_document_upload")
+                .where(DocumentSyncLog.external_sheet_name == self.document_sync.settings.kdocs_judgment_folder_id)
+                .where(DocumentSyncLog.status.in_(("processing", "success")))
+                .where(DocumentSyncLog.external_row_key.is_not(None))
+            ).all()
+        )
+        base_name = f"{stem}{ext}"
+        if base_name not in used_names:
+            return base_name
+
+        case_no = self._safe_kdocs_filename_part(str(result.get("case_no") or ""))
+        case_name = f"{stem}-{case_no}{ext}" if case_no != "未知" else base_name
+        if case_name not in used_names:
+            return case_name
+
+        message_id = self._safe_kdocs_filename_part(media_file.msg_id or str(media_file.id))
+        suffix = f"{case_no}-{message_id}" if case_no != "未知" else message_id
+        return f"{stem}-{suffix}{ext}"
 
     @staticmethod
     def _safe_kdocs_filename_part(value: str) -> str:

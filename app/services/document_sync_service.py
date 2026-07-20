@@ -4,6 +4,7 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.adapters.kdocs import KDocsAdapter
@@ -26,30 +27,54 @@ class DocumentSyncService:
         self.adapter = adapter or KDocsAdapter()
 
     def sync_status(self, legal_case: LegalCase, status: str) -> DocumentSyncLog:
-        result = self._safe_call(lambda: self.adapter.update_case_status(legal_case.case_no, status, legal_case.id, tenant_id=legal_case.tenant_id), "update_case_status")
-        payload = result.get("request_payload") or {}
-        return self._write_log(
+        payload = {
+            "tenant_id": legal_case.tenant_id,
+            "space_id": self.settings.kdocs_space_id,
+            "sheet_id": self.settings.kdocs_case_sheet_id,
+            "row_match": {self.settings.kdocs_case_no_column: legal_case.case_no},
+            "fields": {
+                self.settings.kdocs_case_no_column: legal_case.case_no,
+                self.settings.kdocs_status_column: status,
+            },
+            "case_id": legal_case.id,
+        }
+        return self._execute_once(
             case_id=legal_case.id,
             tenant_id=legal_case.tenant_id,
             sync_type="status",
-            result=result,
-            external_sheet_name=payload.get("sheet_name") or payload.get("sheet_id") or self.settings.kdocs_case_sheet_id,
+            operation="update_case_status",
+            initial_payload=payload,
+            callback=lambda: self.adapter.update_case_status(legal_case.case_no, status, legal_case.id, tenant_id=legal_case.tenant_id),
+            external_sheet_name=self.settings.kdocs_case_sheet_id,
             external_row_key=legal_case.case_no,
             idempotency_key=f"kdocs:status:{legal_case.id}:{status}",
         )
 
     def sync_paid_amount(self, legal_case: LegalCase) -> DocumentSyncLog:
-        result = self._safe_call(
-            lambda: self.adapter.update_paid_amount(legal_case.case_no, legal_case.paid_amount, legal_case.id, tenant_id=legal_case.tenant_id),
-            "update_paid_amount",
-        )
-        payload = result.get("request_payload") or {}
-        return self._write_log(
+        payload = {
+            "tenant_id": legal_case.tenant_id,
+            "space_id": self.settings.kdocs_space_id,
+            "sheet_id": self.settings.kdocs_case_sheet_id,
+            "row_match": {self.settings.kdocs_case_no_column: legal_case.case_no},
+            "fields": {
+                self.settings.kdocs_case_no_column: legal_case.case_no,
+                self.settings.kdocs_paid_amount_column: str(legal_case.paid_amount),
+            },
+            "case_id": legal_case.id,
+        }
+        return self._execute_once(
             case_id=legal_case.id,
             tenant_id=legal_case.tenant_id,
             sync_type="paid_amount",
-            result=result,
-            external_sheet_name=payload.get("sheet_name") or payload.get("sheet_id") or self.settings.kdocs_case_sheet_id,
+            operation="update_paid_amount",
+            initial_payload=payload,
+            callback=lambda: self.adapter.update_paid_amount(
+                legal_case.case_no,
+                legal_case.paid_amount,
+                legal_case.id,
+                tenant_id=legal_case.tenant_id,
+            ),
+            external_sheet_name=self.settings.kdocs_case_sheet_id,
             external_row_key=legal_case.case_no,
             idempotency_key=f"kdocs:paid_amount:{legal_case.id}:{legal_case.paid_amount}",
         )
@@ -69,14 +94,21 @@ class DocumentSyncService:
             "created_at": event.created_at.isoformat() if event.created_at else None,
         }
         tenant_id = event.tenant_id or (legal_case.tenant_id if legal_case else None)
-        result = self._safe_call(lambda: self.adapter.append_archive_row(payload, event.case_id, tenant_id=tenant_id), "append_archive_row")
-        request_payload = result.get("request_payload") or {}
-        return self._write_log(
+        request_payload = {
+            "tenant_id": tenant_id,
+            "space_id": self.settings.kdocs_space_id,
+            "sheet_id": self.settings.kdocs_enforcement_sheet_id,
+            "row": payload,
+            "case_id": event.case_id,
+        }
+        return self._execute_once(
             case_id=event.case_id,
             tenant_id=tenant_id,
             sync_type="archive",
-            result=result,
-            external_sheet_name=request_payload.get("sheet_name") or request_payload.get("sheet_id") or self.settings.kdocs_enforcement_sheet_id,
+            operation="append_archive_row",
+            initial_payload=request_payload,
+            callback=lambda: self.adapter.append_archive_row(payload, event.case_id, tenant_id=tenant_id),
+            external_sheet_name=self.settings.kdocs_enforcement_sheet_id,
             external_row_key=legal_case.case_no if legal_case else None,
             idempotency_key=f"kdocs:archive:{event.id}",
         )
@@ -92,14 +124,22 @@ class DocumentSyncService:
             "total_amount": str(legal_case.total_amount),
             "paid_amount": str(legal_case.paid_amount),
         }
-        result = self._safe_call(lambda: self.adapter.sync_case_snapshot(case_data, tenant_id=legal_case.tenant_id), "sync_case_snapshot")
-        payload = result.get("request_payload") or {}
-        return self._write_log(
+        payload = {
+            "tenant_id": legal_case.tenant_id,
+            "space_id": self.settings.kdocs_space_id,
+            "sheet_id": self.settings.kdocs_case_sheet_id,
+            "row_match": {self.settings.kdocs_case_no_column: legal_case.case_no},
+            "fields": case_data,
+            "case_id": legal_case.id,
+        }
+        return self._execute_once(
             case_id=legal_case.id,
             tenant_id=legal_case.tenant_id,
             sync_type="case_snapshot",
-            result=result,
-            external_sheet_name=payload.get("sheet_name") or payload.get("sheet_id") or self.settings.kdocs_case_sheet_id,
+            operation="sync_case_snapshot",
+            initial_payload=payload,
+            callback=lambda: self.adapter.sync_case_snapshot(case_data, tenant_id=legal_case.tenant_id),
+            external_sheet_name=self.settings.kdocs_case_sheet_id,
             external_row_key=legal_case.case_no,
             idempotency_key=f"kdocs:case_snapshot:{legal_case.id}:{legal_case.updated_at.isoformat()}",
         )
@@ -110,57 +150,86 @@ class DocumentSyncService:
         target_filename: str,
         metadata: dict[str, Any],
     ) -> DocumentSyncLog:
-        result = self._safe_call(
-            lambda: self.adapter.upload_legal_document(media_file.local_path or "", target_filename, metadata, tenant_id=media_file.tenant_id),
-            "upload_legal_document",
-        )
-        payload = result.get("request_payload") or {}
-        response = result.get("response") or {}
-        return self._write_log(
+        payload = {
+            "tenant_id": media_file.tenant_id,
+            "space_id": self.settings.kdocs_space_id,
+            "folder_id": self.settings.kdocs_judgment_folder_id,
+            "target_filename": target_filename,
+            "local_path": media_file.local_path or "",
+            "metadata": metadata,
+            "conflict_strategy": "rename",
+        }
+        return self._execute_once(
             case_id=media_file.case_id,
             tenant_id=media_file.tenant_id,
             sync_type="legal_document_upload",
-            result=result,
-            external_sheet_name=payload.get("folder_id") or self.settings.kdocs_judgment_folder_id,
+            operation="upload_legal_document",
+            initial_payload=payload,
+            callback=lambda: self.adapter.upload_legal_document(
+                media_file.local_path or "",
+                target_filename,
+                metadata,
+                tenant_id=media_file.tenant_id,
+            ),
+            external_sheet_name=self.settings.kdocs_judgment_folder_id,
             external_row_key=target_filename,
-            idempotency_key=f"kdocs:legal_document_upload:{media_file.id}:{target_filename}:{response.get('file_id')}",
+            idempotency_key=f"kdocs:legal_document_upload:{media_file.id}",
         )
 
     def sync_court_time(self, event: LegalEvent, row: dict[str, Any]) -> DocumentSyncLog:
-        result = self._safe_call(lambda: self.adapter.append_court_time_row(row, tenant_id=event.tenant_id), "append_court_time_row")
-        payload = result.get("request_payload") or {}
-        return self._write_log(
+        payload = {
+            "tenant_id": event.tenant_id,
+            "space_id": self.settings.kdocs_space_id,
+            "sheet_id": self.settings.kdocs_court_time_sheet_id,
+            "sort_by": "开庭时间",
+            "row": row,
+        }
+        return self._execute_once(
             case_id=event.case_id,
             tenant_id=event.tenant_id,
             sync_type="court_time",
-            result=result,
-            external_sheet_name=payload.get("sheet_id") or self.settings.kdocs_court_time_sheet_id,
+            operation="append_court_time_row",
+            initial_payload=payload,
+            callback=lambda: self.adapter.append_court_time_row(row, tenant_id=event.tenant_id),
+            external_sheet_name=self.settings.kdocs_court_time_sheet_id,
             external_row_key=row.get("案号"),
             idempotency_key=f"kdocs:court_time:{event.id}",
         )
 
     def sync_enforcement_progress(self, event: LegalEvent, row: dict[str, Any]) -> DocumentSyncLog:
-        result = self._safe_call(lambda: self.adapter.append_enforcement_row(row, tenant_id=event.tenant_id), "append_enforcement_row")
-        payload = result.get("request_payload") or {}
-        return self._write_log(
+        payload = {
+            "tenant_id": event.tenant_id,
+            "space_id": self.settings.kdocs_space_id,
+            "sheet_id": self.settings.kdocs_enforcement_sheet_id,
+            "row": row,
+        }
+        return self._execute_once(
             case_id=event.case_id,
             tenant_id=event.tenant_id,
             sync_type="enforcement_progress",
-            result=result,
-            external_sheet_name=payload.get("sheet_id") or self.settings.kdocs_enforcement_sheet_id,
+            operation="append_enforcement_row",
+            initial_payload=payload,
+            callback=lambda: self.adapter.append_enforcement_row(row, tenant_id=event.tenant_id),
+            external_sheet_name=self.settings.kdocs_enforcement_sheet_id,
             external_row_key=row.get("案号"),
             idempotency_key=f"kdocs:enforcement_progress:{event.id}",
         )
 
     def sync_payment_registration(self, event: LegalEvent, row: dict[str, Any]) -> DocumentSyncLog:
-        result = self._safe_call(lambda: self.adapter.append_payment_registration_row(row, tenant_id=event.tenant_id), "append_payment_registration_row")
-        payload = result.get("request_payload") or {}
-        return self._write_log(
+        payload = {
+            "tenant_id": event.tenant_id,
+            "space_id": self.settings.kdocs_space_id,
+            "sheet_id": self.settings.kdocs_payment_sheet_id,
+            "row": row,
+        }
+        return self._execute_once(
             case_id=event.case_id,
             tenant_id=event.tenant_id,
             sync_type="payment_registration",
-            result=result,
-            external_sheet_name=payload.get("sheet_id") or self.settings.kdocs_payment_sheet_id,
+            operation="append_payment_registration_row",
+            initial_payload=payload,
+            callback=lambda: self.adapter.append_payment_registration_row(row, tenant_id=event.tenant_id),
+            external_sheet_name=self.settings.kdocs_payment_sheet_id,
             external_row_key=row.get("案号"),
             idempotency_key=f"kdocs:payment_registration:{event.id}",
         )
@@ -187,10 +256,7 @@ class DocumentSyncService:
         result = self._retry_operation(operation, payload, log)
         log.retry_count += 1
         log.last_attempt_at = now_tz()
-        log.status = "success" if result.get("success") else "failed"
-        log.response_payload_json = json.dumps(result.get("response"), ensure_ascii=False, default=str)
-        log.error_message = result.get("error")
-        log.request_payload_json = json.dumps(result.get("request_payload"), ensure_ascii=False, default=str)
+        self._apply_result(log, result, operation=operation, fallback_payload=payload)
         self.db.flush()
         summary = {"sync_log_id": sync_log_id, "final_status": log.status, **({"operator": operator} if operator else {})}
         if log.status == "success":
@@ -268,43 +334,105 @@ class DocumentSyncService:
             "error": "无法识别的同步操作",
         }
 
-    def _write_log(
+    def _execute_once(
         self,
+        *,
         case_id: int | None,
         tenant_id: str | None,
         sync_type: str,
-        result: dict[str, Any],
+        operation: str,
+        initial_payload: dict[str, Any],
+        callback,
         external_sheet_name: str | None,
         external_row_key: str | None,
         idempotency_key: str,
     ) -> DocumentSyncLog:
-        request_payload = {
-            "operation": result.get("operation"),
-            "payload": result.get("request_payload") or {},
-        }
+        existing = self.db.scalar(
+            select(DocumentSyncLog).where(DocumentSyncLog.idempotency_key == idempotency_key)
+        )
+        if existing:
+            return existing
+
         log = DocumentSyncLog(
             case_id=case_id,
             tenant_id=tenant_id,
             sync_type=sync_type,
-            sync_target=result.get("sync_target") or "kdocs",
-            external_doc_id=(
-                (result.get("request_payload") or {}).get("sheet_id")
-                or (result.get("request_payload") or {}).get("folder_id")
-                or self.settings.kdocs_space_id
-            ),
+            sync_target="kdocs",
+            external_doc_id=initial_payload.get("sheet_id") or initial_payload.get("folder_id") or self.settings.kdocs_space_id,
             external_sheet_name=external_sheet_name,
             external_row_key=external_row_key,
             idempotency_key=idempotency_key,
-            request_payload_json=json.dumps(request_payload, ensure_ascii=False, default=str),
-            response_payload_json=json.dumps(result.get("response"), ensure_ascii=False, default=str),
-            status="success" if result.get("success") else "failed",
-            error_message=result.get("error"),
+            request_payload_json=json.dumps(
+                {"operation": operation, "payload": initial_payload},
+                ensure_ascii=False,
+                default=str,
+            ),
+            response_payload_json="{}",
+            status="processing",
+            error_message=None,
             retry_count=0,
             last_attempt_at=now_tz(),
         )
-        self.db.add(log)
+        try:
+            with self.db.begin_nested():
+                self.db.add(log)
+                self.db.flush()
+        except IntegrityError:
+            existing = self.db.scalar(
+                select(DocumentSyncLog).where(DocumentSyncLog.idempotency_key == idempotency_key)
+            )
+            if existing:
+                return existing
+            raise
+
+        result = self._safe_call(callback, operation)
+        self._apply_result(log, result, operation=operation, fallback_payload=initial_payload)
         self.db.flush()
         return log
+
+    def _apply_result(
+        self,
+        log: DocumentSyncLog,
+        result: dict[str, Any],
+        *,
+        operation: str | None,
+        fallback_payload: dict[str, Any],
+    ) -> None:
+        request_payload = result.get("request_payload") or fallback_payload
+        response = result.get("response")
+        log.sync_target = result.get("sync_target") or log.sync_target or "kdocs"
+        log.external_doc_id = request_payload.get("sheet_id") or request_payload.get("folder_id") or log.external_doc_id
+        log.external_sheet_name = (
+            request_payload.get("sheet_name")
+            or request_payload.get("sheet_id")
+            or request_payload.get("folder_id")
+            or log.external_sheet_name
+        )
+        final_filename = self._final_filename(response)
+        if final_filename:
+            log.external_row_key = final_filename
+        log.request_payload_json = json.dumps(
+            {"operation": result.get("operation") or operation, "payload": request_payload},
+            ensure_ascii=False,
+            default=str,
+        )
+        log.response_payload_json = json.dumps(response, ensure_ascii=False, default=str)
+        log.status = "success" if result.get("success") else "failed"
+        log.error_message = result.get("error")
+        log.last_attempt_at = now_tz()
+
+    @staticmethod
+    def _final_filename(response: Any) -> str | None:
+        if not isinstance(response, dict):
+            return None
+        containers = [response]
+        if isinstance(response.get("data"), dict):
+            containers.append(response["data"])
+        for payload in containers:
+            value = payload.get("final_filename") or payload.get("filename") or payload.get("name")
+            if value:
+                return str(value)
+        return None
 
     @staticmethod
     def _safe_call(callback, operation: str) -> dict[str, Any]:

@@ -28,13 +28,13 @@ def create_case(client):
     assert response.status_code == 200
 
 
-def replay_pdf(client, msgid: str, filename: str = "文书.pdf"):
+def replay_pdf(client, msgid: str, filename: str = "文书.pdf", seq: int = 200):
     response = client.post(
         "/api/v1/legal/wecom-archive/replay",
         json={
             "messages": [
                 {
-                    "seq": 200,
+                    "seq": seq,
                     "msgid": msgid,
                     "roomid": "group_001",
                     "from": "user_001",
@@ -156,6 +156,37 @@ def test_mediation_and_ruling_keep_document_type(client, db_session, msgid, doc_
     row = json.loads(enforcement_log.request_payload_json)["payload"]["row"]
     assert row["文书类型"] == doc_type
     assert row["文件名"] == f"李四-张三{{{doc_type}}}.pdf"
+
+
+def test_duplicate_document_names_append_case_number_then_message_id(client, db_session):
+    create_case(client)
+    text = "民事判决书\n案号：(2026)黔0281民初3118号\n原告：李四\n被告：张三\n判决如下。"
+    for index, msgid in enumerate(("msg_name_1", "msg_name_2", "msg_name_3"), start=1):
+        replay_pdf(client, msgid, "判决书.pdf", seq=300 + index)
+        process_with_text(client, db_session, msgid, text)
+
+    upload_logs = list(
+        db_session.scalars(
+            select(DocumentSyncLog)
+            .where(DocumentSyncLog.sync_type == "legal_document_upload")
+            .order_by(DocumentSyncLog.id)
+        ).all()
+    )
+
+    assert [log.external_row_key for log in upload_logs] == [
+        "李四-张三{判决书}.pdf",
+        "李四-张三{判决书}-(2026)黔0281民初3118号.pdf",
+        "李四-张三{判决书}-(2026)黔0281民初3118号-msg_name_3.pdf",
+    ]
+    enforcement_rows = [
+        json.loads(log.request_payload_json)["payload"]["row"]
+        for log in db_session.scalars(
+            select(DocumentSyncLog)
+            .where(DocumentSyncLog.sync_type == "enforcement_progress")
+            .order_by(DocumentSyncLog.id)
+        ).all()
+    ]
+    assert [row["文件名"] for row in enforcement_rows] == [log.external_row_key for log in upload_logs]
 
 
 def test_court_summons_writes_court_time_row(client, db_session):

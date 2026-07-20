@@ -4,7 +4,7 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, inspect, select
+from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.orm import sessionmaker
 
 from app.core.config import get_settings
@@ -96,6 +96,52 @@ def test_can_create_case_after_alembic_upgrade(tmp_path, monkeypatch):
             saved = db.scalar(select(LegalCase).where(LegalCase.case_no == "(2026)黔0281民初9001号"))
             assert saved is not None
             assert saved.id is not None
+    finally:
+        engine.dispose()
+        get_settings.cache_clear()
+
+
+def test_sync_idempotency_migration_keeps_first_key_and_renames_legacy_duplicates(tmp_path, monkeypatch):
+    database_url = f"sqlite:///{tmp_path / 'sync_idempotency.db'}"
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    get_settings.cache_clear()
+    config = _alembic_config(database_url)
+    command.upgrade(config, "0011_business_rules")
+    engine = create_engine(database_url, future=True)
+    try:
+        with engine.begin() as connection:
+            for _ in range(3):
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO document_sync_logs (
+                            sync_type, idempotency_key, request_payload_json,
+                            response_payload_json, status, retry_count, created_at
+                        ) VALUES (
+                            'court_time', 'duplicate-key', '{}', '{}', 'success', 0,
+                            '2026-07-20 03:00:00'
+                        )
+                        """
+                    )
+                )
+
+        command.upgrade(config, "head")
+
+        with engine.connect() as connection:
+            keys = list(
+                connection.execute(
+                    text("SELECT idempotency_key FROM document_sync_logs ORDER BY id")
+                ).scalars()
+            )
+        index = next(
+            item
+            for item in inspect(engine).get_indexes("document_sync_logs")
+            if item["name"] == "ix_document_sync_logs_idempotency_key"
+        )
+        assert keys[0] == "duplicate-key"
+        assert keys[1].startswith("legacy:2:duplicate-key")
+        assert keys[2].startswith("legacy:3:duplicate-key")
+        assert index["unique"] == 1
     finally:
         engine.dispose()
         get_settings.cache_clear()

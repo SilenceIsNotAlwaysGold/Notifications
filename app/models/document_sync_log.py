@@ -19,7 +19,7 @@ class DocumentSyncLog(Base):
     external_doc_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     external_sheet_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     external_row_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    idempotency_key: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True, index=True)
     request_payload_json: Mapped[str] = mapped_column(Text, default="{}")
     response_payload_json: Mapped[str] = mapped_column(Text, default="{}")
     status: Mapped[str] = mapped_column(String(32), index=True)
