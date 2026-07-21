@@ -84,6 +84,7 @@ def _missing_kdocs_settings(settings: Settings) -> list[str]:
                 "KDOCS_DRIVE_ID": settings.kdocs_drive_id,
                 "KDOCS_ENFORCEMENT_FILE_ID": settings.kdocs_enforcement_file_id,
                 "KDOCS_COURT_TIME_FILE_ID": settings.kdocs_court_time_file_id,
+                "KDOCS_PAYMENT_FILE_ID": settings.kdocs_payment_file_id,
             }.items()
             if not value
         ]
@@ -228,8 +229,6 @@ def validate_runtime_config(settings: Settings) -> dict[str, Any]:
             _add_item(result, "KDOCS_MODE", "error", "KDOCS_MCP_URL 必须是 https URL")
         else:
             _add_item(result, "KDOCS_MODE", "ok", f"金山文档 real/{settings.kdocs_transport} 模式必要配置已提供")
-            if settings.kdocs_transport == "mcp" and not settings.kdocs_payment_file_id:
-                _add_item(result, "KDOCS_PAYMENT_FILE_ID", "warning", "缴费登记表尚未配置，缴费同步会明确失败并保留重试日志")
 
     if settings.ocr_provider == "mock":
         _add_item(result, "OCR_PROVIDER", "ok", "OCR 为 mock 模式")

@@ -58,6 +58,7 @@ COURT_HEADERS = [
     "传票",
     "核对",
 ]
+PAYMENT_HEADERS = ["案号", "被告", "缴费类型", "金额", "文件链接", "识别摘要", "需人工复核", "消息ID"]
 
 
 def _target_result(
@@ -105,6 +106,7 @@ def main() -> int:
         "KDOCS_DRIVE_ID": settings.kdocs_drive_id,
         "KDOCS_ENFORCEMENT_FILE_ID": settings.kdocs_enforcement_file_id,
         "KDOCS_COURT_TIME_FILE_ID": settings.kdocs_court_time_file_id,
+        "KDOCS_PAYMENT_FILE_ID": settings.kdocs_payment_file_id,
     }
     missing = [name for name, value in required.items() if not value]
     if missing:
@@ -127,6 +129,13 @@ def main() -> int:
                 settings.kdocs_court_time_file_id or "",
                 settings.kdocs_court_time_worksheet_id,
                 COURT_HEADERS,
+            ),
+            _target_result(
+                client,
+                "缴费登记",
+                settings.kdocs_payment_file_id or "",
+                settings.kdocs_payment_worksheet_id,
+                PAYMENT_HEADERS,
             ),
         ]
     except Exception as exc:

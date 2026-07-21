@@ -108,11 +108,13 @@ def reset_kdocs_mcp(monkeypatch):
     monkeypatch.setenv("KDOCS_MCP_URL", "https://mcp.kdocs.test")
     monkeypatch.setenv("KDOCS_MCP_CLIENT_ID", "client-001")
     monkeypatch.setenv("KDOCS_DRIVE_ID", "drive-001")
+    monkeypatch.setenv("KDOCS_JUDGMENT_PARENT_ID", "0")
+    monkeypatch.setenv("KDOCS_JUDGMENT_PARENT_PATH", "致和法务/判决书文件")
     monkeypatch.setenv("KDOCS_ENFORCEMENT_FILE_ID", "enforcement-file")
     monkeypatch.setenv("KDOCS_ENFORCEMENT_WORKSHEET_ID", "10")
     monkeypatch.setenv("KDOCS_COURT_TIME_FILE_ID", "court-file")
     monkeypatch.setenv("KDOCS_COURT_TIME_WORKSHEET_ID", "1")
-    monkeypatch.delenv("KDOCS_PAYMENT_FILE_ID", raising=False)
+    monkeypatch.setenv("KDOCS_PAYMENT_FILE_ID", "")
     get_settings.cache_clear()
 
 
@@ -272,7 +274,7 @@ def test_real_mcp_upload_uses_parent_path_without_logging_content(tmp_path, monk
             return mcp_tool_response(
                 {"code": 0, "data": {"detail": {"file_id": "file-001", "name": "甲公司-张三{判决书}.pdf"}}}
             )
-        return mcp_tool_response({"code": 0, "data": {"url": "https://kdocs.test/file-001"}})
+        return mcp_tool_response({"code": 0, "data": {"link_url": "https://kdocs.test/file-001"}})
 
     monkeypatch.setattr("app.adapters.kdocs_mcp.httpx.post", fake_post)
     local_file = tmp_path / "judgment.pdf"

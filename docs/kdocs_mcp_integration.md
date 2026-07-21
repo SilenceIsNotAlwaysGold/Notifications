@@ -25,14 +25,14 @@ KDOCS_ENFORCEMENT_WORKSHEET_ID=10
 KDOCS_COURT_TIME_FILE_ID=2XZuheYq9xMWaLC6M2k1Bx54U98t13fsY
 KDOCS_COURT_TIME_WORKSHEET_ID=1
 
-KDOCS_JUDGMENT_PARENT_ID=0
-KDOCS_JUDGMENT_PARENT_PATH=致和法务/判决书文件
+KDOCS_JUDGMENT_PARENT_ID=vprpxois5rM4C2XeB2FK1xSyPWiUHNJM1
+KDOCS_JUDGMENT_PARENT_PATH=
 
-KDOCS_PAYMENT_FILE_ID=
+KDOCS_PAYMENT_FILE_ID=FNjVy6gETxMm6meVR3XAxxN4s5uc9ev7M
 KDOCS_PAYMENT_WORKSHEET_ID=1
 ```
 
-尚未提供缴费登记表的 `file_id`。该配置缺失时，判决书和开庭时间仍可同步；只有缴费登记会失败并写入可重试的同步日志，健康检查显示 warning。
+测试阶段已创建 `致和法务/判决书文件` 和 `致和法务/缴费登记.xlsx`。MCP real 模式要求三张表和文书目录全部配置，缺失时配置检查直接失败。
 
 完成环境变量配置后运行只读预检：
 

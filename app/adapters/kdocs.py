@@ -308,10 +308,10 @@ class KDocsAdapter:
         )
         file_id = self._deep_find(upload_result, "file_id") or self._deep_find(upload_result, "fileId") or self._deep_find(upload_result, "id")
         final_filename = self._deep_find(upload_result, "name") or final_filename
-        url = self._deep_find(upload_result, "url") or self._deep_find(upload_result, "link")
+        url = self._deep_find(upload_result, "url") or self._deep_find(upload_result, "link_url") or self._deep_find(upload_result, "link")
         if file_id and not url:
             link_result = self.mcp.call_tool("get_file_link", {"file_id": str(file_id)})
-            url = self._deep_find(link_result, "url") or self._deep_find(link_result, "link")
+            url = self._deep_find(link_result, "url") or self._deep_find(link_result, "link_url") or self._deep_find(link_result, "link")
         return {
             "file_id": file_id,
             "final_filename": final_filename,

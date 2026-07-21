@@ -175,7 +175,7 @@ def test_kdocs_mcp_real_requires_core_target_files(monkeypatch, tmp_path):
     get_settings.cache_clear()
 
 
-def test_kdocs_mcp_real_core_ready_warns_only_for_payment_target(monkeypatch, tmp_path):
+def test_kdocs_mcp_real_requires_payment_target(monkeypatch, tmp_path):
     monkeypatch.setenv("KDOCS_MODE", "real")
     monkeypatch.setenv("KDOCS_TRANSPORT", "mcp")
     monkeypatch.setenv("KDOCS_ACCESS_TOKEN", "test-token")
@@ -191,10 +191,8 @@ def test_kdocs_mcp_real_core_ready_warns_only_for_payment_target(monkeypatch, tm
     result = validate_runtime_config(get_settings())
 
     kdocs_item = next(item for item in result["items"] if item["name"] == "KDOCS_MODE")
-    payment_item = next(item for item in result["items"] if item["name"] == "KDOCS_PAYMENT_FILE_ID")
-    assert kdocs_item["status"] == "ok"
-    assert "real/mcp" in kdocs_item["message"]
-    assert payment_item["status"] == "warning"
+    assert kdocs_item["status"] == "error"
+    assert "KDOCS_PAYMENT_FILE_ID" in kdocs_item["message"]
     get_settings.cache_clear()
 
 
