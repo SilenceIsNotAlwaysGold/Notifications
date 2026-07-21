@@ -18,6 +18,9 @@ env/
 !.env.example
 *.pem
 *.key
+*.jks
+*.keystore
+local.properties
 secrets/
 private_key*
 public_key*
@@ -34,6 +37,8 @@ wxarchive/
 
 dist/
 build/
+*.apk
+.gradle/
 *.egg-info/
 *.zip
 *.tar.gz

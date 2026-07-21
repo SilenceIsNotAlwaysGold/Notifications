@@ -12,13 +12,14 @@ from wecom_sender_sidecar.android_device import (
 
 
 DEFAULT_ACCESSIBILITY_COMPONENT = (
-    "org.yameida.worktool/org.yameida.worktool.service.WeworkService"
+    "cn.zhihe.legal.sender/"
+    "cn.zhihe.legal.sender.automation.WeComAccessibilityService"
 )
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="企业微信 Linux Android 容器设备管理"
+        description="企业微信 Linux Android 自有发送端设备管理"
     )
     parser.add_argument(
         "--serial",
@@ -52,7 +53,7 @@ def _add_runtime_options(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--companion-package",
-        default="org.yameida.worktool",
+        default="cn.zhihe.legal.sender",
     )
     parser.add_argument(
         "--accessibility-component",

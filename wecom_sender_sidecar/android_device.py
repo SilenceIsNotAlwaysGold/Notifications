@@ -39,9 +39,10 @@ class AndroidDeviceManager:
         self,
         *,
         wecom_package: str = "com.tencent.wework",
-        companion_package: str = "org.yameida.worktool",
+        companion_package: str = "cn.zhihe.legal.sender",
         accessibility_component: str = (
-            "org.yameida.worktool/org.yameida.worktool.service.WeworkService"
+            "cn.zhihe.legal.sender/"
+            "cn.zhihe.legal.sender.automation.WeComAccessibilityService"
         ),
         reverse_port: int = 8092,
     ) -> dict[str, Any]:
@@ -81,7 +82,7 @@ class AndroidDeviceManager:
             },
             "manual_checks": [
                 "企业微信通知账号已登录",
-                "WorkTool Host 为 http://127.0.0.1:8092 且链接号与 robot_id 一致",
+                "致和法务发送端已连接 ws://127.0.0.1:8092，设备 ID 与 robot_id 一致",
                 "测试外部群已人工核对群名与发送目标",
             ],
         }

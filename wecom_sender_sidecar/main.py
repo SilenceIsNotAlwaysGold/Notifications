@@ -27,8 +27,8 @@ class SenderConfig:
 
 def load_config() -> SenderConfig:
     backend = os.getenv("WECOM_SENDER_BACKEND", "mock").strip().lower()
-    if backend not in {"mock", "worktool"}:
-        raise RuntimeError("WECOM_SENDER_BACKEND 只支持 mock 或 worktool")
+    if backend not in {"mock", "android", "worktool"}:
+        raise RuntimeError("WECOM_SENDER_BACKEND 只支持 mock、android 或 worktool")
 
     targets_raw = os.getenv("WECOM_SENDER_TARGETS_JSON", "{}").strip() or "{}"
     try:
@@ -62,12 +62,12 @@ def load_config() -> SenderConfig:
     )
     if config.command_timeout_seconds <= 0:
         raise RuntimeError("WECOM_SENDER_COMMAND_TIMEOUT_SECONDS 必须大于 0")
-    if config.backend == "worktool":
+    if config.backend in {"android", "worktool"}:
         if len(config.api_token) < 24:
-            raise RuntimeError("worktool 模式的 WECOM_SENDER_API_TOKEN 至少 24 位")
+            raise RuntimeError("Android 模式的 WECOM_SENDER_API_TOKEN 至少 24 位")
         if not _DEVICE_ID_PATTERN.fullmatch(config.robot_id):
             raise RuntimeError(
-                "worktool 模式的 WECOM_SENDER_ROBOT_ID 必须为 24-128 位安全标识"
+                "Android 模式的 WECOM_SENDER_ROBOT_ID 必须为 24-128 位安全标识"
             )
     return config
 
@@ -129,7 +129,7 @@ class SenderConnectionManager:
             raise RuntimeError("企业微信发送设备不在线")
 
         message_id = secrets.token_hex(16)
-        command = _worktool_text_command(message_id, group_name, content)
+        command = _device_text_command(message_id, group_name, content)
         loop = asyncio.get_running_loop()
         completion: asyncio.Future[dict[str, Any]] = loop.create_future()
 
@@ -184,7 +184,7 @@ class SenderConnectionManager:
         connection.pending.clear()
 
 
-def _worktool_text_command(message_id: str, group_name: str, content: str) -> dict[str, Any]:
+def _device_text_command(message_id: str, group_name: str, content: str) -> dict[str, Any]:
     return {
         "socketType": 2,
         "messageId": message_id,
@@ -313,10 +313,12 @@ async def gateway_api(
 
 
 @app.websocket("/webserver/wework/{robot_id}")
-async def worktool_socket(websocket: WebSocket, robot_id: str) -> None:
+async def sender_device_socket(websocket: WebSocket, robot_id: str) -> None:
     config = load_config()
-    if config.backend != "worktool" or not config.robot_id or not secrets.compare_digest(
-        robot_id, config.robot_id
+    if (
+        config.backend not in {"android", "worktool"}
+        or not config.robot_id
+        or not secrets.compare_digest(robot_id, config.robot_id)
     ):
         await websocket.close(code=1008, reason="sender device is not authorized")
         return

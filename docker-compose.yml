@@ -110,7 +110,7 @@ services:
     <<: *python-service
     profiles: ["android-sender"]
     environment:
-      WECOM_SENDER_BACKEND: ${WECOM_SENDER_BACKEND:-worktool}
+      WECOM_SENDER_BACKEND: ${WECOM_SENDER_BACKEND:-android}
     command:
       [
         "uvicorn",

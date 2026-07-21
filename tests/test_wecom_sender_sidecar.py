@@ -78,8 +78,8 @@ def test_gateway_rejects_invalid_token(monkeypatch):
     assert response.status_code == 401
 
 
-def test_worktool_websocket_receives_command_and_returns_receipt(monkeypatch):
-    _configure_sender(monkeypatch, backend="worktool")
+def test_android_websocket_receives_command_and_returns_receipt(monkeypatch):
+    _configure_sender(monkeypatch, backend="android")
 
     with TestClient(app) as client:
         with client.websocket_connect(f"/webserver/wework/{ROBOT_ID}") as device:
@@ -114,8 +114,8 @@ def test_worktool_websocket_receives_command_and_returns_receipt(monkeypatch):
     assert response.json()["data"]["callback"]["errorCode"] == 0
 
 
-def test_worktool_backend_reports_offline_device(monkeypatch):
-    _configure_sender(monkeypatch, backend="worktool")
+def test_android_backend_reports_offline_device(monkeypatch):
+    _configure_sender(monkeypatch, backend="android")
 
     with TestClient(app) as client:
         response = client.post(
@@ -134,8 +134,8 @@ def test_worktool_backend_reports_offline_device(monkeypatch):
     asyncio.run(sender_manager.reset())
 
 
-def test_worktool_backend_rejects_weak_device_credentials(monkeypatch):
-    _configure_sender(monkeypatch, backend="worktool")
+def test_android_backend_rejects_weak_device_credentials(monkeypatch):
+    _configure_sender(monkeypatch, backend="android")
     monkeypatch.setenv("WECOM_SENDER_API_TOKEN", "short")
 
     with pytest.raises(RuntimeError, match="API_TOKEN 至少 24 位"):

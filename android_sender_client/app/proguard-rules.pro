@@ -1,0 +1,3 @@
+-keepattributes Signature
+-keep class cn.zhihe.legal.sender.gateway.** { *; }
+-dontwarn javax.annotation.**

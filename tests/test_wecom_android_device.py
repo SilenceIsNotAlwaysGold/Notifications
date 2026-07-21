@@ -76,8 +76,8 @@ def test_preflight_reports_all_android_automation_checks(monkeypatch):
                 "secure",
                 "enabled_accessibility_services",
             ): (
-                "org.yameida.worktool/"
-                "org.yameida.worktool.service.WeworkService"
+                "cn.zhihe.legal.sender/"
+                "cn.zhihe.legal.sender.automation.WeComAccessibilityService"
             ),
             (
                 "-s",
@@ -99,8 +99,8 @@ def test_preflight_reports_all_android_automation_checks(monkeypatch):
                 "shell",
                 "pm",
                 "path",
-                "org.yameida.worktool",
-            ): "package:/data/app/org.yameida.worktool/base.apk",
+                "cn.zhihe.legal.sender",
+            ): "package:/data/app/cn.zhihe.legal.sender/base.apk",
         }
         return responses[command]
 
@@ -135,9 +135,10 @@ def test_configure_runtime_preserves_existing_accessibility_services(monkeypatch
 
     result = manager.configure_runtime(
         accessibility_component=(
-            "org.yameida.worktool/org.yameida.worktool.service.WeworkService"
+            "cn.zhihe.legal.sender/"
+            "cn.zhihe.legal.sender.automation.WeComAccessibilityService"
         ),
-        companion_package="org.yameida.worktool",
+        companion_package="cn.zhihe.legal.sender",
     )
 
     put_command = next(
@@ -147,7 +148,8 @@ def test_configure_runtime_preserves_existing_accessibility_services(monkeypatch
     )
     assert "com.example/.ExistingService" in put_command[-1]
     assert (
-        "org.yameida.worktool/org.yameida.worktool.service.WeworkService"
+        "cn.zhihe.legal.sender/"
+        "cn.zhihe.legal.sender.automation.WeComAccessibilityService"
         in put_command[-1]
     )
     assert ["-s", "emulator-5554", "reverse", "tcp:8092", "tcp:8092"] in calls
