@@ -15,6 +15,13 @@
 
 所以扫码成功只表示凭证配置完成，不表示消息能力已经开放。必须执行 `wecom-cli msg --help` 并完成测试群实发。
 
+源码审计结果表明，CLI 会向企业微信官方
+`/cgi-bin/aibot/cli/get_mcp_config` 端点获取能力列表，然后按 `biz_type`
+查找 `msg` 类别。列表中没有 `msg` 时，拒绝由 CLI 在本地生成，但决策数据
+来自企业微信服务端。因此更换 Linux 服务器、重新扫码或修改开源 CLI
+都不会产生未授权的消息能力。参见
+[WecomTeam/wecom-cli](https://github.com/WecomTeam/wecom-cli)。
+
 ## 3. 安装和初始化
 
 服务器需要 Node.js 18 或更高版本：
@@ -70,7 +77,7 @@ python -m app.cli check-config
 ## 6. 失败与回退
 
 - CLI 不存在或未初始化：配置预检报错，服务不得切到真实发送。
-- 没有 `msg` 能力：使用项目内置的官方智能机器人 WebSocket sidecar，参见 [官方企业微信智能机器人发送](wecom_official_bot.md)。
+- 没有 `msg` 能力：内部群可继续验证官方智能机器人 WebSocket sidecar，参见 [官方企业微信智能机器人发送](wecom_official_bot.md)。
 - 官方机器人无法加入目标外部群：使用客户群群发任务并让成员确认。
 - 必须完全无人值守：最后才使用隔离通知账号和 Android RPA，且只发送必要文字。
 

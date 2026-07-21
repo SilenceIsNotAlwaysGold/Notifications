@@ -106,6 +106,46 @@ services:
       retries: 5
       start_period: 20s
 
+  wecom-protocol-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.protocol-gateway
+    image: legal-wecom-protocol-gateway:local
+    profiles: ["protocol-gateway"]
+    env_file:
+      - .env
+    environment:
+      WECOM_PROTOCOL_STATE_DB: /app/data/wecom-protocol-gateway.db
+      WECOM_PROTOCOL_OFFICIAL_CLI_BINARY: /usr/local/bin/wecom-cli
+      WECOM_PROTOCOL_OFFICIAL_CLI_CONFIG_DIR: /app/wecom-cli-config
+    volumes:
+      - legal-data:/app/data
+      - ${WECOM_PROTOCOL_OFFICIAL_CLI_CONFIG_HOST_DIR:-./storage/wecom-bot}:/app/wecom-cli-config:ro
+    networks:
+      - legal-internal
+    command:
+      [
+        "uvicorn",
+        "wecom_protocol_gateway.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8092",
+      ]
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8092/health', timeout=3)",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   backup:
     <<: *python-service
     environment: *app-environment
