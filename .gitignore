@@ -40,6 +40,7 @@ storage/wecom-bot/
 # Build and packaged artifacts
 dist/
 build/
+wecom_bot_sidecar/node_modules/
 *.egg-info/
 *.zip
 *.tar.gz

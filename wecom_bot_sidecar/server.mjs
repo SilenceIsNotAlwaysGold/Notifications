@@ -48,6 +48,17 @@ client.on("authenticated", () => {
 client.on("error", (error) => {
   console.error(`official_wecom_bot_error: ${error?.message || error}`);
 });
+
+for (const messageType of ["text", "image", "mixed", "voice", "file", "video"]) {
+  client.on(`message.${messageType}`, (frame) => {
+    const body = frame?.body || {};
+    const chatId = String(body.chatid || "").trim();
+    const userId = String(body.from?.userid || "").trim();
+    console.log(
+      `official_wecom_bot_chat_discovered type=${messageType} chattype=${body.chattype || "unknown"} chatid=${chatId || "single"} userid=${userId || "unknown"}`,
+    );
+  });
+}
 client.connect();
 
 function shutdown(signal) {
