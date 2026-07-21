@@ -18,6 +18,8 @@ class AndroidDeviceControl:
         "enter": "KEYCODE_ENTER",
         "delete": "KEYCODE_DEL",
     }
+    _wecom_package = "com.tencent.wework"
+    _wecom_launcher = "com.tencent.wework/.launch.LaunchSplashActivity"
 
     def __init__(
         self,
@@ -112,9 +114,88 @@ class AndroidDeviceControl:
             ["-s", self.serial, "shell", "input", "keyevent", keycode]
         )
 
+    def sender_login_status(self) -> dict[str, Any]:
+        self._ensure_available()
+        component = self._foreground_component()
+        if component is None or component[0] != self._wecom_package:
+            stage = "not_open"
+        else:
+            activity = component[1].lower()
+            if "loginveryfystep1activity" in activity:
+                stage = "phone"
+            elif any(
+                marker in activity
+                for marker in ("loginveryfystep2activity", "verifycode", "sms")
+            ):
+                stage = "verification_code"
+            elif "jswebactivity" in activity:
+                stage = "qr_code"
+            elif "login" in activity:
+                stage = "login_pending"
+            else:
+                stage = "logged_in"
+        return {"stage": stage, "online": True}
+
+    def open_sender_login(self) -> None:
+        self._ensure_available()
+        self._run_text(
+            [
+                "-s",
+                self.serial,
+                "shell",
+                "am",
+                "start",
+                "-n",
+                self._wecom_launcher,
+            ]
+        )
+
+    def submit_sender_phone(self, phone: str) -> None:
+        if not re.fullmatch(r"1\d{10}", phone):
+            raise ValueError("请输入正确的 11 位手机号")
+        self._require_login_stage("phone")
+        self.tap(985, 466)
+        self.tap(480, 466)
+        self.input_text(phone)
+        self.tap(540, 680)
+
+    def submit_sender_verification_code(self, code: str) -> None:
+        if not re.fullmatch(r"\d{4,8}", code):
+            raise ValueError("请输入 4-8 位数字验证码")
+        self._require_login_stage("verification_code")
+        self.tap(540, 470)
+        self.input_text(code)
+        self.tap(540, 680)
+
+    def refresh_sender_qr_code(self) -> None:
+        self._require_login_stage("qr_code")
+        self.tap(540, 850)
+
     def _ensure_available(self) -> None:
         if shutil.which(self.adb_binary) is None:
             raise AndroidDeviceControlError("服务器未安装 ADB")
+
+    def _foreground_component(self) -> tuple[str, str] | None:
+        output = self._run_text(
+            ["-s", self.serial, "shell", "dumpsys", "window"]
+        )
+        match = re.search(
+            r"mFocusedApp=.*?\s([A-Za-z0-9._]+)/([A-Za-z0-9._$]+)(?:\s|})",
+            output,
+        )
+        if match is None:
+            match = re.search(
+                r"mCurrentFocus=.*?\s([A-Za-z0-9._]+)/([A-Za-z0-9._$]+)(?:\s|})",
+                output,
+            )
+        if match is None:
+            return None
+        return match.group(1), match.group(2)
+
+    def _require_login_stage(self, expected: str) -> None:
+        actual = self.sender_login_status()["stage"]
+        if actual != expected:
+            raise AndroidDeviceControlError("企业微信登录步骤已变化，请刷新页面")
 
     def _run_text(self, args: list[str]) -> str:
         completed = self._run(args, text=True)

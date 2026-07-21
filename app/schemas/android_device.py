@@ -29,3 +29,11 @@ class AndroidTextRequest(BaseModel):
 
 class AndroidKeyeventRequest(BaseModel):
     key: Literal["back", "home", "recent", "enter", "delete"]
+
+
+class SenderPhoneLoginRequest(BaseModel):
+    phone: str = Field(pattern=r"^1\d{10}$")
+
+
+class SenderVerificationCodeRequest(BaseModel):
+    verification_code: str = Field(pattern=r"^\d{4,8}$")

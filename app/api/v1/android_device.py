@@ -12,6 +12,8 @@ from app.schemas.android_device import (
     AndroidSwipeRequest,
     AndroidTapRequest,
     AndroidTextRequest,
+    SenderPhoneLoginRequest,
+    SenderVerificationCodeRequest,
 )
 
 router = APIRouter(
@@ -71,6 +73,43 @@ def get_android_device_screenshot() -> Response:
             "Pragma": "no-cache",
         },
     )
+
+
+@router.get("/login/status", dependencies=[Depends(_admin_operator)])
+def get_sender_login_status():
+    try:
+        status = _control().sender_login_status()
+    except (AndroidDeviceControlError, ValueError) as exc:
+        raise_fail(str(exc), code=1503, status_code=503)
+    return ok("查询成功", status)
+
+
+@router.post("/login/open", dependencies=[Depends(_admin_operator)])
+def open_sender_login():
+    _run_action(lambda: _control().open_sender_login())
+    return ok("企业微信登录已打开")
+
+
+@router.post("/login/phone", dependencies=[Depends(_admin_operator)])
+def submit_sender_phone(payload: SenderPhoneLoginRequest):
+    _run_action(lambda: _control().submit_sender_phone(payload.phone))
+    return ok("手机号已提交")
+
+
+@router.post("/login/verification-code", dependencies=[Depends(_admin_operator)])
+def submit_sender_verification_code(payload: SenderVerificationCodeRequest):
+    _run_action(
+        lambda: _control().submit_sender_verification_code(
+            payload.verification_code
+        )
+    )
+    return ok("验证码已提交")
+
+
+@router.post("/login/refresh-qr", dependencies=[Depends(_admin_operator)])
+def refresh_sender_qr_code():
+    _run_action(lambda: _control().refresh_sender_qr_code())
+    return ok("二维码已刷新")
 
 
 @router.post("/tap", dependencies=[Depends(_admin_operator)])

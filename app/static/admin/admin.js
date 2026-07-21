@@ -10,6 +10,8 @@ const state = {
   deviceRefreshTimer: null,
   deviceScreenshotUrl: null,
   deviceScreenshotBusy: false,
+  deviceLoginBusy: false,
+  deviceLoginStage: null,
 };
 
 const titles = {
@@ -210,6 +212,7 @@ function stopDeviceConsole() {
     state.deviceScreenshotUrl = null;
   }
   state.deviceScreenshotBusy = false;
+  state.deviceLoginStage = null;
 }
 
 async function fetchDeviceScreenshot() {
@@ -233,7 +236,7 @@ async function fetchDeviceScreenshot() {
 }
 
 async function refreshDeviceScreenshot() {
-  if (state.view !== "android-device" || state.deviceScreenshotBusy) return;
+  if (state.view !== "android-device" || state.deviceScreenshotBusy || !$("#device-screen")) return;
   state.deviceScreenshotBusy = true;
   const status = $("#device-live-status");
   try {
@@ -272,86 +275,169 @@ async function sendDeviceAction(path, payload) {
   await refreshDeviceScreenshot();
 }
 
-function deviceCoordinates(event, screen) {
-  const bounds = screen.getBoundingClientRect();
-  const width = screen.naturalWidth || 1080;
-  const height = screen.naturalHeight || 1920;
-  return {
-    x: Math.round(((event.clientX - bounds.left) / bounds.width) * width),
-    y: Math.round(((event.clientY - bounds.top) / bounds.height) * height),
-  };
+function senderLoginContent(stage) {
+  if (stage === "phone") {
+    return `
+      <div class="sender-native-login">
+        <span class="sender-step-label">账号登录</span>
+        <h3>输入发送账号手机号</h3>
+        <form id="sender-phone-form" class="sender-login-form">
+          <label for="sender-phone-input">手机号</label>
+          <input id="sender-phone-input" name="phone" type="tel" inputmode="numeric" autocomplete="tel" maxlength="11" placeholder="11 位手机号" required />
+          <button type="submit">下一步</button>
+        </form>
+      </div>
+    `;
+  }
+  if (stage === "verification_code") {
+    return `
+      <div class="sender-native-login">
+        <span class="sender-step-label">安全验证</span>
+        <h3>输入短信验证码</h3>
+        <form id="sender-code-form" class="sender-login-form">
+          <label for="sender-code-input">验证码</label>
+          <input id="sender-code-input" name="verification_code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="短信验证码" required />
+          <button type="submit">确认</button>
+        </form>
+      </div>
+    `;
+  }
+  if (stage === "qr_code") {
+    return `
+      <div class="sender-qr-section">
+        <div class="sender-qr-copy">
+          <span class="sender-step-label">新设备确认</span>
+          <h3>使用原手机企业微信扫码</h3>
+          <p>在原手机企业微信中打开扫一扫，完成新设备确认。</p>
+          <button id="sender-refresh-qr-btn" type="button">刷新二维码</button>
+          <span id="device-live-status" class="device-live-status status-warning">正在获取二维码</span>
+        </div>
+        <div class="sender-qr-frame" aria-label="企业微信登录二维码">
+          <div class="sender-qr-crop">
+            <img id="device-screen" alt="企业微信登录二维码" draggable="false" />
+          </div>
+        </div>
+      </div>
+    `;
+  }
+  if (stage === "logged_in") {
+    return `
+      <div class="sender-login-complete">
+        <div class="sender-login-check">✓</div>
+        <h3>发送账号已登录</h3>
+        <p>企业微信发送服务可以开始执行消息任务。</p>
+      </div>
+    `;
+  }
+  return `
+    <div class="sender-login-empty">
+      <div class="sender-account-mark">企</div>
+      <h3>${stage === "login_pending" ? "正在准备登录" : "发送账号尚未登录"}</h3>
+      <button id="sender-open-login-btn" type="button">打开账号登录</button>
+    </div>
+  `;
 }
 
-function bindSenderLogin() {
-  const screen = $("#device-screen");
-  screen.addEventListener("click", async (event) => {
-    event.preventDefault();
+async function reloadSenderLogin() {
+  if (state.deviceLoginBusy || state.view !== "android-device") return;
+  state.deviceLoginBusy = true;
+  try {
+    stopDeviceConsole();
+    await renderAndroidDevice();
+  } catch (error) {
+    showAlert(error.message, "error");
+  } finally {
+    state.deviceLoginBusy = false;
+  }
+}
+
+function bindSenderLogin(stage) {
+  const openButton = $("#sender-open-login-btn");
+  if (openButton) {
+    openButton.addEventListener("click", async () => {
+      try {
+        await sendDeviceAction("login/open", {});
+        await reloadSenderLogin();
+      } catch (error) {
+        showAlert(error.message, "error");
+      }
+    });
+  }
+  const phoneForm = $("#sender-phone-form");
+  if (phoneForm) {
+    phoneForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const phone = $("#sender-phone-input").value.trim();
+      try {
+        await sendDeviceAction("login/phone", { phone });
+        await reloadSenderLogin();
+      } catch (error) {
+        showAlert(error.message, "error");
+      }
+    });
+  }
+  const codeForm = $("#sender-code-form");
+  if (codeForm) {
+    codeForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const verificationCode = $("#sender-code-input").value.trim();
+      try {
+        await sendDeviceAction("login/verification-code", { verification_code: verificationCode });
+        await reloadSenderLogin();
+      } catch (error) {
+        showAlert(error.message, "error");
+      }
+    });
+  }
+  const qrButton = $("#sender-refresh-qr-btn");
+  if (qrButton) {
+    qrButton.addEventListener("click", async () => {
+      try {
+        await sendDeviceAction("login/refresh-qr", {});
+      } catch (error) {
+        showAlert(error.message, "error");
+      }
+    });
+  }
+  state.deviceRefreshTimer = setInterval(async () => {
+    if (stage === "qr_code") await refreshDeviceScreenshot();
     try {
-      await sendDeviceAction("tap", deviceCoordinates(event, screen));
+      const current = await api("/api/v1/legal/android-device/login/status");
+      if (current.stage !== state.deviceLoginStage) await reloadSenderLogin();
     } catch (error) {
       showAlert(error.message, "error");
     }
-  });
-  $("#device-text-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const input = $("#device-text-input");
-    if (!input.value) return;
-    try {
-      await sendDeviceAction("input-text", { input_text: input.value });
-      input.value = "";
-    } catch (error) {
-      showAlert(error.message, "error");
-    }
-  });
-  $("#device-back-btn").addEventListener("click", async () => {
-    try {
-      await sendDeviceAction("keyevent", { key: "back" });
-    } catch (error) {
-      showAlert(error.message, "error");
-    }
-  });
-  $("#device-refresh-btn").addEventListener("click", refreshDeviceScreenshot);
-  state.deviceRefreshTimer = setInterval(refreshDeviceScreenshot, 1800);
+  }, 3000);
 }
 
 async function renderAndroidDevice() {
-  const status = await api("/api/v1/legal/android-device/status");
+  const status = await api("/api/v1/legal/android-device/login/status");
+  state.deviceLoginStage = status.stage;
+  const stageLabels = {
+    not_open: "尚未登录",
+    phone: "输入手机号",
+    verification_code: "输入验证码",
+    qr_code: "等待扫码确认",
+    login_pending: "登录处理中",
+    logged_in: "已登录",
+  };
   $("#content").innerHTML = `
-    <section class="panel sender-login-panel">
-      <div class="panel-header sender-login-header">
-        <div>
-          <h2 class="panel-title">企业微信发送账号</h2>
-          <div class="sender-device-state">
+    <section class="sender-account-login">
+      <div class="sender-account-summary">
+        <div class="sender-account-mark">企</div>
+        <div class="sender-account-heading">
+          <h2>企业微信发送账号</h2>
+          <div class="sender-account-state">
             <span class="sender-state-dot ${status.online ? "online" : ""}"></span>
-            ${status.online ? "设备在线" : "设备离线"}
-          </div>
-        </div>
-        <span id="device-live-status" class="device-live-status status-warning">正在连接</span>
-      </div>
-      <div class="sender-login-body">
-        <div class="device-screen-body sender-login-screen">
-          <div class="device-screen-frame">
-            <img id="device-screen" alt="企业微信发送账号登录画面" draggable="false" />
-          </div>
-        </div>
-        <div class="sender-login-actions">
-          <form id="device-text-form" class="device-text-form">
-            <label for="device-text-input">登录输入</label>
-            <div class="device-text-row">
-              <input id="device-text-input" type="password" inputmode="numeric" autocomplete="off" maxlength="256" placeholder="手机号或验证码" />
-              <button type="submit">输入</button>
-            </div>
-          </form>
-          <div class="sender-login-buttons">
-            <button id="device-back-btn" type="button" class="ghost">返回上一步</button>
-            <button id="device-refresh-btn" type="button" class="ghost">刷新登录画面</button>
+            ${escapeHtml(stageLabels[status.stage] || "状态确认中")}
           </div>
         </div>
       </div>
+      ${senderLoginContent(status.stage)}
     </section>
   `;
-  bindSenderLogin();
-  await refreshDeviceScreenshot();
+  bindSenderLogin(status.stage);
+  if (status.stage === "qr_code") await refreshDeviceScreenshot();
 }
 
 function archiveGroupDatalist(groups) {

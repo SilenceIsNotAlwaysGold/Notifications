@@ -67,6 +67,62 @@ def test_android_device_control_endpoints_return_screen_and_accept_tap(
 ):
     monkeypatch.setenv("WECOM_ANDROID_CONTROL_ENABLED", "true")
     get_settings.cache_clear()
+
+
+def test_sender_login_status_and_phone_flow_are_stage_gated(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda value: f"/usr/bin/{value}")
+    control = AndroidDeviceControl(serial="127.0.0.1:5555")
+    monkeypatch.setattr(
+        control,
+        "_run_text",
+        lambda args: (
+            "mFocusedApp=ActivityRecord{1 u0 "
+            "com.tencent.wework/.login.controller.LoginVeryfyStep1Activity t12}"
+        ),
+    )
+    taps = []
+    values = []
+    monkeypatch.setattr(control, "tap", lambda x, y: taps.append((x, y)))
+    monkeypatch.setattr(control, "input_text", values.append)
+
+    assert control.sender_login_status()["stage"] == "phone"
+    control.submit_sender_phone("13800138000")
+
+    assert taps == [(985, 466), (480, 466), (540, 680)]
+    assert values == ["13800138000"]
+
+
+def test_sender_login_status_reports_qr_and_logged_in(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda value: f"/usr/bin/{value}")
+    control = AndroidDeviceControl(serial="127.0.0.1:5555")
+    outputs = iter(
+        [
+            "mFocusedApp=ActivityRecord{1 u0 "
+            "com.tencent.wework/.common.web.JsWebActivity t12}",
+            "mFocusedApp=ActivityRecord{1 u0 "
+            "com.tencent.wework/.foundation.views.WwMainActivity t12}",
+        ]
+    )
+    monkeypatch.setattr(control, "_run_text", lambda args: next(outputs))
+
+    assert control.sender_login_status()["stage"] == "qr_code"
+    assert control.sender_login_status()["stage"] == "logged_in"
+
+
+def test_sender_login_api_exposes_native_stage(client, monkeypatch):
+    monkeypatch.setenv("WECOM_ANDROID_CONTROL_ENABLED", "true")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        AndroidDeviceControl,
+        "sender_login_status",
+        lambda self: {"online": True, "stage": "phone"},
+    )
+
+    response = client.get("/api/v1/legal/android-device/login/status")
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {"online": True, "stage": "phone"}
+    get_settings.cache_clear()
     captured = {}
     monkeypatch.setattr(
         AndroidDeviceControl,
@@ -127,6 +183,14 @@ def test_device_text_is_masked_and_screenshot_polling_is_not_audited():
     )
 
     assert summary == {"json": {"input_text": "***"}}
+    login_summary = middleware._request_summary(
+        json.dumps(
+            {"phone": "13800138000", "verification_code": "123456"}
+        ).encode("utf-8")
+    )
+    assert login_summary == {
+        "json": {"phone": "***", "verification_code": "***"}
+    }
     assert (
         "GET",
         "/api/v1/legal/android-device/screenshot",

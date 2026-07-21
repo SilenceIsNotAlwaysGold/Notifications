@@ -456,7 +456,9 @@ def test_admin_console_static_files_available(client):
     assert 'window.addEventListener("popstate"' in js_response.text
     assert "Android 发送端" in js_response.text
     assert "发送账号登录" in js_response.text
-    assert "手机号或验证码" in js_response.text
+    assert "使用原手机企业微信扫码" in js_response.text
+    assert "sender-qr-crop" in js_response.text
+    assert "手机号或验证码" not in js_response.text
     assert "data-device-key=\"home\"" not in js_response.text
     assert "/api/v1/legal/android-device/screenshot" in js_response.text
 
