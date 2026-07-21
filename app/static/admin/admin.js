@@ -10,7 +10,6 @@ const state = {
   deviceRefreshTimer: null,
   deviceScreenshotUrl: null,
   deviceScreenshotBusy: false,
-  devicePointerStart: null,
 };
 
 const titles = {
@@ -21,7 +20,7 @@ const titles = {
   "ocr-reviews": ["人工复核", "核对识别结果并控制业务同步"],
   reminders: ["提醒", "查看提醒、手动触发到期提醒发送"],
   "merchant-questions": ["商家提问", "跟踪外部消息回复时效"],
-  "android-device": ["发送设备", "企业微信 Android 发送设备控制台"],
+  "android-device": ["发送账号登录", "登录企业微信发送账号"],
   "system-alerts": ["系统告警", "归档、识别、同步、机器人、备份和磁盘健康"],
   events: ["事件", "查看系统抽取出的结构化法务事件"],
   media: ["媒体", "图片、PDF、文件和 OCR 状态"],
@@ -211,7 +210,6 @@ function stopDeviceConsole() {
     state.deviceScreenshotUrl = null;
   }
   state.deviceScreenshotBusy = false;
-  state.devicePointerStart = null;
 }
 
 async function fetchDeviceScreenshot() {
@@ -284,51 +282,15 @@ function deviceCoordinates(event, screen) {
   };
 }
 
-function bindDeviceConsole() {
+function bindSenderLogin() {
   const screen = $("#device-screen");
-  const autoRefresh = $("#device-auto-refresh");
-  screen.addEventListener("pointerdown", (event) => {
+  screen.addEventListener("click", async (event) => {
     event.preventDefault();
-    screen.setPointerCapture(event.pointerId);
-    state.devicePointerStart = {
-      ...deviceCoordinates(event, screen),
-      startedAt: Date.now(),
-    };
-  });
-  screen.addEventListener("pointerup", async (event) => {
-    event.preventDefault();
-    const start = state.devicePointerStart;
-    state.devicePointerStart = null;
-    if (!start) return;
-    const end = deviceCoordinates(event, screen);
-    const distance = Math.hypot(end.x - start.x, end.y - start.y);
     try {
-      if (distance < 24) {
-        await sendDeviceAction("tap", end);
-      } else {
-        await sendDeviceAction("swipe", {
-          start_x: start.x,
-          start_y: start.y,
-          end_x: end.x,
-          end_y: end.y,
-          duration_ms: Math.max(100, Math.min(1200, Date.now() - start.startedAt)),
-        });
-      }
+      await sendDeviceAction("tap", deviceCoordinates(event, screen));
     } catch (error) {
       showAlert(error.message, "error");
     }
-  });
-  screen.addEventListener("pointercancel", () => {
-    state.devicePointerStart = null;
-  });
-  document.querySelectorAll("[data-device-key]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      try {
-        await sendDeviceAction("keyevent", { key: button.dataset.deviceKey });
-      } catch (error) {
-        showAlert(error.message, "error");
-      }
-    });
   });
   $("#device-text-form").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -341,56 +303,54 @@ function bindDeviceConsole() {
       showAlert(error.message, "error");
     }
   });
+  $("#device-back-btn").addEventListener("click", async () => {
+    try {
+      await sendDeviceAction("keyevent", { key: "back" });
+    } catch (error) {
+      showAlert(error.message, "error");
+    }
+  });
   $("#device-refresh-btn").addEventListener("click", refreshDeviceScreenshot);
-  state.deviceRefreshTimer = setInterval(() => {
-    if (autoRefresh.checked) refreshDeviceScreenshot();
-  }, 1800);
+  state.deviceRefreshTimer = setInterval(refreshDeviceScreenshot, 1800);
 }
 
 async function renderAndroidDevice() {
   const status = await api("/api/v1/legal/android-device/status");
-  const resolution = status.width && status.height ? `${status.width} × ${status.height}` : "未知";
   $("#content").innerHTML = `
-    <div class="device-console">
-      <section class="panel device-screen-panel">
-        <div class="panel-header">
-          <h2 class="panel-title">Android 画面</h2>
-          <span id="device-live-status" class="device-live-status status-warning">正在连接</span>
+    <section class="panel sender-login-panel">
+      <div class="panel-header sender-login-header">
+        <div>
+          <h2 class="panel-title">企业微信发送账号</h2>
+          <div class="sender-device-state">
+            <span class="sender-state-dot ${status.online ? "online" : ""}"></span>
+            ${status.online ? "设备在线" : "设备离线"}
+          </div>
         </div>
-        <div class="device-screen-body">
+        <span id="device-live-status" class="device-live-status status-warning">正在连接</span>
+      </div>
+      <div class="sender-login-body">
+        <div class="device-screen-body sender-login-screen">
           <div class="device-screen-frame">
-            <img id="device-screen" alt="企业微信 Android 设备画面" draggable="false" />
+            <img id="device-screen" alt="企业微信发送账号登录画面" draggable="false" />
           </div>
         </div>
-      </section>
-      <section class="panel device-control-panel">
-        <div class="panel-header"><h2 class="panel-title">设备控制</h2></div>
-        <div class="panel-body">
-          <dl class="device-meta">
-            <div><dt>连接</dt><dd>${status.online ? "在线" : "离线"}</dd></div>
-            <div><dt>分辨率</dt><dd>${escapeHtml(resolution)}</dd></div>
-          </dl>
-          <div class="device-keypad" role="group" aria-label="Android 导航按键">
-            <button type="button" class="ghost" data-device-key="back">← 返回</button>
-            <button type="button" class="ghost" data-device-key="home">○ 主页</button>
-            <button type="button" class="ghost" data-device-key="recent">□ 最近</button>
-          </div>
+        <div class="sender-login-actions">
           <form id="device-text-form" class="device-text-form">
-            <label for="device-text-input">输入文本</label>
+            <label for="device-text-input">登录输入</label>
             <div class="device-text-row">
-              <input id="device-text-input" type="password" autocomplete="off" maxlength="256" />
-              <button type="submit">发送</button>
+              <input id="device-text-input" type="password" inputmode="numeric" autocomplete="off" maxlength="256" placeholder="手机号或验证码" />
+              <button type="submit">输入</button>
             </div>
           </form>
-          <div class="device-refresh-control">
-            <label><input id="device-auto-refresh" type="checkbox" checked /> 自动刷新</label>
-            <button id="device-refresh-btn" type="button" class="ghost">刷新画面</button>
+          <div class="sender-login-buttons">
+            <button id="device-back-btn" type="button" class="ghost">返回上一步</button>
+            <button id="device-refresh-btn" type="button" class="ghost">刷新登录画面</button>
           </div>
         </div>
-      </section>
-    </div>
+      </div>
+    </section>
   `;
-  bindDeviceConsole();
+  bindSenderLogin();
   await refreshDeviceScreenshot();
 }
 

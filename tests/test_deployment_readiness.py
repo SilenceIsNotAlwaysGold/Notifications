@@ -455,7 +455,9 @@ def test_admin_console_static_files_available(client):
     assert "window.location.hash" in js_response.text
     assert 'window.addEventListener("popstate"' in js_response.text
     assert "Android 发送端" in js_response.text
-    assert "发送设备" in js_response.text
+    assert "发送账号登录" in js_response.text
+    assert "手机号或验证码" in js_response.text
+    assert "data-device-key=\"home\"" not in js_response.text
     assert "/api/v1/legal/android-device/screenshot" in js_response.text
 
     css_response = client.get("/admin/styles.css")

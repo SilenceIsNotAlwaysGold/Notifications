@@ -289,16 +289,38 @@ button.danger-button {
   line-height: 1.4;
 }
 
-.device-console {
-  display: grid;
-  grid-template-columns: minmax(380px, 520px) minmax(260px, 1fr);
-  gap: 14px;
-  align-items: start;
+.sender-login-panel {
+  max-width: 900px;
 }
 
-.device-screen-panel,
-.device-control-panel {
-  min-width: 0;
+.sender-login-header {
+  align-items: center;
+}
+
+.sender-device-state {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 7px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.sender-state-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--danger);
+}
+
+.sender-state-dot.online {
+  background: var(--ok);
+}
+
+.sender-login-body {
+  display: grid;
+  grid-template-columns: minmax(340px, 520px) minmax(240px, 1fr);
+  min-height: 620px;
 }
 
 .device-screen-body {
@@ -323,7 +345,7 @@ button.danger-button {
   width: 100%;
   height: 100%;
   object-fit: contain;
-  cursor: crosshair;
+  cursor: pointer;
   touch-action: none;
   user-select: none;
 }
@@ -336,42 +358,14 @@ button.danger-button {
   font-size: 13px;
 }
 
-.device-meta {
-  display: grid;
-  gap: 0;
-  margin: 0 0 18px;
-}
-
-.device-meta div {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 10px 0;
-  border-bottom: 1px solid var(--line);
-}
-
-.device-meta dt {
-  color: var(--muted);
-}
-
-.device-meta dd {
-  margin: 0;
-  font-weight: 700;
-}
-
-.device-keypad {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.device-keypad button {
-  min-width: 0;
-  padding-inline: 8px;
+.sender-login-actions {
+  padding: 22px;
+  border-left: 1px solid var(--line);
+  background: var(--panel);
 }
 
 .device-text-form {
-  margin-top: 22px;
+  margin: 0;
 }
 
 .device-text-form label {
@@ -388,20 +382,15 @@ button.danger-button {
   gap: 8px;
 }
 
-.device-refresh-control {
+.sender-login-buttons {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-wrap: wrap;
   gap: 12px;
   margin-top: 22px;
 }
 
-.device-refresh-control label {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--muted);
-  font-size: 13px;
+.sender-login-buttons button {
+  flex: 1 1 140px;
 }
 
 .form-grid {
