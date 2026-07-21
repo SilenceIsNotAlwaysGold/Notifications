@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import secrets
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -11,6 +12,7 @@ from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconne
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
+_DEVICE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{24,128}$")
 
 
 @dataclass(frozen=True)
@@ -39,7 +41,7 @@ def load_config() -> SenderConfig:
     ):
         raise RuntimeError("WECOM_SENDER_TARGETS_JSON 必须是字符串到字符串的映射")
 
-    return SenderConfig(
+    config = SenderConfig(
         backend=backend,
         api_token=(
             os.getenv("WECOM_SENDER_API_TOKEN")
@@ -58,6 +60,16 @@ def load_config() -> SenderConfig:
             os.getenv("WECOM_SENDER_COMMAND_TIMEOUT_SECONDS", "45")
         ),
     )
+    if config.command_timeout_seconds <= 0:
+        raise RuntimeError("WECOM_SENDER_COMMAND_TIMEOUT_SECONDS 必须大于 0")
+    if config.backend == "worktool":
+        if len(config.api_token) < 24:
+            raise RuntimeError("worktool 模式的 WECOM_SENDER_API_TOKEN 至少 24 位")
+        if not _DEVICE_ID_PATTERN.fullmatch(config.robot_id):
+            raise RuntimeError(
+                "worktool 模式的 WECOM_SENDER_ROBOT_ID 必须为 24-128 位安全标识"
+            )
+    return config
 
 
 class GatewayParams(BaseModel):

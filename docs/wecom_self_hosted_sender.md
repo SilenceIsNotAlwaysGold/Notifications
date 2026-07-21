@@ -75,6 +75,10 @@ WECOMAPI_GUID=与WECOM_SENDER_ROBOT_ID相同
 
 公开 WorkTool 源码当前不能直接保证兼容企业微信 5.x。手机端正式交付前需要建立我们自己的 fork，移除统计 SDK 和第三方更新接口，并根据实机控件树更新选择器。
 
+不使用实体手机时，可在 Linux 服务器上启动 Android 容器，复用同一个 WorkTool
+WebSocket 协议。部署、APK ABI 预检和 ADB 反向端口步骤见
+[企业微信 Linux Android 外部群发送验收](wecom_linux_android_emulator.md)。
+
 ## 安全边界
 
 - 专用账号不授予管理员权限，只加入需要提醒的法务群。

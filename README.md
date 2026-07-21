@@ -643,6 +643,9 @@ uvicorn wecom_sender_sidecar.main:app --host 127.0.0.1 --port 8092
 
 该通道通过非官方 UI 自动化完成外部群发送。生产环境应使用独立的“致和法务通知助手”账号，只发送必要的文字提醒，不通过该通道传输判决书、身份证明等敏感文件。详细操作见 [企业微信外部群自托管发送方案](docs/wecom_self_hosted_sender.md) 和 [企业微信专用通知账号接入](docs/wecom_dedicated_sender.md)。
 
+无需实体手机的 Linux Android 容器 profile、ADB 安全绑定和 APK 兼容预检见
+[企业微信 Linux Android 外部群发送验收](docs/wecom_linux_android_emulator.md)。
+
 项目还提供 Linux 自托管账号网关控制面，用统一的本地 API 隔离主业务与底层账号通道。当前包含 Mock、官方 Linux CLI 和上游迁移驱动、加密回调队列及发送/改群名安全白名单。官方驱动可用 `/api/qw/capabilities/probe` 区分已授权和企业侧拒绝；它只在服务端开放 `msg` 能力时发送文本。未公开的原生客户端协议仍需独立测试账号验证，不能将迁移驱动等同于已经完成私有协议。部署与边界见 [企业微信 Linux 自托管账号网关](docs/wecom_protocol_gateway.md)。
 
 ## 企业微信真实接入风险

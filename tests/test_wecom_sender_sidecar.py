@@ -1,14 +1,19 @@
 from concurrent.futures import ThreadPoolExecutor
 
+import pytest
 from fastapi.testclient import TestClient
 
 from wecom_sender_sidecar.main import app, sender_manager
 
 
+API_TOKEN = "sidecar-api-token-32-characters-long"
+ROBOT_ID = "robot-zhihe-001-32-characters-long"
+
+
 def _configure_sender(monkeypatch, *, backend: str = "mock") -> None:
     monkeypatch.setenv("WECOM_SENDER_BACKEND", backend)
-    monkeypatch.setenv("WECOM_SENDER_API_TOKEN", "sidecar-api-token")
-    monkeypatch.setenv("WECOM_SENDER_ROBOT_ID", "robot-zhihe-001")
+    monkeypatch.setenv("WECOM_SENDER_API_TOKEN", API_TOKEN)
+    monkeypatch.setenv("WECOM_SENDER_ROBOT_ID", ROBOT_ID)
     monkeypatch.setenv(
         "WECOM_SENDER_TARGETS_JSON",
         '{"zhihe-legal":"致和法务执行群"}',
@@ -20,7 +25,7 @@ def _request_payload() -> dict:
     return {
         "method": "/msg/sendText",
         "params": {
-            "guid": "robot-zhihe-001",
+            "guid": ROBOT_ID,
             "toId": "zhihe-legal",
             "content": "开庭提醒：明日上午九点开庭。",
         },
@@ -33,7 +38,7 @@ def test_mock_gateway_uses_target_whitelist(monkeypatch):
     with TestClient(app) as client:
         response = client.post(
             "/wecom/finder/api",
-            headers={"WECOM-TOKEN": "sidecar-api-token"},
+            headers={"WECOM-TOKEN": API_TOKEN},
             json=_request_payload(),
         )
 
@@ -51,7 +56,7 @@ def test_gateway_rejects_unknown_target(monkeypatch):
     with TestClient(app) as client:
         response = client.post(
             "/wecom/finder/api",
-            headers={"WECOM-TOKEN": "sidecar-api-token"},
+            headers={"WECOM-TOKEN": API_TOKEN},
             json=payload,
         )
 
@@ -77,12 +82,12 @@ def test_worktool_websocket_receives_command_and_returns_receipt(monkeypatch):
     _configure_sender(monkeypatch, backend="worktool")
 
     with TestClient(app) as client:
-        with client.websocket_connect("/webserver/wework/robot-zhihe-001") as device:
+        with client.websocket_connect(f"/webserver/wework/{ROBOT_ID}") as device:
             with ThreadPoolExecutor(max_workers=1) as executor:
                 request_future = executor.submit(
                     client.post,
                     "/wecom/finder/api",
-                    headers={"WECOM-TOKEN": "sidecar-api-token"},
+                    headers={"WECOM-TOKEN": API_TOKEN},
                     json=_request_payload(),
                 )
                 command = device.receive_json()
@@ -115,7 +120,7 @@ def test_worktool_backend_reports_offline_device(monkeypatch):
     with TestClient(app) as client:
         response = client.post(
             "/wecom/finder/api",
-            headers={"WECOM-TOKEN": "sidecar-api-token"},
+            headers={"WECOM-TOKEN": API_TOKEN},
             json=_request_payload(),
         )
 
@@ -127,3 +132,13 @@ def test_worktool_backend_reports_offline_device(monkeypatch):
     import asyncio
 
     asyncio.run(sender_manager.reset())
+
+
+def test_worktool_backend_rejects_weak_device_credentials(monkeypatch):
+    _configure_sender(monkeypatch, backend="worktool")
+    monkeypatch.setenv("WECOM_SENDER_API_TOKEN", "short")
+
+    with pytest.raises(RuntimeError, match="API_TOKEN 至少 24 位"):
+        from wecom_sender_sidecar.main import load_config
+
+        load_config()
