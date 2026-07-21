@@ -153,7 +153,17 @@ def test_configure_runtime_preserves_existing_accessibility_services(monkeypatch
         in put_command[-1]
     )
     assert ["-s", "emulator-5554", "reverse", "tcp:8092", "tcp:8092"] in calls
+    assert [
+        "-s",
+        "emulator-5554",
+        "shell",
+        "am",
+        "start",
+        "-n",
+        "cn.zhihe.legal.sender/.MainActivity",
+    ] in calls
     assert result["companion_launched"] is True
+    assert result["companion_activity"] == "cn.zhihe.legal.sender/.MainActivity"
 
 
 def test_adb_invocation_never_uses_shell(monkeypatch):

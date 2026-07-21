@@ -142,20 +142,13 @@ class AndroidDeviceManager:
         self._shell(
             ["dumpsys", "deviceidle", "whitelist", f"+{companion_package}"]
         )
-        self._shell(
-            [
-                "monkey",
-                "-p",
-                companion_package,
-                "-c",
-                "android.intent.category.LAUNCHER",
-                "1",
-            ]
-        )
+        companion_activity = f"{companion_package}/.MainActivity"
+        self._shell(["am", "start", "-n", companion_activity])
         return {
             "accessibility_component": accessibility_component,
             "reverse": f"tcp:{device_port}->tcp:{host_port}",
             "companion_launched": True,
+            "companion_activity": companion_activity,
         }
 
     def package_installed(self, package: str) -> bool:
