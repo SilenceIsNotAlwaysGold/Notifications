@@ -9,7 +9,20 @@ from app.models.operation_audit_log import OperationAuditLog
 
 logger = logging.getLogger(__name__)
 
-SENSITIVE_KEYWORDS = ("api_key", "apikey", "token", "secret", "webhook", "password", "private_key")
+SENSITIVE_KEYWORDS = (
+    "api_key",
+    "apikey",
+    "token",
+    "secret",
+    "webhook",
+    "password",
+    "private_key",
+    "input_text",
+)
+
+AUDIT_EXCLUDED_ENDPOINTS = {
+    ("GET", "/api/v1/legal/android-device/screenshot"),
+}
 
 
 class OperationAuditMiddleware:
@@ -17,7 +30,13 @@ class OperationAuditMiddleware:
         self.app = app
 
     async def __call__(self, scope: dict[str, Any], receive: Callable[[], Awaitable[dict[str, Any]]], send: Callable[[dict[str, Any]], Awaitable[None]]) -> None:
-        if scope.get("type") != "http" or not str(scope.get("path") or "").startswith("/api/v1/legal"):
+        method = str(scope.get("method") or "").upper()
+        path = str(scope.get("path") or "")
+        if (
+            scope.get("type") != "http"
+            or not path.startswith("/api/v1/legal")
+            or (method, path) in AUDIT_EXCLUDED_ENDPOINTS
+        ):
             await self.app(scope, receive, send)
             return
 

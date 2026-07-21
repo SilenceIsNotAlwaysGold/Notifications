@@ -7,6 +7,10 @@ const state = {
   reviewStatusFilter: "pending",
   reviewPreviewUrl: null,
   editingReminderId: null,
+  deviceRefreshTimer: null,
+  deviceScreenshotUrl: null,
+  deviceScreenshotBusy: false,
+  devicePointerStart: null,
 };
 
 const titles = {
@@ -17,6 +21,7 @@ const titles = {
   "ocr-reviews": ["人工复核", "核对识别结果并控制业务同步"],
   reminders: ["提醒", "查看提醒、手动触发到期提醒发送"],
   "merchant-questions": ["商家提问", "跟踪外部消息回复时效"],
+  "android-device": ["发送设备", "企业微信 Android 发送设备控制台"],
   "system-alerts": ["系统告警", "归档、识别、同步、机器人、备份和磁盘健康"],
   events: ["事件", "查看系统抽取出的结构化法务事件"],
   media: ["媒体", "图片、PDF、文件和 OCR 状态"],
@@ -67,6 +72,7 @@ function viewFromLocation() {
 }
 
 function setView(view, { syncLocation = true, replaceLocation = false } = {}) {
+  stopDeviceConsole();
   const nextView = normalizedView(view);
   state.view = nextView;
   localStorage.setItem("legal_wecom_view", nextView);
@@ -193,6 +199,199 @@ async function renderOverview() {
       )}
     </div>
   `;
+}
+
+function stopDeviceConsole() {
+  if (state.deviceRefreshTimer) {
+    clearInterval(state.deviceRefreshTimer);
+    state.deviceRefreshTimer = null;
+  }
+  if (state.deviceScreenshotUrl) {
+    URL.revokeObjectURL(state.deviceScreenshotUrl);
+    state.deviceScreenshotUrl = null;
+  }
+  state.deviceScreenshotBusy = false;
+  state.devicePointerStart = null;
+}
+
+async function fetchDeviceScreenshot() {
+  const headers = {};
+  if (state.apiKey) headers["X-API-Key"] = state.apiKey;
+  const response = await fetch(`/api/v1/legal/android-device/screenshot?t=${Date.now()}`, {
+    headers,
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    let message = `截图失败：${response.status}`;
+    try {
+      const body = await response.json();
+      message = body.message || message;
+    } catch {
+      // Keep the status-based error when the response is not JSON.
+    }
+    throw new Error(message);
+  }
+  return response.blob();
+}
+
+async function refreshDeviceScreenshot() {
+  if (state.view !== "android-device" || state.deviceScreenshotBusy) return;
+  state.deviceScreenshotBusy = true;
+  const status = $("#device-live-status");
+  try {
+    const blob = await fetchDeviceScreenshot();
+    if (state.view !== "android-device") return;
+    const nextUrl = URL.createObjectURL(blob);
+    const screen = $("#device-screen");
+    if (!screen) {
+      URL.revokeObjectURL(nextUrl);
+      return;
+    }
+    const previousUrl = state.deviceScreenshotUrl;
+    state.deviceScreenshotUrl = nextUrl;
+    screen.src = nextUrl;
+    if (previousUrl) URL.revokeObjectURL(previousUrl);
+    if (status) {
+      status.textContent = "画面已同步";
+      status.className = "device-live-status status-ok";
+    }
+  } catch (error) {
+    if (status) {
+      status.textContent = error.message;
+      status.className = "device-live-status status-error";
+    }
+  } finally {
+    state.deviceScreenshotBusy = false;
+  }
+}
+
+async function sendDeviceAction(path, payload) {
+  await api(`/api/v1/legal/android-device/${path}`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  await refreshDeviceScreenshot();
+}
+
+function deviceCoordinates(event, screen) {
+  const bounds = screen.getBoundingClientRect();
+  const width = screen.naturalWidth || 1080;
+  const height = screen.naturalHeight || 1920;
+  return {
+    x: Math.round(((event.clientX - bounds.left) / bounds.width) * width),
+    y: Math.round(((event.clientY - bounds.top) / bounds.height) * height),
+  };
+}
+
+function bindDeviceConsole() {
+  const screen = $("#device-screen");
+  const autoRefresh = $("#device-auto-refresh");
+  screen.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    screen.setPointerCapture(event.pointerId);
+    state.devicePointerStart = {
+      ...deviceCoordinates(event, screen),
+      startedAt: Date.now(),
+    };
+  });
+  screen.addEventListener("pointerup", async (event) => {
+    event.preventDefault();
+    const start = state.devicePointerStart;
+    state.devicePointerStart = null;
+    if (!start) return;
+    const end = deviceCoordinates(event, screen);
+    const distance = Math.hypot(end.x - start.x, end.y - start.y);
+    try {
+      if (distance < 24) {
+        await sendDeviceAction("tap", end);
+      } else {
+        await sendDeviceAction("swipe", {
+          start_x: start.x,
+          start_y: start.y,
+          end_x: end.x,
+          end_y: end.y,
+          duration_ms: Math.max(100, Math.min(1200, Date.now() - start.startedAt)),
+        });
+      }
+    } catch (error) {
+      showAlert(error.message, "error");
+    }
+  });
+  screen.addEventListener("pointercancel", () => {
+    state.devicePointerStart = null;
+  });
+  document.querySelectorAll("[data-device-key]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      try {
+        await sendDeviceAction("keyevent", { key: button.dataset.deviceKey });
+      } catch (error) {
+        showAlert(error.message, "error");
+      }
+    });
+  });
+  $("#device-text-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const input = $("#device-text-input");
+    if (!input.value) return;
+    try {
+      await sendDeviceAction("input-text", { input_text: input.value });
+      input.value = "";
+    } catch (error) {
+      showAlert(error.message, "error");
+    }
+  });
+  $("#device-refresh-btn").addEventListener("click", refreshDeviceScreenshot);
+  state.deviceRefreshTimer = setInterval(() => {
+    if (autoRefresh.checked) refreshDeviceScreenshot();
+  }, 1800);
+}
+
+async function renderAndroidDevice() {
+  const status = await api("/api/v1/legal/android-device/status");
+  const resolution = status.width && status.height ? `${status.width} × ${status.height}` : "未知";
+  $("#content").innerHTML = `
+    <div class="device-console">
+      <section class="panel device-screen-panel">
+        <div class="panel-header">
+          <h2 class="panel-title">Android 画面</h2>
+          <span id="device-live-status" class="device-live-status status-warning">正在连接</span>
+        </div>
+        <div class="device-screen-body">
+          <div class="device-screen-frame">
+            <img id="device-screen" alt="企业微信 Android 设备画面" draggable="false" />
+          </div>
+        </div>
+      </section>
+      <section class="panel device-control-panel">
+        <div class="panel-header"><h2 class="panel-title">设备控制</h2></div>
+        <div class="panel-body">
+          <dl class="device-meta">
+            <div><dt>连接</dt><dd>${status.online ? "在线" : "离线"}</dd></div>
+            <div><dt>分辨率</dt><dd>${escapeHtml(resolution)}</dd></div>
+          </dl>
+          <div class="device-keypad" role="group" aria-label="Android 导航按键">
+            <button type="button" class="ghost" data-device-key="back">← 返回</button>
+            <button type="button" class="ghost" data-device-key="home">○ 主页</button>
+            <button type="button" class="ghost" data-device-key="recent">□ 最近</button>
+          </div>
+          <form id="device-text-form" class="device-text-form">
+            <label for="device-text-input">输入文本</label>
+            <div class="device-text-row">
+              <input id="device-text-input" type="password" autocomplete="off" maxlength="256" />
+              <button type="submit">发送</button>
+            </div>
+          </form>
+          <div class="device-refresh-control">
+            <label><input id="device-auto-refresh" type="checkbox" checked /> 自动刷新</label>
+            <button id="device-refresh-btn" type="button" class="ghost">刷新画面</button>
+          </div>
+        </div>
+      </section>
+    </div>
+  `;
+  bindDeviceConsole();
+  await refreshDeviceScreenshot();
 }
 
 function archiveGroupDatalist(groups) {
@@ -975,6 +1174,7 @@ async function renderSync() {
 }
 
 async function loadView() {
+  if (state.view === "android-device") stopDeviceConsole();
   $("#content").innerHTML = '<div class="empty-state">加载中...</div>';
   try {
     if (state.view === "overview") await renderOverview();
@@ -984,6 +1184,7 @@ async function loadView() {
     if (state.view === "ocr-reviews") await renderOCRReviews();
     if (state.view === "reminders") await renderReminders();
     if (state.view === "merchant-questions") await renderMerchantQuestions();
+    if (state.view === "android-device") await renderAndroidDevice();
     if (state.view === "system-alerts") await renderSystemAlerts();
     if (state.view === "events") await renderEvents();
     if (state.view === "media") await renderMedia();
