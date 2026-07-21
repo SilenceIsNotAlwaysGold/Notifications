@@ -10,6 +10,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.adapters.wecom_sender_status import WeComSenderStatusClient
 from app.core.config import get_settings
 from app.models.document_sync_log import DocumentSyncLog
 from app.models.media_file import MediaFile
@@ -68,6 +69,7 @@ class SystemAlertService:
             self._llm_condition(),
             self._kdocs_condition(),
             self._robot_condition(),
+            self._sender_condition(),
             self._backup_condition(),
             self._disk_condition(),
         ]
@@ -263,6 +265,46 @@ class SystemAlertService:
                     message = f"企业微信机器人健康检查失败：{exc}"
                     details["error_type"] = type(exc).__name__
         return self._condition("wecom_robot_offline", active, "critical", "wecom_bot", "企业微信机器人离线", message, details)
+
+    def _sender_condition(self) -> dict[str, Any]:
+        enabled = self.settings.wecom_send_mode == "wecomapi"
+        result: dict[str, Any] = {
+            "status": "disabled",
+            "message": "Android 发送端未启用",
+        }
+        if enabled:
+            result = WeComSenderStatusClient(
+                base_url=self.settings.wecomapi_base_url,
+                timeout_seconds=self.settings.wecom_timeout_seconds,
+            ).check()
+        active = enabled and result["status"] != "ok"
+        details = {
+            "enabled": enabled,
+            **{
+                key: result.get(key)
+                for key in (
+                    "status",
+                    "backend",
+                    "configured",
+                    "online",
+                    "connected_at",
+                    "pending_commands",
+                    "target_count",
+                    "status_code",
+                    "error_type",
+                )
+                if key in result
+            },
+        }
+        return self._condition(
+            "wecom_sender_offline",
+            active,
+            "critical" if result["status"] == "error" else "warning",
+            "wecom_android_sender",
+            "企业微信 Android 发送端不可用",
+            result["message"] if active else "企业微信 Android 发送端在线",
+            details,
+        )
 
     def _backup_condition(self) -> dict[str, Any]:
         backup_dir = Path(self.settings.ops_backup_dir)

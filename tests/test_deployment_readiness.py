@@ -395,13 +395,47 @@ def test_health_detail_returns_runtime_sections(client):
 
     assert response.status_code == 200
     body = response.json()
-    assert set(body) >= {"status", "database", "config", "storage", "scheduler"}
+    assert set(body) >= {"status", "database", "config", "storage", "scheduler", "sender"}
     assert body["database"]["status"] == "ok"
     assert "running" in body["scheduler"]
     assert "jobs" in body["scheduler"]
     assert "writable" in body["storage"]
     assert "errors" in body["config"]
     assert "warnings" in body["config"]
+    assert body["sender"]["status"] == "disabled"
+
+
+def test_health_detail_reports_sanitized_android_sender_status(client, monkeypatch):
+    monkeypatch.setenv("WECOM_SEND_MODE", "wecomapi")
+    monkeypatch.setenv("WECOMAPI_BASE_URL", "http://sender.internal:8092")
+    monkeypatch.setenv("WECOMAPI_TOKEN", "SECRET_SENDER_TOKEN")
+    monkeypatch.setenv("WECOMAPI_GUID", "SECRET_SENDER_DEVICE_ID")
+    monkeypatch.setattr(
+        "app.api.v1.health.WeComSenderStatusClient.check",
+        lambda self: {
+            "status": "ok",
+            "message": "Android 发送设备在线",
+            "backend": "android",
+            "configured": True,
+            "online": True,
+            "connected_at": "2026-07-21T09:00:00+00:00",
+            "pending_commands": 0,
+            "target_count": 2,
+            "status_code": 200,
+        },
+    )
+    get_settings.cache_clear()
+
+    response = client.get("/api/v1/health/detail")
+
+    body = response.json()
+    assert body["sender"]["status"] == "ok"
+    assert body["sender"]["online"] is True
+    assert body["sender"]["target_count"] == 2
+    assert "SECRET_SENDER_TOKEN" not in response.text
+    assert "SECRET_SENDER_DEVICE_ID" not in response.text
+    assert "sender.internal" not in response.text
+    get_settings.cache_clear()
 
 
 def test_admin_console_static_files_available(client):
@@ -420,6 +454,7 @@ def test_admin_console_static_files_available(client):
     assert "legal_wecom_view" in js_response.text
     assert "window.location.hash" in js_response.text
     assert 'window.addEventListener("popstate"' in js_response.text
+    assert "Android 发送端" in js_response.text
 
     css_response = client.get("/admin/styles.css")
     assert css_response.status_code == 200

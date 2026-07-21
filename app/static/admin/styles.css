@@ -224,6 +224,10 @@ button.danger-button {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.grid.cols-4 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .panel {
   background: var(--panel);
   border: 1px solid var(--line);
@@ -275,6 +279,14 @@ button.danger-button {
 
 .status-error {
   color: var(--danger);
+}
+
+.stat-note {
+  min-height: 34px;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .form-grid {

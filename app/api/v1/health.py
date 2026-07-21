@@ -4,6 +4,7 @@ from typing import Any
 from fastapi import APIRouter
 from sqlalchemy import text
 
+from app.adapters.wecom_sender_status import WeComSenderStatusClient
 from app.core.config import get_settings
 from app.core.config_validator import validate_runtime_config
 from app.core.scheduler import scheduler
@@ -88,6 +89,21 @@ def _config_status() -> dict[str, Any]:
     }
 
 
+def _sender_status() -> dict[str, Any]:
+    settings = get_settings()
+    if settings.wecom_send_mode != "wecomapi":
+        return {
+            "status": "disabled",
+            "mode": settings.wecom_send_mode,
+            "message": "Android 发送端未启用",
+        }
+    result = WeComSenderStatusClient(
+        base_url=settings.wecomapi_base_url,
+        timeout_seconds=settings.wecom_timeout_seconds,
+    ).check()
+    return {"mode": "wecomapi", **result}
+
+
 @router.get("/detail")
 def health_detail() -> dict[str, Any]:
     settings = get_settings()
@@ -95,6 +111,7 @@ def health_detail() -> dict[str, Any]:
     config = _config_status()
     scheduler_status = _scheduler_status()
     storage = _storage_status()
+    sender = _sender_status()
     db_api_key_count = 0
     try:
         from sqlalchemy import select
@@ -104,7 +121,7 @@ def health_detail() -> dict[str, Any]:
     except Exception:
         db_api_key_count = 0
 
-    sections = [database, config, scheduler_status, storage]
+    sections = [database, config, scheduler_status, storage, sender]
     if any(section["status"] == "error" for section in sections):
         status = "error"
     elif any(section["status"] == "degraded" for section in sections):
@@ -118,6 +135,7 @@ def health_detail() -> dict[str, Any]:
         "config": config,
         "scheduler": scheduler_status,
         "storage": storage,
+        "sender": sender,
         "auth": {
             "enabled": settings.auth_enabled,
             "rbac_enabled": settings.rbac_enabled,

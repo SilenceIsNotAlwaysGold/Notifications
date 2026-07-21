@@ -123,3 +123,32 @@ def test_llm_fallbacks_are_read_from_structured_ocr_results(db_session, monkeypa
     assert condition["active"] is True
     assert condition["details"]["statuses"] == ["fallback", "fallback"]
     get_settings.cache_clear()
+
+
+def test_android_sender_offline_condition_is_sanitized(db_session, monkeypatch):
+    monkeypatch.setenv("WECOM_SEND_MODE", "wecomapi")
+    monkeypatch.setenv("WECOMAPI_BASE_URL", "http://sender.internal:8092")
+    monkeypatch.setenv("WECOMAPI_TOKEN", "sender-token")
+    monkeypatch.setenv("WECOMAPI_GUID", "sender-device")
+    monkeypatch.setattr(
+        "app.services.system_alert_service.WeComSenderStatusClient.check",
+        lambda self: {
+            "status": "error",
+            "message": "Android 发送设备未连接",
+            "backend": "android",
+            "configured": True,
+            "online": False,
+            "target_count": 1,
+            "error_type": "ConnectError",
+        },
+    )
+    get_settings.cache_clear()
+
+    condition = SystemAlertService(db_session)._sender_condition()
+
+    assert condition["active"] is True
+    assert condition["alert_type"] == "wecom_sender_offline"
+    assert condition["severity"] == "critical"
+    assert condition["details"]["online"] is False
+    assert "sender.internal" not in str(condition)
+    get_settings.cache_clear()

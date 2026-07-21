@@ -120,6 +120,12 @@ function badge(value) {
   return `<span class="badge ${finalCls}">${escapeHtml(text)}</span>`;
 }
 
+function healthStatusClass(status) {
+  if (status === "ok") return "status-ok";
+  if (status === "error") return "status-error";
+  return "status-warning";
+}
+
 function table(columns, rows) {
   if (!rows || rows.length === 0) {
     return document.querySelector("#empty-state-template").innerHTML;
@@ -153,11 +159,15 @@ async function renderOverview() {
   const [health, detail] = await Promise.all([api("/api/v1/health"), api("/api/v1/health/detail")]);
   const config = detail.config || {};
   const jobs = (detail.scheduler && detail.scheduler.jobs) || [];
+  const sender = detail.sender || { status: "disabled", message: "发送端状态未知" };
+  const senderLabels = { ok: "设备在线", disabled: "未启用", degraded: "需配置", error: "不可用" };
+  const senderLabel = senderLabels[sender.status] || sender.status;
   $("#content").innerHTML = `
-    <div class="grid cols-3">
-      <div class="panel stat"><div class="stat-label">系统状态</div><div class="stat-value status-ok">${escapeHtml(health.status)}</div></div>
+    <div class="grid cols-4">
+      <div class="panel stat"><div class="stat-label">系统状态</div><div class="stat-value ${healthStatusClass(detail.status)}">${escapeHtml(detail.status || health.status)}</div></div>
       <div class="panel stat"><div class="stat-label">运行环境</div><div class="stat-value">${escapeHtml(health.env)}</div></div>
       <div class="panel stat"><div class="stat-label">调度器</div><div class="stat-value ${detail.scheduler.running ? "status-ok" : "status-warning"}">${detail.scheduler.running ? "running" : "stopped"}</div></div>
+      <div class="panel stat"><div class="stat-label">Android 发送端</div><div class="stat-value ${healthStatusClass(sender.status)}">${escapeHtml(senderLabel)}</div><div class="stat-note">${escapeHtml(sender.message)}</div></div>
     </div>
     <div class="grid cols-2" style="margin-top:14px">
       ${panel(

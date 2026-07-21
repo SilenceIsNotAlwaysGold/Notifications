@@ -20,6 +20,7 @@ x-app-environment: &app-environment
   OCR_SIDECAR_URL: http://ocr-sidecar:8011
   WECOM_ARCHIVE_SIDECAR_URL: http://archive-sidecar:8012/wecom-archive
   WECOM_BOT_SIDECAR_URL: http://wecom-bot:8788
+  WECOMAPI_BASE_URL: ${WECOMAPI_BASE_URL:-http://wecom-sender:8092}
 
 x-app-volumes: &app-volumes
   - legal-data:/app/data
