@@ -2,6 +2,7 @@ import re
 import shutil
 import subprocess
 import time
+import xml.etree.ElementTree as ET
 from typing import Any
 
 
@@ -183,9 +184,9 @@ class AndroidDeviceControl:
             raise ValueError("请输入正确的身份证号码")
         self._require_login_stage("identity_verification")
         self.tap(620, 995)
-        self._clear_focused_text()
-        self.input_text(normalized)
+        self._replace_identity_number(normalized)
         self.keyevent("back")
+        time.sleep(0.5)
         self.tap(540, 1150)
         self._wait_for_login_stage_change("identity_verification")
 
@@ -233,6 +234,47 @@ class AndroidDeviceControl:
                 "input keyevent KEYCODE_DEL; i=$((i + 1)); done",
             ]
         )
+
+    def _replace_identity_number(self, identity_number: str) -> None:
+        for _ in range(3):
+            self._clear_focused_text()
+            self.input_text(identity_number)
+            time.sleep(0.3)
+            if self._identity_field_value() == identity_number:
+                return
+        raise AndroidDeviceControlError(
+            "身份证号码未能正确写入企业微信，请重试"
+        )
+
+    def _identity_field_value(self) -> str:
+        dump_path = "/sdcard/legal_wecom_identity_check.xml"
+        self._run_text(
+            [
+                "-s",
+                self.serial,
+                "shell",
+                "uiautomator",
+                "dump",
+                dump_path,
+            ]
+        )
+        try:
+            xml_text = self._run_text(
+                ["-s", self.serial, "shell", "cat", dump_path]
+            )
+            root = ET.fromstring(xml_text)
+            for node in root.iter("node"):
+                if node.attrib.get("resource-id") == "com.tencent.wework:id/c3_":
+                    return node.attrib.get("text", "")
+        except ET.ParseError as exc:
+            raise AndroidDeviceControlError(
+                "无法确认企业微信身份证输入结果"
+            ) from exc
+        finally:
+            self._run_text(
+                ["-s", self.serial, "shell", "rm", "-f", dump_path]
+            )
+        raise AndroidDeviceControlError("未找到企业微信身份证输入框")
 
     def _wait_for_login_stage_change(self, previous_stage: str) -> None:
         for _ in range(5):

@@ -171,13 +171,8 @@ def test_sender_identity_number_is_forwarded_only_on_identity_stage(monkeypatch)
     )
     monkeypatch.setattr(
         control,
-        "_clear_focused_text",
-        lambda: actions.append(("clear",)),
-    )
-    monkeypatch.setattr(
-        control,
-        "input_text",
-        lambda value: actions.append(("input", value)),
+        "_replace_identity_number",
+        lambda value: actions.append(("replace", value)),
     )
     monkeypatch.setattr(
         control,
@@ -190,16 +185,51 @@ def test_sender_identity_number_is_forwarded_only_on_identity_stage(monkeypatch)
         lambda stage: actions.append(("wait", stage)),
     )
 
+    monkeypatch.setattr("time.sleep", lambda seconds: None)
+
     control.submit_sender_identity_number("11010119900101123x")
 
     assert actions == [
         ("tap", 620, 995),
-        ("clear",),
-        ("input", "11010119900101123X"),
+        ("replace", "11010119900101123X"),
         ("keyevent", "back"),
         ("tap", 540, 1150),
         ("wait", "identity_verification"),
     ]
+
+
+def test_sender_identity_number_retries_until_device_value_matches(monkeypatch):
+    control = AndroidDeviceControl(serial="127.0.0.1:5555")
+    actions = []
+    values = iter(["11010119900101123X1", "11010119900101123X"])
+    monkeypatch.setattr(
+        control,
+        "_clear_focused_text",
+        lambda: actions.append("clear"),
+    )
+    monkeypatch.setattr(control, "input_text", lambda value: actions.append(value))
+    monkeypatch.setattr(control, "_identity_field_value", lambda: next(values))
+    monkeypatch.setattr("time.sleep", lambda seconds: None)
+
+    control._replace_identity_number("11010119900101123X")
+
+    assert actions == [
+        "clear",
+        "11010119900101123X",
+        "clear",
+        "11010119900101123X",
+    ]
+
+
+def test_sender_identity_number_fails_when_device_value_never_matches(monkeypatch):
+    control = AndroidDeviceControl(serial="127.0.0.1:5555")
+    monkeypatch.setattr(control, "_clear_focused_text", lambda: None)
+    monkeypatch.setattr(control, "input_text", lambda value: None)
+    monkeypatch.setattr(control, "_identity_field_value", lambda: "mismatch")
+    monkeypatch.setattr("time.sleep", lambda seconds: None)
+
+    with pytest.raises(AndroidDeviceControlError, match="未能正确写入"):
+        control._replace_identity_number("11010119900101123X")
 
 
 def test_sender_identity_number_reports_when_wecom_does_not_advance(monkeypatch):
