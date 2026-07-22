@@ -19,5 +19,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 COPY --from=official-cli /opt/wecom-cli/wecom-cli /usr/local/bin/wecom-cli
+RUN install -m 755 scripts/wecom-native-lab /usr/local/bin/wecom-native-lab
 
 CMD ["uvicorn", "wecom_protocol_gateway.main:app", "--host", "0.0.0.0", "--port", "8092"]

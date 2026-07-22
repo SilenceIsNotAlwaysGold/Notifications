@@ -2,6 +2,7 @@ import json
 import sqlite3
 import subprocess
 
+import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
@@ -46,6 +47,18 @@ def _configure_gateway(monkeypatch, tmp_path, *, backend: str = "mock") -> None:
             "WECOM_PROTOCOL_OFFICIAL_CLI_CONFIG_DIR", str(config_dir)
         )
         monkeypatch.setenv("WECOM_PROTOCOL_OFFICIAL_CLI_TIMEOUT_SECONDS", "10")
+    if backend == "native_lab":
+        monkeypatch.setenv("WECOM_PROTOCOL_NATIVE_LAB_ENABLED", "true")
+        monkeypatch.setenv("WECOM_PROTOCOL_GUID", "lab-device-zhihe-001")
+        monkeypatch.setenv(
+            "WECOM_PROTOCOL_ROOM_IDS_JSON",
+            '{"zhihe-legal":"test-external-room-001"}',
+        )
+        monkeypatch.setenv("WECOM_PROTOCOL_NATIVE_LAB_BINARY", "native-lab-test")
+        monkeypatch.setenv(
+            "WECOM_PROTOCOL_NATIVE_LAB_STATE",
+            str(tmp_path / "native-lab-state.enc"),
+        )
 
 
 def _headers() -> dict[str, str]:
@@ -329,3 +342,141 @@ def test_gateway_requires_api_token(monkeypatch, tmp_path):
         response = client.post("/api/qw/doApi", json=_send_payload())
 
     assert response.status_code == 401
+
+
+def test_native_lab_send_is_disabled_by_default(monkeypatch, tmp_path):
+    _configure_gateway(monkeypatch, tmp_path, backend="native_lab")
+    payload = _send_payload()
+    payload["params"].update(
+        guid="lab-device-zhihe-001",
+        content="[PROTOCOL-LAB] 测试提醒，不含真实案件数据。",
+    )
+    monkeypatch.setattr(
+        "wecom_protocol_gateway.native_lab.subprocess.run",
+        lambda *args, **kwargs: pytest.fail("disabled send must not start transport"),
+    )
+
+    with TestClient(app) as client:
+        response = client.post("/api/qw/doApi", headers=_headers(), json=payload)
+        health = client.get("/health")
+
+    assert response.json()["code"] == 5001
+    assert "真实发送默认关闭" in response.json()["msg"]
+    assert health.json()["driver"] == {
+        "backend": "native_lab",
+        "ready": True,
+        "online": None,
+        "stage": "uninitialized",
+        "last_activity_at": None,
+        "send_enabled": False,
+        "scope": "test_only",
+    }
+
+
+def test_native_lab_uses_stdin_and_encrypts_state(monkeypatch, tmp_path):
+    _configure_gateway(monkeypatch, tmp_path, backend="native_lab")
+    monkeypatch.setenv("WECOM_PROTOCOL_NATIVE_LAB_ALLOW_SEND", "true")
+    captured = {}
+
+    def fake_run(args, **kwargs):
+        captured.update(args=args, **kwargs)
+        return subprocess.CompletedProcess(
+            args,
+            0,
+            stdout=json.dumps(
+                {
+                    "code": 0,
+                    "msg": "成功",
+                    "data": {
+                        "isSendSuccess": 1,
+                        "msgServerId": "lab-receipt-001",
+                    },
+                }
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr("wecom_protocol_gateway.native_lab.subprocess.run", fake_run)
+    payload = _send_payload()
+    payload["params"].update(
+        guid="lab-device-zhihe-001",
+        content="[PROTOCOL-LAB] 测试提醒，不含真实案件数据。",
+    )
+
+    with TestClient(app) as client:
+        response = client.post("/api/qw/doApi", headers=_headers(), json=payload)
+
+    assert response.json()["data"]["msgServerId"] == "lab-receipt-001"
+    assert captured["args"] == ["native-lab-test", "invoke"]
+    assert captured["shell"] is False
+    assert "测试提醒" not in " ".join(captured["args"])
+    request = json.loads(captured["input"])
+    assert request["params"]["toId"] == "test-external-room-001"
+    state = (tmp_path / "native-lab-state.enc").read_bytes()
+    assert b"lab-device-zhihe-001" not in state
+    assert b"test-external-room-001" not in state
+
+
+def test_native_lab_rejects_non_test_room_configuration(monkeypatch, tmp_path):
+    _configure_gateway(monkeypatch, tmp_path, backend="native_lab")
+    monkeypatch.setenv(
+        "WECOM_PROTOCOL_ROOM_IDS_JSON",
+        '{"zhihe-legal":"wr-production-room-001"}',
+    )
+
+    with pytest.raises(RuntimeError, match="目标群必须全部使用"):
+        with TestClient(app):
+            pass
+
+
+def test_native_lab_status_exposes_only_test_scope(monkeypatch, tmp_path):
+    _configure_gateway(monkeypatch, tmp_path, backend="native_lab")
+
+    with TestClient(app) as client:
+        response = client.get("/api/qw/lab/status", headers=_headers())
+
+    assert response.json()["data"] == {
+        "backend": "native_lab",
+        "ready": True,
+        "online": None,
+        "stage": "uninitialized",
+        "last_activity_at": None,
+        "send_enabled": False,
+        "scope": "test_only",
+        "guid_prefix": "lab-",
+        "room_prefix": "test-",
+        "message_prefix": "[PROTOCOL-LAB]",
+    }
+
+
+def test_native_lab_failed_transport_does_not_advance_device_state(
+    monkeypatch, tmp_path
+):
+    _configure_gateway(monkeypatch, tmp_path, backend="native_lab")
+    monkeypatch.setattr(
+        "wecom_protocol_gateway.native_lab.subprocess.run",
+        lambda args, **kwargs: subprocess.CompletedProcess(
+            args,
+            0,
+            stdout=json.dumps(
+                {
+                    "code": 5010,
+                    "msg": "自研协议传输尚未实现",
+                    "data": {"protocol_ready": False},
+                }
+            ),
+            stderr="",
+        ),
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/qw/doApi",
+            headers=_headers(),
+            json={"method": "/login/createDevice", "params": {}},
+        )
+        health = client.get("/health")
+
+    assert response.json()["code"] == 5010
+    assert health.json()["driver"]["stage"] == "transport_error"
+    assert health.json()["driver"]["online"] is False

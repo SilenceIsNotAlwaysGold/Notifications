@@ -1,0 +1,3 @@
+#!/bin/sh
+set -eu
+exec python -m wecom_native_lab.cli "$@"

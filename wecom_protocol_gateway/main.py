@@ -240,6 +240,27 @@ async def probe_capabilities(
         }
 
 
+@app.get("/api/qw/lab/status")
+async def native_lab_status(
+    request: Request,
+    wecom_token: str | None = Header(default=None, alias="WECOM-TOKEN"),
+) -> dict[str, Any]:
+    runtime = _runtime(request)
+    _authorize(wecom_token, runtime.config.api_token)
+    if runtime.config.backend != "native_lab":
+        raise HTTPException(status_code=409, detail="当前未启用 native_lab 驱动")
+    return {
+        "code": 0,
+        "msg": "成功",
+        "data": {
+            **runtime.driver.status(),
+            "guid_prefix": runtime.config.native_lab_guid_prefix,
+            "room_prefix": runtime.config.native_lab_room_prefix,
+            "message_prefix": runtime.config.native_lab_message_prefix,
+        },
+    }
+
+
 def _validate_and_normalize(
     config: GatewayConfig,
     method: str,

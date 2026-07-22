@@ -12,6 +12,7 @@ const state = {
   deviceScreenshotBusy: false,
   deviceLoginBusy: false,
   deviceLoginStage: null,
+  protocolLoginState: null,
 };
 
 const titles = {
@@ -213,6 +214,7 @@ function stopDeviceConsole() {
   }
   state.deviceScreenshotBusy = false;
   state.deviceLoginStage = null;
+  state.protocolLoginState = null;
 }
 
 async function fetchDeviceScreenshot() {
@@ -575,7 +577,7 @@ function bindSenderLogin(stage) {
   }, 3000);
 }
 
-async function renderAndroidDevice() {
+async function renderAndroidLogin() {
   const status = await api("/api/v1/legal/android-device/login/status");
   state.deviceLoginStage = status.stage;
   const stageLabels = {
@@ -608,6 +610,155 @@ async function renderAndroidDevice() {
   `;
   bindSenderLogin(status.stage);
   if (status.stage === "qr_code") await refreshDeviceScreenshot();
+}
+
+function protocolLoginContent(status) {
+  if (status.stage === "not_configured") {
+    return `
+      <div class="sender-login-verification">
+        <div class="sender-verification-mark">!</div>
+        <h3>发送账号登录服务待配置</h3>
+        <p>自研登录网关尚未在当前服务器启用。完成实验环境验证后，登录二维码会直接显示在这里。</p>
+        <p class="mono">缺少：${escapeHtml((status.missing || []).join("、"))}</p>
+      </div>
+    `;
+  }
+  if (status.stage === "qr_code") {
+    return `
+      <div class="sender-qr-section">
+        <div class="sender-qr-copy">
+          <span class="sender-step-label">账号托管登录</span>
+          <h3>使用企业微信扫码</h3>
+          <p>二维码由协议网关生成。扫码确认后，本页会自动获取登录状态。</p>
+          <button id="protocol-refresh-qr-btn" type="button">刷新二维码</button>
+          <span class="device-live-status status-warning">等待扫码确认</span>
+        </div>
+        <div class="sender-qr-frame" aria-label="企业微信协议登录二维码">
+          <div class="sender-qr-crop protocol-qr-crop">
+            <img src="${escapeHtml(status.qr_code || "")}" alt="企业微信登录二维码" draggable="false" />
+          </div>
+        </div>
+      </div>
+    `;
+  }
+  if (status.stage === "verification_code") {
+    return `
+      <div class="sender-native-login">
+        <span class="sender-step-label">登录确认</span>
+        <h3>输入企业微信验证码</h3>
+        <form id="protocol-code-form" class="sender-login-form">
+          <label for="protocol-code-input">验证码</label>
+          <input id="protocol-code-input" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="4-8 位验证码" required />
+          <button type="submit">确认登录</button>
+        </form>
+      </div>
+    `;
+  }
+  if (status.stage === "logged_in") {
+    return `
+      <div class="sender-login-complete">
+        <div class="sender-login-check">✓</div>
+        <h3>发送账号已登录</h3>
+        <p>${status.account_name ? `当前账号：${escapeHtml(status.account_name)}` : "协议网关已持有在线会话，可以执行外部群消息任务。"}</p>
+        <button id="protocol-logout-btn" type="button" class="ghost">退出发送账号</button>
+      </div>
+    `;
+  }
+  return `
+    <div class="sender-login-empty">
+      <div class="sender-account-mark">企</div>
+      <h3>${status.stage === "login_pending" ? "正在确认登录" : "发送账号尚未登录"}</h3>
+      <button id="protocol-start-login-btn" type="button">生成登录二维码</button>
+    </div>
+  `;
+}
+
+function bindProtocolLogin(status) {
+  const startLogin = async () => {
+    const login = await api("/api/v1/legal/sender-account/login/start", { method: "POST" });
+    await renderProtocolAccount(login);
+  };
+  const startButton = $("#protocol-start-login-btn");
+  if (startButton) startButton.addEventListener("click", () => startLogin().catch((error) => showAlert(error.message, "error")));
+  const refreshButton = $("#protocol-refresh-qr-btn");
+  if (refreshButton) refreshButton.addEventListener("click", () => startLogin().catch((error) => showAlert(error.message, "error")));
+  const codeForm = $("#protocol-code-form");
+  if (codeForm) {
+    codeForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      try {
+        const result = await api("/api/v1/legal/sender-account/login/verify", {
+          method: "POST",
+          body: JSON.stringify({ verification_code: $("#protocol-code-input").value.trim() }),
+        });
+        await renderProtocolAccount(result);
+      } catch (error) {
+        showAlert(error.message, "error");
+      }
+    });
+  }
+  const logoutButton = $("#protocol-logout-btn");
+  if (logoutButton) {
+    logoutButton.addEventListener("click", async () => {
+      try {
+        const result = await api("/api/v1/legal/sender-account/logout", { method: "POST" });
+        await renderProtocolAccount(result);
+      } catch (error) {
+        showAlert(error.message, "error");
+      }
+    });
+  }
+  if (["qr_code", "verification_code", "login_pending"].includes(status.stage)) {
+    state.deviceRefreshTimer = setInterval(async () => {
+      try {
+        const current = await api("/api/v1/legal/sender-account/login/poll");
+        if (current.stage !== state.deviceLoginStage) await renderProtocolAccount(current);
+      } catch (error) {
+        showAlert(error.message, "error");
+      }
+    }, 3000);
+  }
+}
+
+async function renderProtocolAccount(providedStatus = null) {
+  if (state.deviceRefreshTimer) clearInterval(state.deviceRefreshTimer);
+  state.deviceRefreshTimer = null;
+  const status = providedStatus || await api("/api/v1/legal/sender-account/status");
+  state.protocolLoginState = status;
+  state.deviceLoginStage = status.stage;
+  const stageLabels = {
+    not_configured: "待配置",
+    logged_out: "尚未登录",
+    qr_code: "等待扫码",
+    verification_code: "等待验证码",
+    login_pending: "登录处理中",
+    logged_in: "已登录",
+  };
+  $("#content").innerHTML = `
+    <section class="sender-account-login">
+      <div class="sender-account-summary">
+        <div class="sender-account-mark">企</div>
+        <div class="sender-account-heading">
+          <h2>企业微信发送账号</h2>
+          <div class="sender-account-state">
+            <span class="sender-state-dot ${status.online ? "online" : ""}"></span>
+            ${escapeHtml(stageLabels[status.stage] || "状态确认中")}
+          </div>
+        </div>
+      </div>
+      ${protocolLoginContent(status)}
+    </section>
+  `;
+  bindProtocolLogin(status);
+}
+
+async function renderAndroidDevice() {
+  const account = await api("/api/v1/legal/sender-account/status");
+  if (account.backend === "protocol") {
+    await renderProtocolAccount(account);
+    return;
+  }
+  await renderAndroidLogin();
 }
 
 function archiveGroupDatalist(groups) {

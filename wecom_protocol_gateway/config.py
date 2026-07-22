@@ -29,6 +29,14 @@ class GatewayConfig:
     official_cli_binary: str
     official_cli_config_dir: Path
     official_cli_timeout_seconds: float
+    native_lab_enabled: bool
+    native_lab_binary: str
+    native_lab_state_path: Path
+    native_lab_timeout_seconds: float
+    native_lab_allow_send: bool
+    native_lab_guid_prefix: str
+    native_lab_room_prefix: str
+    native_lab_message_prefix: str
     business_callback_url: str
     business_callback_token: str
     request_timeout_seconds: float
@@ -37,9 +45,9 @@ class GatewayConfig:
 
 def load_config() -> GatewayConfig:
     backend = os.getenv("WECOM_PROTOCOL_BACKEND", "mock").strip().lower()
-    if backend not in {"mock", "official_cli", "upstream"}:
+    if backend not in {"mock", "official_cli", "native_lab", "upstream"}:
         raise RuntimeError(
-            "WECOM_PROTOCOL_BACKEND 只支持 mock、official_cli 或 upstream"
+            "WECOM_PROTOCOL_BACKEND 只支持 mock、official_cli、native_lab 或 upstream"
         )
 
     room_ids = _load_string_mapping("WECOM_PROTOCOL_ROOM_IDS_JSON")
@@ -88,6 +96,31 @@ def load_config() -> GatewayConfig:
         official_cli_timeout_seconds=float(
             os.getenv("WECOM_PROTOCOL_OFFICIAL_CLI_TIMEOUT_SECONDS", "35")
         ),
+        native_lab_enabled=_env_bool("WECOM_PROTOCOL_NATIVE_LAB_ENABLED", False),
+        native_lab_binary=os.getenv(
+            "WECOM_PROTOCOL_NATIVE_LAB_BINARY", "wecom-native-lab"
+        ).strip(),
+        native_lab_state_path=Path(
+            os.getenv(
+                "WECOM_PROTOCOL_NATIVE_LAB_STATE",
+                "./storage/wecom-protocol/native-lab-state.enc",
+            )
+        ).expanduser(),
+        native_lab_timeout_seconds=float(
+            os.getenv("WECOM_PROTOCOL_NATIVE_LAB_TIMEOUT_SECONDS", "20")
+        ),
+        native_lab_allow_send=_env_bool(
+            "WECOM_PROTOCOL_NATIVE_LAB_ALLOW_SEND", False
+        ),
+        native_lab_guid_prefix=os.getenv(
+            "WECOM_PROTOCOL_NATIVE_LAB_GUID_PREFIX", "lab-"
+        ).strip(),
+        native_lab_room_prefix=os.getenv(
+            "WECOM_PROTOCOL_NATIVE_LAB_ROOM_PREFIX", "test-"
+        ).strip(),
+        native_lab_message_prefix=os.getenv(
+            "WECOM_PROTOCOL_NATIVE_LAB_MESSAGE_PREFIX", "[PROTOCOL-LAB]"
+        ).strip(),
         business_callback_url=os.getenv("WECOM_PROTOCOL_CALLBACK_URL", "").strip(),
         business_callback_token=os.getenv(
             "WECOM_PROTOCOL_CALLBACK_TOKEN", ""
@@ -152,6 +185,48 @@ def _validate_config(config: GatewayConfig) -> None:
         if config.official_cli_timeout_seconds <= 0:
             raise RuntimeError(
                 "WECOM_PROTOCOL_OFFICIAL_CLI_TIMEOUT_SECONDS 必须大于 0"
+            )
+
+    if config.backend == "native_lab":
+        missing = [
+            name
+            for name, value in {
+                "WECOM_PROTOCOL_NATIVE_LAB_BINARY": config.native_lab_binary,
+                "WECOM_PROTOCOL_NATIVE_LAB_GUID_PREFIX": config.native_lab_guid_prefix,
+                "WECOM_PROTOCOL_NATIVE_LAB_ROOM_PREFIX": config.native_lab_room_prefix,
+                "WECOM_PROTOCOL_NATIVE_LAB_MESSAGE_PREFIX": (
+                    config.native_lab_message_prefix
+                ),
+                "WECOM_PROTOCOL_STATE_KEY": (
+                    config.state_key if config.state_key_persistent else ""
+                ),
+            }.items()
+            if not value
+        ]
+        if missing:
+            raise RuntimeError(f"native_lab 模式缺少配置：{', '.join(missing)}")
+        if not config.native_lab_enabled:
+            raise RuntimeError(
+                "native_lab 模式必须显式设置 WECOM_PROTOCOL_NATIVE_LAB_ENABLED=true"
+            )
+        if config.native_lab_timeout_seconds <= 0:
+            raise RuntimeError(
+                "WECOM_PROTOCOL_NATIVE_LAB_TIMEOUT_SECONDS 必须大于 0"
+            )
+        if config.account_guid and not config.account_guid.startswith(
+            config.native_lab_guid_prefix
+        ):
+            raise RuntimeError(
+                "native_lab 账号 guid 必须使用 WECOM_PROTOCOL_NATIVE_LAB_GUID_PREFIX 前缀"
+            )
+        unsafe_rooms = [
+            room_id
+            for room_id in config.room_ids.values()
+            if not room_id.startswith(config.native_lab_room_prefix)
+        ]
+        if unsafe_rooms:
+            raise RuntimeError(
+                "native_lab 目标群必须全部使用 WECOM_PROTOCOL_NATIVE_LAB_ROOM_PREFIX 前缀"
             )
 
     if config.backend == "upstream":

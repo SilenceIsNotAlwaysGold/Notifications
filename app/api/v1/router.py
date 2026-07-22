@@ -16,6 +16,7 @@ from app.api.v1 import (
     operation_audit_logs,
     reminders,
     reminder_rules,
+    sender_account,
     system_alerts,
     tenants,
     tenant_settings,
@@ -27,6 +28,7 @@ api_router = APIRouter()
 api_router.include_router(health.router)
 legal_dependencies = [Depends(get_current_operator)]
 api_router.include_router(android_device.router, dependencies=legal_dependencies)
+api_router.include_router(sender_account.router, dependencies=legal_dependencies)
 api_router.include_router(cases.router, dependencies=legal_dependencies)
 api_router.include_router(messages.router, dependencies=legal_dependencies)
 api_router.include_router(reminders.router, dependencies=legal_dependencies)

@@ -10,10 +10,13 @@
 - 单账号 `guid` 校验、API Token 鉴权和目标群白名单。
 - 文本发送、修改群名和登录状态相关方法的固定白名单。
 - Mock 驱动、官方 Linux CLI 驱动和第三方上游迁移驱动。
+- 隔离的 `native_lab` 自研协议实验驱动，默认禁止真实发送。
 - 回调快速落库、幂等去重、Fernet 加密、后台转发和失败重试。
 - 仅保存账号及目标哈希的操作审计，不保存明文发送内容。
 
 当前没有把第三方未公开的企业微信原生客户端协议伪装成已实现。`upstream` 驱动用于接口对照、小流量验证和收集合法测试账号的行为样本；原生协议驱动必须经过独立测试账号和真实外部群验收后才能标记可用。
+
+自研实验环境和安全边界见 [企业微信原生协议实验环境](wecom_native_protocol_lab.md)。
 
 ## 官方 Linux CLI 驱动
 
@@ -84,6 +87,30 @@ https://本系统域名/callbacks/upstream
 ```
 
 回调请求必须携带 `X-WECOM-UPSTREAM-CALLBACK-TOKEN`。下游业务回调使用 `X-WECOM-GATEWAY-TOKEN`，明文消息只存在于加密队列解密后的短暂转发过程中。
+
+## 无 Android 设备的协议账号登录
+
+只有 Linux 服务器、无法完成 Android 活体校验时，可将发送账号页切到协议模式：
+
+```env
+WECOM_SEND_MODE=wecomapi
+WECOM_ACCOUNT_LOGIN_MODE=protocol
+WECOM_PROTOCOL_ACCOUNT_BASE_URL=https://协议网关地址
+WECOM_PROTOCOL_ACCOUNT_API_PATH=/api/qw/doApi
+WECOM_PROTOCOL_ACCOUNT_TOKEN=协议网关Token
+WECOM_PROTOCOL_ACCOUNT_GUID=协议账号guid
+
+# 登录验收成功后，再将同一组地址、Token 和 guid 配置到 WECOMAPI_* 发送通道。
+```
+
+管理端“发送账号”页面会通过主服务代理 `/login/getLoginQrcode`、
+`/login/checkLoginQrcode`、`/login/verifyLoginQrcode`、`/login/checkLogin` 和
+`/login/logout`，浏览器不会获得协议网关 Token。二维码登录成功后，消息发送继续复用
+现有 `WeComApiAdapter`，无需修改提醒业务。
+
+`wechat-ipad-api/wecomapi` GitHub 仓库只包含接入文档和调用示例，不包含可自建的
+协议服务源码。使用其托管服务前必须单独完成供应商、费用、数据处理和账号风控评估；
+不得把文档仓库误认为已审计的开源服务端。
 
 ## 支持的方法
 

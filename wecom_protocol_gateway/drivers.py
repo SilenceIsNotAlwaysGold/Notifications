@@ -5,6 +5,7 @@ from typing import Any
 import httpx
 
 from wecom_protocol_gateway.config import GatewayConfig
+from wecom_protocol_gateway.native_lab import NativeLabClient, NativeLabError
 from wecom_protocol_gateway.official_cli import OfficialCliClient, OfficialCliError
 
 
@@ -146,11 +147,33 @@ class OfficialCliProtocolDriver(ProtocolDriver):
         return self.client.status()
 
 
+class NativeLabProtocolDriver(ProtocolDriver):
+    def __init__(self, config: GatewayConfig) -> None:
+        self.client = NativeLabClient(config)
+
+    async def invoke(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return await self.client.invoke(method, params)
+        except NativeLabError as exc:
+            raise DriverError(str(exc)) from exc
+
+    async def probe(self) -> dict[str, Any]:
+        try:
+            return await self.client.probe()
+        except NativeLabError as exc:
+            raise DriverError(str(exc)) from exc
+
+    def status(self) -> dict[str, Any]:
+        return self.client.status()
+
+
 def build_driver(config: GatewayConfig) -> ProtocolDriver:
     if config.backend == "mock":
         return MockProtocolDriver(config.account_guid)
     if config.backend == "official_cli":
         return OfficialCliProtocolDriver(config)
+    if config.backend == "native_lab":
+        return NativeLabProtocolDriver(config)
     return UpstreamProtocolDriver(config)
 
 
