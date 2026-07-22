@@ -2,6 +2,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.utils.china_identity import is_valid_china_identity_number
+
 
 class AndroidTapRequest(BaseModel):
     x: int = Field(ge=0, le=8192)
@@ -41,3 +43,11 @@ class SenderVerificationCodeRequest(BaseModel):
 
 class SenderIdentityVerificationRequest(BaseModel):
     identity_number: str = Field(pattern=r"^(?:\d{15}|\d{17}[0-9Xx])$")
+
+    @field_validator("identity_number")
+    @classmethod
+    def validate_identity_number(cls, value: str) -> str:
+        normalized = value.upper()
+        if not is_valid_china_identity_number(normalized):
+            raise ValueError("身份证号码校验未通过")
+        return normalized

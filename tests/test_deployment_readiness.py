@@ -459,6 +459,7 @@ def test_admin_console_static_files_available(client):
     assert "使用原手机企业微信扫码" in js_response.text
     assert "需要完成企业微信身份校验" in js_response.text
     assert "sender-identity-form" in js_response.text
+    assert "sender-start-face-btn" in js_response.text
     assert "sender-qr-crop" in js_response.text
     assert "手机号或验证码" not in js_response.text
     assert "data-device-key=\"home\"" not in js_response.text

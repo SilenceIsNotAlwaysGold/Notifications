@@ -14,6 +14,22 @@ from app.middleware.audit_middleware import (
     AUDIT_EXCLUDED_ENDPOINTS,
     OperationAuditMiddleware,
 )
+from app.utils.china_identity import is_valid_china_identity_number
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("11010519491231002X", True),
+        ("11010519491231002x", True),
+        ("130503670401001", True),
+        ("11010519491331002X", False),
+        ("110105194912310021", False),
+        ("00000019491231002X", False),
+    ],
+)
+def test_china_identity_number_validation(value, expected):
+    assert is_valid_china_identity_number(value) is expected
 
 
 def test_android_device_control_uses_argument_lists_without_shell(monkeypatch):
@@ -132,7 +148,7 @@ def test_sender_login_status_and_phone_flow_are_stage_gated(monkeypatch):
     assert values == ["13800138000"]
 
 
-def test_sender_login_status_reports_qr_identity_check_and_logged_in(monkeypatch):
+def test_sender_login_status_reports_qr_identity_face_check_and_logged_in(monkeypatch):
     monkeypatch.setattr("shutil.which", lambda value: f"/usr/bin/{value}")
     control = AndroidDeviceControl(serial="127.0.0.1:5555")
     outputs = iter(
@@ -142,6 +158,8 @@ def test_sender_login_status_reports_qr_identity_check_and_logged_in(monkeypatch
             "mFocusedApp=ActivityRecord{1 u0 "
             "com.tencent.wework/.setting.controller.UserRealNameCardIdCheckActivity t12}",
             "mFocusedApp=ActivityRecord{1 u0 "
+            "com.tencent.wework/.setting.controller.IdentityRecognitionAgreementActivity t12}",
+            "mFocusedApp=ActivityRecord{1 u0 "
             "com.tencent.wework/.foundation.views.WwMainActivity t12}",
         ]
     )
@@ -149,7 +167,24 @@ def test_sender_login_status_reports_qr_identity_check_and_logged_in(monkeypatch
 
     assert control.sender_login_status()["stage"] == "qr_code"
     assert control.sender_login_status()["stage"] == "identity_verification"
+    assert control.sender_login_status()["stage"] == "face_verification"
     assert control.sender_login_status()["stage"] == "logged_in"
+
+
+def test_sender_face_verification_accepts_agreement(monkeypatch):
+    control = AndroidDeviceControl(serial="127.0.0.1:5555")
+    taps = []
+    monkeypatch.setattr(
+        control,
+        "sender_login_status",
+        lambda: {"stage": "face_verification", "online": True},
+    )
+    monkeypatch.setattr(control, "tap", lambda x, y: taps.append((x, y)))
+    monkeypatch.setattr("time.sleep", lambda seconds: None)
+
+    control.start_sender_face_verification()
+
+    assert taps == [(180, 980), (540, 1175)]
 
 
 def test_sender_identity_number_is_forwarded_only_on_identity_stage(monkeypatch):
@@ -187,11 +222,11 @@ def test_sender_identity_number_is_forwarded_only_on_identity_stage(monkeypatch)
 
     monkeypatch.setattr("time.sleep", lambda seconds: None)
 
-    control.submit_sender_identity_number("11010119900101123x")
+    control.submit_sender_identity_number("11010519491231002x")
 
     assert actions == [
         ("tap", 620, 995),
-        ("replace", "11010119900101123X"),
+        ("replace", "11010519491231002X"),
         ("keyevent", "back"),
         ("tap", 540, 1150),
         ("wait", "identity_verification"),
@@ -201,7 +236,7 @@ def test_sender_identity_number_is_forwarded_only_on_identity_stage(monkeypatch)
 def test_sender_identity_number_retries_until_device_value_matches(monkeypatch):
     control = AndroidDeviceControl(serial="127.0.0.1:5555")
     actions = []
-    values = iter(["11010119900101123X1", "11010119900101123X"])
+    values = iter(["11010519491231002X1", "11010519491231002X"])
     monkeypatch.setattr(
         control,
         "_clear_focused_text",
@@ -211,13 +246,13 @@ def test_sender_identity_number_retries_until_device_value_matches(monkeypatch):
     monkeypatch.setattr(control, "_identity_field_value", lambda: next(values))
     monkeypatch.setattr("time.sleep", lambda seconds: None)
 
-    control._replace_identity_number("11010119900101123X")
+    control._replace_identity_number("11010519491231002X")
 
     assert actions == [
         "clear",
-        "11010119900101123X",
+        "11010519491231002X",
         "clear",
-        "11010119900101123X",
+        "11010519491231002X",
     ]
 
 
@@ -229,7 +264,7 @@ def test_sender_identity_number_fails_when_device_value_never_matches(monkeypatc
     monkeypatch.setattr("time.sleep", lambda seconds: None)
 
     with pytest.raises(AndroidDeviceControlError, match="未能正确写入"):
-        control._replace_identity_number("11010119900101123X")
+        control._replace_identity_number("11010519491231002X")
 
 
 def test_sender_identity_number_reports_when_wecom_does_not_advance(monkeypatch):
@@ -266,10 +301,26 @@ def test_sender_login_api_exposes_native_stage(client, monkeypatch):
     )
     identity = client.post(
         "/api/v1/legal/android-device/login/identity",
-        json={"identity_number": "11010119900101123X"},
+        json={"identity_number": "11010519491231002X"},
     )
 
     assert identity.status_code == 200
+    monkeypatch.setattr(
+        AndroidDeviceControl,
+        "start_sender_face_verification",
+        lambda self: None,
+    )
+    face = client.post(
+        "/api/v1/legal/android-device/login/face-verification/start",
+        json={},
+    )
+    assert face.status_code == 200
+
+    invalid_identity = client.post(
+        "/api/v1/legal/android-device/login/identity",
+        json={"identity_number": "110105194912310021"},
+    )
+    assert invalid_identity.status_code == 422
     get_settings.cache_clear()
 
 

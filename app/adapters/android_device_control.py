@@ -5,6 +5,8 @@ import time
 import xml.etree.ElementTree as ET
 from typing import Any
 
+from app.utils.china_identity import is_valid_china_identity_number
+
 
 class AndroidDeviceControlError(RuntimeError):
     pass
@@ -134,7 +136,15 @@ class AndroidDeviceControl:
                 stage = "qr_code"
             elif any(marker in activity for marker in ("realname", "cardidcheck")):
                 stage = "identity_verification"
-            elif any(marker in activity for marker in ("facecheck", "faceverify")):
+            elif any(
+                marker in activity
+                for marker in (
+                    "facecheck",
+                    "faceverify",
+                    "identityrecognition",
+                    "recognitionagreement",
+                )
+            ):
                 stage = "face_verification"
             elif "login" in activity:
                 stage = "login_pending"
@@ -180,8 +190,8 @@ class AndroidDeviceControl:
 
     def submit_sender_identity_number(self, identity_number: str) -> None:
         normalized = identity_number.strip().upper()
-        if not re.fullmatch(r"(?:\d{15}|\d{17}[0-9X])", normalized):
-            raise ValueError("请输入正确的身份证号码")
+        if not is_valid_china_identity_number(normalized):
+            raise ValueError("身份证号码校验未通过")
         self._require_login_stage("identity_verification")
         self.tap(620, 995)
         self._replace_identity_number(normalized)
@@ -193,6 +203,12 @@ class AndroidDeviceControl:
     def refresh_sender_qr_code(self) -> None:
         self._require_login_stage("qr_code")
         self.tap(540, 850)
+
+    def start_sender_face_verification(self) -> None:
+        self._require_login_stage("face_verification")
+        self.tap(180, 980)
+        time.sleep(0.4)
+        self.tap(540, 1175)
 
     def _ensure_available(self) -> None:
         if shutil.which(self.adb_binary) is None:
@@ -277,7 +293,7 @@ class AndroidDeviceControl:
         raise AndroidDeviceControlError("未找到企业微信身份证输入框")
 
     def _wait_for_login_stage_change(self, previous_stage: str) -> None:
-        for _ in range(5):
+        for _ in range(20):
             time.sleep(0.5)
             if self.sender_login_status()["stage"] != previous_stage:
                 return

@@ -351,8 +351,9 @@ function senderLoginContent(stage) {
     return `
       <div class="sender-login-verification">
         <div class="sender-verification-mark">!</div>
-        <h3>等待完成人脸验证</h3>
-        <p>请在企业微信官方验证流程中完成人脸识别，完成后刷新登录状态。</p>
+        <h3>需要完成人脸验证</h3>
+        <p>同意企业微信官方人脸识别协议后，继续完成本人验证。</p>
+        <button id="sender-start-face-btn" type="button">同意并开始人脸验证</button>
         <button id="sender-refresh-status-btn" type="button">刷新登录状态</button>
         <button id="sender-login-back-btn" type="button" class="ghost">返回重新登录</button>
       </div>
@@ -365,6 +366,31 @@ function senderLoginContent(stage) {
       <button id="sender-open-login-btn" type="button">打开账号登录</button>
     </div>
   `;
+}
+
+function isValidChinaIdentityNumber(value) {
+  const normalized = value.trim().toUpperCase();
+  if (!/^(?:\d{15}|\d{17}[0-9X])$/.test(normalized) || normalized.startsWith("000000")) return false;
+  const birthDate = normalized.length === 18 ? normalized.slice(6, 14) : `19${normalized.slice(6, 12)}`;
+  const year = Number(birthDate.slice(0, 4));
+  const month = Number(birthDate.slice(4, 6));
+  const day = Number(birthDate.slice(6, 8));
+  const parsedDate = new Date(Date.UTC(year, month - 1, day));
+  if (
+    parsedDate.getUTCFullYear() !== year ||
+    parsedDate.getUTCMonth() !== month - 1 ||
+    parsedDate.getUTCDate() !== day
+  ) return false;
+  const sequence = normalized.length === 18 ? normalized.slice(14, 17) : normalized.slice(12, 15);
+  if (sequence === "000") return false;
+  if (normalized.length === 15) return true;
+  const weights = [7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2];
+  const checkCodes = "10X98765432";
+  const checksum = normalized.slice(0, 17).split("").reduce(
+    (total, digit, index) => total + Number(digit) * weights[index],
+    0,
+  );
+  return normalized[17] === checkCodes[checksum % 11];
 }
 
 async function reloadSenderLogin() {
@@ -433,6 +459,10 @@ function bindSenderLogin(stage) {
     identityForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       const identityNumber = identityInput.value.trim();
+      if (!isValidChinaIdentityNumber(identityNumber)) {
+        showAlert("身份证号码校验未通过，请检查出生日期和最后一位校验码", "error");
+        return;
+      }
       const submitButton = identityForm.querySelector('button[type="submit"]');
       submitButton.disabled = true;
       submitButton.textContent = "正在提交";
@@ -454,6 +484,21 @@ function bindSenderLogin(stage) {
         await sendDeviceAction("login/refresh-qr", {});
       } catch (error) {
         showAlert(error.message, "error");
+      }
+    });
+  }
+  const faceButton = $("#sender-start-face-btn");
+  if (faceButton) {
+    faceButton.addEventListener("click", async () => {
+      faceButton.disabled = true;
+      faceButton.textContent = "正在进入";
+      try {
+        await sendDeviceAction("login/face-verification/start", {});
+        await reloadSenderLogin();
+      } catch (error) {
+        showAlert(error.message, "error");
+        faceButton.disabled = false;
+        faceButton.textContent = "同意并开始人脸验证";
       }
     });
   }

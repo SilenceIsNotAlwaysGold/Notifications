@@ -123,6 +123,12 @@ def refresh_sender_qr_code():
     return ok("二维码已刷新")
 
 
+@router.post("/login/face-verification/start", dependencies=[Depends(_admin_operator)])
+def start_sender_face_verification():
+    _run_action(lambda: _control().start_sender_face_verification())
+    return ok("已进入企业微信人脸识别流程")
+
+
 @router.post("/tap", dependencies=[Depends(_admin_operator)])
 def tap_android_device(payload: AndroidTapRequest):
     _run_action(lambda: _control().tap(payload.x, payload.y))
