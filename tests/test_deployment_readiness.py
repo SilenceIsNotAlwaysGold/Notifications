@@ -461,6 +461,7 @@ def test_admin_console_static_files_available(client):
     assert "sender-identity-form" in js_response.text
     assert "sender-start-face-btn" in js_response.text
     assert "sender-camera-once-btn" in js_response.text
+    assert "服务器没有可用相机" in js_response.text
     assert "sender-qr-crop" in js_response.text
     assert "手机号或验证码" not in js_response.text
     assert "data-device-key=\"home\"" not in js_response.text

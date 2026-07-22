@@ -370,6 +370,26 @@ function senderLoginContent(stage) {
       </div>
     `;
   }
+  if (stage === "face_capture") {
+    return `
+      <div class="sender-login-verification">
+        <div class="sender-verification-mark">!</div>
+        <h3>人脸识别进行中</h3>
+        <p>企业微信正在通过发送账号设备采集本人活体信息。</p>
+        <button id="sender-refresh-status-btn" type="button">刷新登录状态</button>
+      </div>
+    `;
+  }
+  if (stage === "face_camera_error") {
+    return `
+      <div class="sender-login-verification">
+        <div class="sender-verification-mark">!</div>
+        <h3>服务器没有可用相机</h3>
+        <p>相机权限已授予，但当前云端 Android 未检测到摄像头，无法完成企业微信活体人脸识别。</p>
+        <button id="sender-login-back-btn" type="button">返回身份验证</button>
+      </div>
+    `;
+  }
   return `
     <div class="sender-login-empty">
       <div class="sender-account-mark">企</div>
@@ -566,6 +586,8 @@ async function renderAndroidDevice() {
     identity_verification: "需要身份校验",
     face_verification: "等待人脸验证",
     camera_permission: "需要相机权限",
+    face_capture: "正在进行人脸识别",
+    face_camera_error: "相机不可用",
     login_pending: "登录处理中",
     logged_in: "已登录",
   };

@@ -141,6 +141,12 @@ class AndroidDeviceControl:
                 stage = "verification_code"
             elif "jswebactivity" in activity:
                 stage = "qr_code"
+            elif "huiyansdk" in activity and "mainauthactivity" in activity:
+                stage = (
+                    "face_camera_error"
+                    if self._has_ui_resource("com.tencent.wework:id/oo9")
+                    else "face_capture"
+                )
             elif any(marker in activity for marker in ("realname", "cardidcheck")):
                 stage = "identity_verification"
             elif any(
@@ -309,6 +315,36 @@ class AndroidDeviceControl:
                 ["-s", self.serial, "shell", "rm", "-f", dump_path]
             )
         raise AndroidDeviceControlError("未找到企业微信身份证输入框")
+
+    def _has_ui_resource(self, resource_id: str) -> bool:
+        dump_path = "/sdcard/legal_wecom_stage_check.xml"
+        self._run_text(
+            [
+                "-s",
+                self.serial,
+                "shell",
+                "uiautomator",
+                "dump",
+                dump_path,
+            ]
+        )
+        try:
+            xml_text = self._run_text(
+                ["-s", self.serial, "shell", "cat", dump_path]
+            )
+            root = ET.fromstring(xml_text)
+            return any(
+                node.attrib.get("resource-id") == resource_id
+                for node in root.iter("node")
+            )
+        except ET.ParseError as exc:
+            raise AndroidDeviceControlError(
+                "无法确认企业微信人脸验证状态"
+            ) from exc
+        finally:
+            self._run_text(
+                ["-s", self.serial, "shell", "rm", "-f", dump_path]
+            )
 
     def _wait_for_login_stage_change(self, previous_stage: str) -> None:
         for _ in range(20):

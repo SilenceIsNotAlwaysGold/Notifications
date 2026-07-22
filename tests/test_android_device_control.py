@@ -187,6 +187,30 @@ def test_sender_login_status_reports_camera_permission(monkeypatch):
 
 
 @pytest.mark.parametrize(
+    ("has_error", "expected_stage"),
+    [(True, "face_camera_error"), (False, "face_capture")],
+)
+def test_sender_login_status_reports_face_capture_state(
+    monkeypatch,
+    has_error,
+    expected_stage,
+):
+    monkeypatch.setattr("shutil.which", lambda value: f"/usr/bin/{value}")
+    control = AndroidDeviceControl(serial="127.0.0.1:5555")
+    monkeypatch.setattr(
+        control,
+        "_foreground_component",
+        lambda: (
+            "com.tencent.wework",
+            "com.tencent.could.huiyansdk.activitys.MainAuthActivity",
+        ),
+    )
+    monkeypatch.setattr(control, "_has_ui_resource", lambda resource_id: has_error)
+
+    assert control.sender_login_status()["stage"] == expected_stage
+
+
+@pytest.mark.parametrize(
     ("permission_mode", "expected_y"),
     [("once", 1068), ("while_using", 918)],
 )
