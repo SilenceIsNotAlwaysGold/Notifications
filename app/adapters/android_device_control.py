@@ -1,6 +1,7 @@
 import re
 import shutil
 import subprocess
+import threading
 import time
 import xml.etree.ElementTree as ET
 from typing import Any
@@ -13,6 +14,7 @@ class AndroidDeviceControlError(RuntimeError):
 
 
 class AndroidDeviceControl:
+    _ui_dump_lock = threading.Lock()
     _serial_pattern = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
     _safe_text_pattern = re.compile(r"^[A-Za-z0-9 @._+\-:/]{1,256}$")
     _keyevents = {
@@ -142,6 +144,11 @@ class AndroidDeviceControl:
                     stage = "qr_code"
                 else:
                     stage = "login_pending"
+            elif "loginwxauthactivity" in activity and {
+                "com.tencent.wework:id/dh9",
+                "com.tencent.wework:id/dhc",
+            }.issubset(self._visible_ui_resources()):
+                stage = "agreement_required"
             elif "loginveryfystep1activity" in activity:
                 stage = "phone"
             elif any(
@@ -211,6 +218,10 @@ class AndroidDeviceControl:
         self.tap(480, 466)
         self.input_text(phone)
         self.tap(540, 680)
+
+    def accept_sender_login_agreement(self) -> None:
+        self._require_login_stage("agreement_required")
+        self.tap(680, 1040)
 
     def submit_sender_verification_code(self, code: str) -> None:
         if not re.fullmatch(r"\d{4,8}", code):
@@ -353,6 +364,10 @@ class AndroidDeviceControl:
         return resource_id in self._visible_ui_resources()
 
     def _visible_ui_resources(self) -> set[str]:
+        with self._ui_dump_lock:
+            return self._read_visible_ui_resources()
+
+    def _read_visible_ui_resources(self) -> set[str]:
         dump_path = "/sdcard/legal_wecom_stage_check.xml"
         self._run_text(
             [

@@ -304,6 +304,17 @@ function senderLoginContent(stage) {
       </div>
     `;
   }
+  if (stage === "agreement_required") {
+    return `
+      <div class="sender-login-verification">
+        <div class="sender-verification-mark">!</div>
+        <span class="sender-step-label">登录确认</span>
+        <h3>确认企业微信服务协议</h3>
+        <p>企业微信要求再次确认软件许可与隐私政策。点击后将在官方登录页执行“同意”。</p>
+        <button id="sender-agreement-btn" type="button">同意并继续</button>
+      </div>
+    `;
+  }
   if (stage === "qr_code") {
     return `
       <div class="sender-qr-section">
@@ -464,6 +475,19 @@ function bindSenderLogin(stage) {
       }
     });
   }
+  const agreementButton = $("#sender-agreement-btn");
+  if (agreementButton) {
+    agreementButton.addEventListener("click", async () => {
+      agreementButton.disabled = true;
+      try {
+        await sendDeviceAction("login/agreement", {});
+        await reloadSenderLogin();
+      } catch (error) {
+        showAlert(error.message, "error");
+        agreementButton.disabled = false;
+      }
+    });
+  }
   const codeForm = $("#sender-code-form");
   if (codeForm) {
     codeForm.addEventListener("submit", async (event) => {
@@ -584,6 +608,7 @@ async function renderAndroidLogin() {
     not_open: "尚未登录",
     phone: "输入手机号",
     verification_code: "输入验证码",
+    agreement_required: "等待协议确认",
     qr_code: "等待扫码确认",
     identity_verification: "需要身份校验",
     face_verification: "等待人脸验证",

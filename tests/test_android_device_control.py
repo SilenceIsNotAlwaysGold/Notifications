@@ -203,6 +203,49 @@ def test_sender_login_status_reports_android_pad_login_stages(
     }
 
 
+def test_sender_login_status_reports_pad_agreement(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda value: f"/usr/bin/{value}")
+    control = AndroidDeviceControl(serial="127.0.0.1:5556")
+    monkeypatch.setattr(
+        control,
+        "_foreground_component",
+        lambda: (
+            "com.tencent.wework",
+            "com.tencent.wework.login.controller.LoginWxAuthActivity",
+        ),
+    )
+    monkeypatch.setattr(
+        control,
+        "_visible_ui_resources",
+        lambda: {
+            "com.tencent.wework:id/dh9",
+            "com.tencent.wework:id/dhc",
+        },
+    )
+
+    assert control.sender_login_status() == {
+        "stage": "agreement_required",
+        "online": False,
+    }
+
+
+def test_sender_login_agreement_requires_stage_and_taps_official_button(
+    monkeypatch,
+):
+    control = AndroidDeviceControl(serial="127.0.0.1:5556")
+    monkeypatch.setattr(
+        control,
+        "sender_login_status",
+        lambda: {"stage": "agreement_required", "online": False},
+    )
+    taps = []
+    monkeypatch.setattr(control, "tap", lambda x, y: taps.append((x, y)))
+
+    control.accept_sender_login_agreement()
+
+    assert taps == [(680, 1040)]
+
+
 def test_sender_pad_verification_uses_pad_dialog_coordinates(monkeypatch):
     monkeypatch.setattr("shutil.which", lambda value: f"/usr/bin/{value}")
     control = AndroidDeviceControl(serial="127.0.0.1:5556")

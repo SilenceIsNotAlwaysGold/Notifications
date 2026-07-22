@@ -98,6 +98,12 @@ def submit_sender_phone(payload: SenderPhoneLoginRequest):
     return ok("手机号已提交")
 
 
+@router.post("/login/agreement", dependencies=[Depends(_admin_operator)])
+def accept_sender_login_agreement():
+    _run_action(lambda: _control().accept_sender_login_agreement())
+    return ok("已确认企业微信软件许可与隐私政策")
+
+
 @router.post("/login/verification-code", dependencies=[Depends(_admin_operator)])
 def submit_sender_verification_code(payload: SenderVerificationCodeRequest):
     _run_action(
