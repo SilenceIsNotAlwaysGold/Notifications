@@ -44,6 +44,7 @@ class AndroidDeviceControl:
         self.serial = serial
         self.adb_binary = adb_binary.strip()
         self.timeout_seconds = min(float(timeout_seconds), 30.0)
+        self._last_ui_bounds: dict[str, dict[str, int]] = {}
 
     def status(self) -> dict[str, Any]:
         self._ensure_available()
@@ -123,6 +124,7 @@ class AndroidDeviceControl:
     def sender_login_status(self) -> dict[str, Any]:
         self._ensure_available()
         component = self._foreground_component()
+        qr_bounds = None
         if component is None:
             stage = "not_open"
         elif (
@@ -142,6 +144,9 @@ class AndroidDeviceControl:
                     stage = "login_pending"
                 elif "com.tencent.wework:id/kls" in resources:
                     stage = "qr_code"
+                    qr_bounds = self._last_ui_bounds.get(
+                        "com.tencent.wework:id/kls"
+                    )
                 else:
                     stage = "login_pending"
             elif "loginwxauthactivity" in activity and {
@@ -185,7 +190,13 @@ class AndroidDeviceControl:
                 stage = "logged_in"
             else:
                 stage = "login_pending"
-        return {"stage": stage, "online": stage == "logged_in"}
+        result: dict[str, Any] = {
+            "stage": stage,
+            "online": stage == "logged_in",
+        }
+        if qr_bounds is not None:
+            result["qr_bounds"] = qr_bounds
+        return result
 
     def open_sender_login(self) -> None:
         self._ensure_available()
@@ -384,11 +395,28 @@ class AndroidDeviceControl:
                 ["-s", self.serial, "shell", "cat", dump_path]
             )
             root = ET.fromstring(xml_text)
-            return {
-                resource_id
-                for node in root.iter("node")
-                if (resource_id := node.attrib.get("resource-id"))
-            }
+            resources: set[str] = set()
+            bounds_by_resource: dict[str, dict[str, int]] = {}
+            for node in root.iter("node"):
+                resource_id = node.attrib.get("resource-id")
+                if not resource_id:
+                    continue
+                resources.add(resource_id)
+                bounds = re.fullmatch(
+                    r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]",
+                    node.attrib.get("bounds", ""),
+                )
+                if bounds is not None:
+                    left, top, right, bottom = map(int, bounds.groups())
+                    if right > left and bottom > top:
+                        bounds_by_resource[resource_id] = {
+                            "left": left,
+                            "top": top,
+                            "right": right,
+                            "bottom": bottom,
+                        }
+            self._last_ui_bounds = bounds_by_resource
+            return resources
         except ET.ParseError as exc:
             raise AndroidDeviceControlError(
                 "无法确认企业微信登录状态"

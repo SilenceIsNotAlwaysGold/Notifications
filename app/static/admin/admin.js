@@ -252,7 +252,9 @@ async function refreshDeviceScreenshot() {
     }
     const previousUrl = state.deviceScreenshotUrl;
     state.deviceScreenshotUrl = nextUrl;
+    screen.onload = () => positionDeviceQr(screen);
     screen.src = nextUrl;
+    if (screen.complete) positionDeviceQr(screen);
     if (previousUrl) URL.revokeObjectURL(previousUrl);
     if (status) {
       status.textContent = "画面已同步";
@@ -268,6 +270,37 @@ async function refreshDeviceScreenshot() {
   }
 }
 
+function positionDeviceQr(screen) {
+  const rawBounds = screen.dataset.qrBounds || "";
+  const bounds = rawBounds.split(",").map(Number);
+  if (bounds.length !== 4 || bounds.some((value) => !Number.isFinite(value))) {
+    screen.style.position = "static";
+    screen.style.width = "100%";
+    screen.style.height = "100%";
+    screen.style.left = "auto";
+    screen.style.top = "auto";
+    screen.style.objectFit = "contain";
+    return;
+  }
+  const [left, top, right, bottom] = bounds;
+  const qrWidth = right - left;
+  const qrHeight = bottom - top;
+  if (qrWidth <= 0 || qrHeight <= 0 || screen.naturalWidth <= 0) return;
+
+  const padding = Math.max(12, Math.round(Math.max(qrWidth, qrHeight) * 0.08));
+  const sourceSize = Math.max(qrWidth, qrHeight) + padding * 2;
+  const sourceLeft = (left + right - sourceSize) / 2;
+  const sourceTop = (top + bottom - sourceSize) / 2;
+  const scale = 100 / sourceSize;
+
+  screen.style.position = "absolute";
+  screen.style.width = `${screen.naturalWidth * scale}%`;
+  screen.style.height = "auto";
+  screen.style.left = `${-sourceLeft * scale}%`;
+  screen.style.top = `${-sourceTop * scale}%`;
+  screen.style.objectFit = "fill";
+}
+
 async function sendDeviceAction(path, payload) {
   await api(`/api/v1/legal/android-device/${path}`, {
     method: "POST",
@@ -277,7 +310,7 @@ async function sendDeviceAction(path, payload) {
   await refreshDeviceScreenshot();
 }
 
-function senderLoginContent(stage) {
+function senderLoginContent(stage, qrBounds = null) {
   if (stage === "phone") {
     return `
       <div class="sender-native-login">
@@ -316,6 +349,9 @@ function senderLoginContent(stage) {
     `;
   }
   if (stage === "qr_code") {
+    const qrBoundsValue = qrBounds
+      ? [qrBounds.left, qrBounds.top, qrBounds.right, qrBounds.bottom].join(",")
+      : "";
     return `
       <div class="sender-qr-section">
         <div class="sender-qr-copy">
@@ -327,7 +363,7 @@ function senderLoginContent(stage) {
         </div>
         <div class="sender-qr-frame" aria-label="企业微信登录二维码">
           <div class="sender-qr-crop">
-            <img id="device-screen" alt="企业微信登录二维码" draggable="false" />
+            <img id="device-screen" data-qr-bounds="${escapeHtml(qrBoundsValue)}" alt="企业微信登录二维码" draggable="false" />
           </div>
         </div>
       </div>
@@ -630,7 +666,7 @@ async function renderAndroidLogin() {
           </div>
         </div>
       </div>
-      ${senderLoginContent(status.stage)}
+      ${senderLoginContent(status.stage, status.qr_bounds)}
     </section>
   `;
   bindSenderLogin(status.stage);

@@ -396,12 +396,7 @@ button.danger-button {
 }
 
 .sender-qr-crop img {
-  position: absolute;
-  top: -400px;
-  left: -200px;
   display: block;
-  width: 700px;
-  height: auto;
   max-width: none;
   user-select: none;
 }

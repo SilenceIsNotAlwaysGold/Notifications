@@ -203,6 +203,39 @@ def test_sender_login_status_reports_android_pad_login_stages(
     }
 
 
+def test_sender_login_status_includes_qr_bounds_from_ui_dump(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda value: f"/usr/bin/{value}")
+    control = AndroidDeviceControl(serial="127.0.0.1:5556")
+    monkeypatch.setattr(
+        control,
+        "_foreground_component",
+        lambda: (
+            "com.tencent.wework",
+            "com.tencent.wework.login.controller.LoginQrCodeForAndroidPad",
+        ),
+    )
+    xml = (
+        "<hierarchy><node resource-id='com.tencent.wework:id/kls' "
+        "bounds='[345,304][735,694]' /></hierarchy>"
+    )
+    monkeypatch.setattr(
+        control,
+        "_run_text",
+        lambda args: xml if "cat" in args else "UI hierchary dumped",
+    )
+
+    assert control.sender_login_status() == {
+        "stage": "qr_code",
+        "online": False,
+        "qr_bounds": {
+            "left": 345,
+            "top": 304,
+            "right": 735,
+            "bottom": 694,
+        },
+    }
+
+
 def test_sender_login_status_reports_pad_agreement(monkeypatch):
     monkeypatch.setattr("shutil.which", lambda value: f"/usr/bin/{value}")
     control = AndroidDeviceControl(serial="127.0.0.1:5556")
