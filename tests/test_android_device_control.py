@@ -184,7 +184,7 @@ def test_sender_face_verification_accepts_agreement(monkeypatch):
 
     control.start_sender_face_verification()
 
-    assert taps == [(180, 980), (540, 1175)]
+    assert taps == [(72, 984), (540, 1175)]
 
 
 def test_sender_identity_number_is_forwarded_only_on_identity_stage(monkeypatch):

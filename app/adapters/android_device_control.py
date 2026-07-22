@@ -206,7 +206,7 @@ class AndroidDeviceControl:
 
     def start_sender_face_verification(self) -> None:
         self._require_login_stage("face_verification")
-        self.tap(180, 980)
+        self.tap(72, 984)
         time.sleep(0.4)
         self.tap(540, 1175)
 
