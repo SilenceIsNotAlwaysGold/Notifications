@@ -37,6 +37,65 @@ class TcpProbeResult:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class GapHubStartObservation:
+    stage: str
+    callback_received: bool
+    error_code: int | None
+    token_present: bool
+    metadata_item_count: int
+    server_correlated: bool = False
+    protocol_ready: bool = False
+
+
+def observe_gaphub_start_callback(
+    *,
+    timed_out: bool,
+    error_code: int | None = None,
+    token: int | None = None,
+    metadata: Iterable[str] = (),
+) -> GapHubStartObservation:
+    metadata_items = tuple(metadata)
+    if len(metadata_items) > 32:
+        raise ValueError("GapHub callback metadata exceeds 32 item limit")
+    if any(
+        not isinstance(item, str)
+        or len(item) > 256
+        or any(ord(character) < 32 or ord(character) == 127 for character in item)
+        for item in metadata_items
+    ):
+        raise ValueError("GapHub callback metadata is invalid")
+    if timed_out:
+        return GapHubStartObservation(
+            stage="callback_timeout",
+            callback_received=False,
+            error_code=None,
+            token_present=False,
+            metadata_item_count=0,
+        )
+    if error_code is None or token is None:
+        raise ValueError("GapHub callback requires error_code and token")
+    if isinstance(error_code, bool) or not isinstance(error_code, int):
+        raise ValueError("GapHub callback error_code must be an integer")
+    if isinstance(token, bool) or not isinstance(token, int) or token < 0:
+        raise ValueError("GapHub callback token must be a non-negative integer")
+
+    stage = (
+        "callback_error"
+        if error_code != 0
+        else "token_observed"
+        if token > 0
+        else "missing_token"
+    )
+    return GapHubStartObservation(
+        stage=stage,
+        callback_received=True,
+        error_code=error_code,
+        token_present=token > 0,
+        metadata_item_count=len(metadata_items),
+    )
+
+
 def parse_gap_endpoints(raw_json: str | None) -> tuple[GapEndpoint, ...]:
     if raw_json is None or not raw_json.strip():
         return ()

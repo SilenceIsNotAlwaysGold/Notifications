@@ -65,7 +65,8 @@ curl -X POST http://127.0.0.1:8092/api/qw/capabilities/probe \
     "wecom_pad_check_qrcode_schema",
     "wecom_pad_jni_boundary",
     "wecom_pad_request_schemas",
-    "wecom_gaphub_transport_hosts"
+    "wecom_gaphub_transport_hosts",
+    "wecom_gaphub_start_callback_contract"
   ],
   "next_capability": "wecom_gaphub_connection_probe"
 }

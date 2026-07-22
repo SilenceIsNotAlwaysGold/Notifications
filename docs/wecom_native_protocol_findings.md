@@ -88,6 +88,11 @@ Pad JNI 位于 `libwework_framework.so`：
 | 身份校验 | `handle, VerifyRequest` | `(errorCode, authErrorBytes)` |
 | Gap 推送检查 | `handle, empty request` | `(errorCode, errorMessage, LoginAuthError)` |
 
+Pad 页面调用 `StartGapHubLogic` 前先检查系统网络，并注册固定 `2000ms` 超时任务。超时会
+调用 `StopGapHubLogic` 并回到二维码失败流程。主回调到达后页面取消超时、保存 token 并
+继续获取二维码；`strings[]` 未被该页面读取。辅助 bytes 回调只记录 errorCode。Java 页面
+没有把任一启动回调直接解释为账号在线或消息通道可用。
+
 普通 Pad 登录页面传 `type=0`、`targetVid=0`；解锁页面覆盖为 `type=3` 并传入待解锁
 账号的 vid。获取二维码回调第二个 long 值被页面作为二维码有效秒数使用。第三个 long
 值在该页面没有使用，当前只记为辅助值。
@@ -144,6 +149,7 @@ iLink 二维码状态：`NO_SCAN(0)`、`SCANNED(1)`、`CONFIRMED(2)`、
 - 获取二维码与检查二维码响应的严格 protobuf 解码。
 - 企业微信 Pad `CheckQrcodeData` 非敏感字段的严格 protobuf 解码。
 - Pad 身份校验字段 3 和 Gap 推送空请求的受限编码。
+- GapHub 启动回调的超时、错误、缺失 token 和 token 已观察状态模型。
 - 未知状态、错误 wire type、截断字段、超长输入和非法 UTF-8 拒绝处理。
 - iLink 与企业微信 Pad 两套状态枚举，避免把状态 10 错当成登录成功。
 - 状态 2 只标记为 `qr_login_succeeded`，在获得账号在线回执前不标记为在线。

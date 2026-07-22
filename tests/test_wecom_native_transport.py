@@ -5,6 +5,7 @@ import pytest
 from wecom_native_lab.transport import (
     GAPHUB_HOSTS,
     GapEndpoint,
+    observe_gaphub_start_callback,
     parse_gap_endpoints,
     run_connection_preflight,
 )
@@ -107,3 +108,53 @@ def test_tcp_preflight_selects_first_reachable_endpoint_and_sends_nothing():
     assert sockets[0].closed is True
     assert result["server_correlated"] is False
     assert result["protocol_ready"] is False
+
+
+@pytest.mark.parametrize(
+    "kwargs,stage",
+    [
+        ({"timed_out": True}, "callback_timeout"),
+        (
+            {"timed_out": False, "error_code": -1, "token": 0},
+            "callback_error",
+        ),
+        (
+            {"timed_out": False, "error_code": 0, "token": 0},
+            "missing_token",
+        ),
+        (
+            {
+                "timed_out": False,
+                "error_code": 0,
+                "token": 12345,
+                "metadata": ("candidate",),
+            },
+            "token_observed",
+        ),
+    ],
+)
+def test_gaphub_start_observation_never_claims_server_correlation(kwargs, stage):
+    result = observe_gaphub_start_callback(**kwargs)
+
+    assert result.stage == stage
+    assert result.server_correlated is False
+    assert result.protocol_ready is False
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"timed_out": False},
+        {"timed_out": False, "error_code": True, "token": 0},
+        {"timed_out": False, "error_code": 0, "token": -1},
+        {
+            "timed_out": False,
+            "error_code": 0,
+            "token": 1,
+            "metadata": ("unsafe\n",),
+        },
+    ],
+)
+def test_rejects_invalid_gaphub_start_observations(kwargs):
+    with pytest.raises(ValueError):
+        observe_gaphub_start_callback(**kwargs)

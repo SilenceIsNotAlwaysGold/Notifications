@@ -54,6 +54,7 @@ def main(argv: list[str] | None = None) -> int:
                         "wecom_pad_jni_boundary",
                         "wecom_pad_request_schemas",
                         "wecom_gaphub_transport_hosts",
+                        "wecom_gaphub_start_callback_contract",
                     ],
                     "next_capability": "wecom_gaphub_connection_probe",
                 },
