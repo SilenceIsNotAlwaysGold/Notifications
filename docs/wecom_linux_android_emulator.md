@@ -110,6 +110,30 @@ scrcpy -s 127.0.0.1:5555
 3. 设备 ID 填写 `WECOM_SENDER_ROBOT_ID`，保存并连接。
 4. 打开 Android 无障碍设置，启用“致和法务企业微信发送”。
 
+## 重启恢复
+
+`adb reverse` 不会跨宿主机或 Android 容器重启保留。生产环境安装恢复单元，确保设备
+启动后自动恢复反向端口和无障碍服务，并将企业微信切回前台。发送伴侣后台服务由应用
+自身的 `BootReceiver` 在 Android 启动后恢复连接，不向 ADB 导出私有服务：
+
+```bash
+sudo install -m 0644 deploy/legal-wecom-android-sender.service \
+  /etc/systemd/system/legal-wecom-android-sender.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now legal-wecom-android-sender.service
+```
+
+恢复脚本默认读取 `/opt/legal-wecom-automation/.env`，使用
+`WECOM_ANDROID_SERIAL`、`WECOM_ANDROID_ADB_BINARY` 和 `WECOM_SENDER_PORT`。设备尚未
+完成启动时最多等待 120 秒；可通过 `WECOM_ANDROID_BOOT_WAIT_ATTEMPTS` 调整尝试次数。
+
+```bash
+systemctl status legal-wecom-android-sender.service
+python -m wecom_sender_sidecar.device_cli \
+  --serial "${WECOM_ANDROID_SERIAL}" check
+curl http://127.0.0.1:8092/wecom/finder/health
+```
+
 ## 验收
 
 ```bash

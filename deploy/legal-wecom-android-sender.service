@@ -1,0 +1,19 @@
+[Unit]
+Description=Legal WeCom Android sender runtime recovery
+Requires=docker.service
+After=docker.service network-online.target legal-wecom.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/legal-wecom-automation
+Environment=LEGAL_WECOM_PROJECT_DIR=/opt/legal-wecom-automation
+ExecStart=/opt/legal-wecom-automation/scripts/ensure_android_sender.sh
+RemainAfterExit=true
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

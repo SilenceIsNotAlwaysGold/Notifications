@@ -196,3 +196,22 @@ def test_android_compose_override_binds_control_ports_to_loopback():
     assert '"127.0.0.1:${WECOM_SENDER_PORT:-8092}:8092"' in compose
     assert '"127.0.0.1:${WECOM_ANDROID_ADB_PORT:-5555}:5555"' in compose
     assert "0.0.0.0" not in compose
+
+
+def test_android_sender_recovery_assets_restore_runtime_without_secrets():
+    script = (PROJECT_ROOT / "scripts" / "ensure_android_sender.sh").read_text(
+        encoding="utf-8"
+    )
+    service = (
+        PROJECT_ROOT / "deploy" / "legal-wecom-android-sender.service"
+    ).read_text(encoding="utf-8")
+
+    assert "WECOM_ANDROID_SERIAL" in script
+    assert "device_cli" in script
+    assert "start-foreground-service" not in script
+    assert ".gateway.GatewayService" not in script
+    assert "LaunchSplashActivity" in script
+    assert "ADMIN_API_KEYS" not in script
+    assert "EnvironmentFile=" not in service
+    assert "ensure_android_sender.sh" in service
+    assert "Restart=on-failure" in service

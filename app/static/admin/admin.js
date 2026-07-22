@@ -295,10 +295,10 @@ function senderLoginContent(stage) {
     return `
       <div class="sender-native-login">
         <span class="sender-step-label">安全验证</span>
-        <h3>输入短信验证码</h3>
+        <h3>输入企业微信验证码</h3>
         <form id="sender-code-form" class="sender-login-form">
-          <label for="sender-code-input">验证码</label>
-          <input id="sender-code-input" name="verification_code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="短信验证码" required />
+          <label for="sender-code-input">手机端显示的数字</label>
+          <input id="sender-code-input" name="verification_code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="4-8 位数字" required />
           <button type="submit">确认</button>
         </form>
       </div>

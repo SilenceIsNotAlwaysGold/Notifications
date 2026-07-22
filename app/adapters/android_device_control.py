@@ -132,7 +132,17 @@ class AndroidDeviceControl:
             stage = "not_open"
         else:
             activity = component[1].lower()
-            if "loginveryfystep1activity" in activity:
+            if "loginqrcodeforandroidpad" in activity:
+                resources = self._visible_ui_resources()
+                if "com.tencent.wework:id/dh0" in resources:
+                    stage = "verification_code"
+                elif "com.tencent.wework:id/avu" in resources:
+                    stage = "login_pending"
+                elif "com.tencent.wework:id/kls" in resources:
+                    stage = "qr_code"
+                else:
+                    stage = "login_pending"
+            elif "loginveryfystep1activity" in activity:
                 stage = "phone"
             elif any(
                 marker in activity
@@ -168,7 +178,7 @@ class AndroidDeviceControl:
                 stage = "logged_in"
             else:
                 stage = "login_pending"
-        return {"stage": stage, "online": True}
+        return {"stage": stage, "online": stage == "logged_in"}
 
     def open_sender_login(self) -> None:
         self._ensure_available()
@@ -183,6 +193,15 @@ class AndroidDeviceControl:
                 self._wecom_launcher,
             ]
         )
+        time.sleep(1)
+        component = self._foreground_component()
+        if (
+            component is not None
+            and component[0] == self._wecom_package
+            and "loginwxauthactivity" in component[1].lower()
+            and "com.tencent.wework:id/km0" in self._visible_ui_resources()
+        ):
+            self.tap(540, 1725)
 
     def submit_sender_phone(self, phone: str) -> None:
         if not re.fullmatch(r"1\d{10}", phone):
@@ -197,9 +216,14 @@ class AndroidDeviceControl:
         if not re.fullmatch(r"\d{4,8}", code):
             raise ValueError("请输入 4-8 位数字验证码")
         self._require_login_stage("verification_code")
-        self.tap(540, 470)
+        component = self._foreground_component()
+        is_pad_login = (
+            component is not None
+            and "loginqrcodeforandroidpad" in component[1].lower()
+        )
+        self.tap(540, 668 if is_pad_login else 470)
         self.input_text(code)
-        self.tap(540, 680)
+        self.tap(695 if is_pad_login else 540, 755 if is_pad_login else 680)
 
     def submit_sender_identity_number(self, identity_number: str) -> None:
         normalized = identity_number.strip().upper()
@@ -215,6 +239,15 @@ class AndroidDeviceControl:
 
     def refresh_sender_qr_code(self) -> None:
         self._require_login_stage("qr_code")
+        component = self._foreground_component()
+        if (
+            component is not None
+            and "loginqrcodeforandroidpad" in component[1].lower()
+        ):
+            self.keyevent("back")
+            time.sleep(0.5)
+            self.tap(540, 1725)
+            return
         self.tap(540, 850)
 
     def start_sender_face_verification(self) -> None:
@@ -317,6 +350,9 @@ class AndroidDeviceControl:
         raise AndroidDeviceControlError("未找到企业微信身份证输入框")
 
     def _has_ui_resource(self, resource_id: str) -> bool:
+        return resource_id in self._visible_ui_resources()
+
+    def _visible_ui_resources(self) -> set[str]:
         dump_path = "/sdcard/legal_wecom_stage_check.xml"
         self._run_text(
             [
@@ -333,13 +369,14 @@ class AndroidDeviceControl:
                 ["-s", self.serial, "shell", "cat", dump_path]
             )
             root = ET.fromstring(xml_text)
-            return any(
-                node.attrib.get("resource-id") == resource_id
+            return {
+                resource_id
                 for node in root.iter("node")
-            )
+                if (resource_id := node.attrib.get("resource-id"))
+            }
         except ET.ParseError as exc:
             raise AndroidDeviceControlError(
-                "无法确认企业微信人脸验证状态"
+                "无法确认企业微信登录状态"
             ) from exc
         finally:
             self._run_text(

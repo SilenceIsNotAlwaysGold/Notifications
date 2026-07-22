@@ -171,6 +171,65 @@ def test_sender_login_status_reports_qr_identity_face_check_and_logged_in(monkey
     assert control.sender_login_status()["stage"] == "logged_in"
 
 
+@pytest.mark.parametrize(
+    ("resource_id", "expected_stage", "expected_online"),
+    [
+        ("com.tencent.wework:id/kls", "qr_code", False),
+        ("com.tencent.wework:id/dh0", "verification_code", False),
+        ("com.tencent.wework:id/avu", "login_pending", False),
+    ],
+)
+def test_sender_login_status_reports_android_pad_login_stages(
+    monkeypatch,
+    resource_id,
+    expected_stage,
+    expected_online,
+):
+    monkeypatch.setattr("shutil.which", lambda value: f"/usr/bin/{value}")
+    control = AndroidDeviceControl(serial="127.0.0.1:5556")
+    monkeypatch.setattr(
+        control,
+        "_foreground_component",
+        lambda: (
+            "com.tencent.wework",
+            "com.tencent.wework.login.controller.LoginQrCodeForAndroidPad",
+        ),
+    )
+    monkeypatch.setattr(control, "_visible_ui_resources", lambda: {resource_id})
+
+    assert control.sender_login_status() == {
+        "stage": expected_stage,
+        "online": expected_online,
+    }
+
+
+def test_sender_pad_verification_uses_pad_dialog_coordinates(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda value: f"/usr/bin/{value}")
+    control = AndroidDeviceControl(serial="127.0.0.1:5556")
+    monkeypatch.setattr(
+        control,
+        "sender_login_status",
+        lambda: {"stage": "verification_code", "online": False},
+    )
+    monkeypatch.setattr(
+        control,
+        "_foreground_component",
+        lambda: (
+            "com.tencent.wework",
+            "com.tencent.wework.login.controller.LoginQrCodeForAndroidPad",
+        ),
+    )
+    taps = []
+    values = []
+    monkeypatch.setattr(control, "tap", lambda x, y: taps.append((x, y)))
+    monkeypatch.setattr(control, "input_text", values.append)
+
+    control.submit_sender_verification_code("791452")
+
+    assert taps == [(540, 668), (695, 755)]
+    assert values == ["791452"]
+
+
 def test_sender_login_status_reports_camera_permission(monkeypatch):
     monkeypatch.setattr("shutil.which", lambda value: f"/usr/bin/{value}")
     control = AndroidDeviceControl(serial="127.0.0.1:5555")
