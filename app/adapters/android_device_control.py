@@ -130,11 +130,10 @@ class AndroidDeviceControl:
                 stage = "verification_code"
             elif "jswebactivity" in activity:
                 stage = "qr_code"
-            elif any(
-                marker in activity
-                for marker in ("realname", "cardidcheck", "facecheck", "faceverify")
-            ):
+            elif any(marker in activity for marker in ("realname", "cardidcheck")):
                 stage = "identity_verification"
+            elif any(marker in activity for marker in ("facecheck", "faceverify")):
+                stage = "face_verification"
             elif "login" in activity:
                 stage = "login_pending"
             elif any(
@@ -176,6 +175,15 @@ class AndroidDeviceControl:
         self.tap(540, 470)
         self.input_text(code)
         self.tap(540, 680)
+
+    def submit_sender_identity_number(self, identity_number: str) -> None:
+        normalized = identity_number.strip().upper()
+        if not re.fullmatch(r"(?:\d{15}|\d{17}[0-9X])", normalized):
+            raise ValueError("请输入正确的身份证号码")
+        self._require_login_stage("identity_verification")
+        self.tap(620, 995)
+        self.input_text(normalized)
+        self.tap(540, 1150)
 
     def refresh_sender_qr_code(self) -> None:
         self._require_login_stage("qr_code")

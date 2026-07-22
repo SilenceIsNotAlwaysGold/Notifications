@@ -334,8 +334,24 @@ function senderLoginContent(stage) {
       <div class="sender-login-verification">
         <div class="sender-verification-mark">!</div>
         <h3>需要完成企业微信身份校验</h3>
-        <p>企业微信正在要求当前账号完成身份证与人脸验证。为保护隐私，本系统不接收身份证或人脸信息。</p>
-        <button id="sender-refresh-status-btn" type="button" class="ghost">刷新登录状态</button>
+        <p>身份证号仅用于填入当前企业微信官方验证页，本系统不保存该内容。</p>
+        <form id="sender-identity-form" class="sender-login-form sender-identity-form">
+          <label for="sender-identity-input">身份证号码</label>
+          <input id="sender-identity-input" name="identity_number" type="password" autocomplete="off" maxlength="18" pattern="(?:\\d{15}|\\d{17}[0-9Xx])" placeholder="15 或 18 位身份证号码" required />
+          <button type="submit">提交并继续</button>
+        </form>
+        <button id="sender-login-back-btn" type="button" class="ghost">返回重新登录</button>
+      </div>
+    `;
+  }
+  if (stage === "face_verification") {
+    return `
+      <div class="sender-login-verification">
+        <div class="sender-verification-mark">!</div>
+        <h3>等待完成人脸验证</h3>
+        <p>请在企业微信官方验证流程中完成人脸识别，完成后刷新登录状态。</p>
+        <button id="sender-refresh-status-btn" type="button">刷新登录状态</button>
+        <button id="sender-login-back-btn" type="button" class="ghost">返回重新登录</button>
       </div>
     `;
   }
@@ -399,6 +415,20 @@ function bindSenderLogin(stage) {
       }
     });
   }
+  const identityForm = $("#sender-identity-form");
+  if (identityForm) {
+    identityForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const identityNumber = $("#sender-identity-input").value.trim();
+      try {
+        await sendDeviceAction("login/identity", { identity_number: identityNumber });
+        $("#sender-identity-input").value = "";
+        await reloadSenderLogin();
+      } catch (error) {
+        showAlert(error.message, "error");
+      }
+    });
+  }
   const qrButton = $("#sender-refresh-qr-btn");
   if (qrButton) {
     qrButton.addEventListener("click", async () => {
@@ -411,6 +441,17 @@ function bindSenderLogin(stage) {
   }
   const statusButton = $("#sender-refresh-status-btn");
   if (statusButton) statusButton.addEventListener("click", reloadSenderLogin);
+  const backButton = $("#sender-login-back-btn");
+  if (backButton) {
+    backButton.addEventListener("click", async () => {
+      try {
+        await sendDeviceAction("keyevent", { key: "back" });
+        await reloadSenderLogin();
+      } catch (error) {
+        showAlert(error.message, "error");
+      }
+    });
+  }
   state.deviceRefreshTimer = setInterval(async () => {
     if (stage === "qr_code") await refreshDeviceScreenshot();
     try {
@@ -431,6 +472,7 @@ async function renderAndroidDevice() {
     verification_code: "输入验证码",
     qr_code: "等待扫码确认",
     identity_verification: "需要身份校验",
+    face_verification: "等待人脸验证",
     login_pending: "登录处理中",
     logged_in: "已登录",
   };

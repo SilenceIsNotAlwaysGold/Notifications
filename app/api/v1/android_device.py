@@ -12,6 +12,7 @@ from app.schemas.android_device import (
     AndroidSwipeRequest,
     AndroidTapRequest,
     AndroidTextRequest,
+    SenderIdentityVerificationRequest,
     SenderPhoneLoginRequest,
     SenderVerificationCodeRequest,
 )
@@ -104,6 +105,16 @@ def submit_sender_verification_code(payload: SenderVerificationCodeRequest):
         )
     )
     return ok("验证码已提交")
+
+
+@router.post("/login/identity", dependencies=[Depends(_admin_operator)])
+def submit_sender_identity(payload: SenderIdentityVerificationRequest):
+    _run_action(
+        lambda: _control().submit_sender_identity_number(
+            payload.identity_number
+        )
+    )
+    return ok("身份信息已提交至企业微信官方验证页")
 
 
 @router.post("/login/refresh-qr", dependencies=[Depends(_admin_operator)])

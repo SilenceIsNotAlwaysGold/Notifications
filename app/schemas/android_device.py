@@ -37,3 +37,7 @@ class SenderPhoneLoginRequest(BaseModel):
 
 class SenderVerificationCodeRequest(BaseModel):
     verification_code: str = Field(pattern=r"^\d{4,8}$")
+
+
+class SenderIdentityVerificationRequest(BaseModel):
+    identity_number: str = Field(pattern=r"^(?:\d{15}|\d{17}[0-9Xx])$")

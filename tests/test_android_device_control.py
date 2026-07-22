@@ -67,6 +67,43 @@ def test_android_device_control_endpoints_return_screen_and_accept_tap(
 ):
     monkeypatch.setenv("WECOM_ANDROID_CONTROL_ENABLED", "true")
     get_settings.cache_clear()
+    captured = {}
+    monkeypatch.setattr(
+        AndroidDeviceControl,
+        "status",
+        lambda self: {
+            "online": True,
+            "state": "device",
+            "width": 1080,
+            "height": 1920,
+        },
+    )
+    monkeypatch.setattr(
+        AndroidDeviceControl,
+        "screenshot",
+        lambda self: b"\x89PNG\r\n\x1a\nimage",
+    )
+    monkeypatch.setattr(
+        AndroidDeviceControl,
+        "tap",
+        lambda self, x, y: captured.update(x=x, y=y),
+    )
+
+    status = client.get("/api/v1/legal/android-device/status")
+    screenshot = client.get("/api/v1/legal/android-device/screenshot")
+    tapped = client.post(
+        "/api/v1/legal/android-device/tap",
+        json={"x": 220, "y": 440},
+    )
+
+    assert status.status_code == 200
+    assert status.json()["data"]["online"] is True
+    assert screenshot.status_code == 200
+    assert screenshot.headers["content-type"] == "image/png"
+    assert screenshot.headers["cache-control"].startswith("no-store")
+    assert tapped.status_code == 200
+    assert captured == {"x": 220, "y": 440}
+    get_settings.cache_clear()
 
 
 def test_sender_login_status_and_phone_flow_are_stage_gated(monkeypatch):
@@ -112,6 +149,28 @@ def test_sender_login_status_reports_qr_identity_check_and_logged_in(monkeypatch
     assert control.sender_login_status()["stage"] == "logged_in"
 
 
+def test_sender_identity_number_is_forwarded_only_on_identity_stage(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda value: f"/usr/bin/{value}")
+    control = AndroidDeviceControl(serial="127.0.0.1:5555")
+    monkeypatch.setattr(
+        control,
+        "_run_text",
+        lambda args: (
+            "mFocusedApp=ActivityRecord{1 u0 "
+            "com.tencent.wework/.setting.controller.UserRealNameCardIdCheckActivity t12}"
+        ),
+    )
+    taps = []
+    values = []
+    monkeypatch.setattr(control, "tap", lambda x, y: taps.append((x, y)))
+    monkeypatch.setattr(control, "input_text", values.append)
+
+    control.submit_sender_identity_number("11010119900101123x")
+
+    assert taps == [(620, 995), (540, 1150)]
+    assert values == ["11010119900101123X"]
+
+
 def test_sender_login_api_exposes_native_stage(client, monkeypatch):
     monkeypatch.setenv("WECOM_ANDROID_CONTROL_ENABLED", "true")
     get_settings.cache_clear()
@@ -125,43 +184,17 @@ def test_sender_login_api_exposes_native_stage(client, monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["data"] == {"online": True, "stage": "phone"}
-    get_settings.cache_clear()
-    captured = {}
     monkeypatch.setattr(
         AndroidDeviceControl,
-        "status",
-        lambda self: {
-            "online": True,
-            "state": "device",
-            "width": 1080,
-            "height": 1920,
-        },
+        "submit_sender_identity_number",
+        lambda self, value: None,
     )
-    monkeypatch.setattr(
-        AndroidDeviceControl,
-        "screenshot",
-        lambda self: b"\x89PNG\r\n\x1a\nimage",
-    )
-    monkeypatch.setattr(
-        AndroidDeviceControl,
-        "tap",
-        lambda self, x, y: captured.update(x=x, y=y),
+    identity = client.post(
+        "/api/v1/legal/android-device/login/identity",
+        json={"identity_number": "11010119900101123X"},
     )
 
-    status = client.get("/api/v1/legal/android-device/status")
-    screenshot = client.get("/api/v1/legal/android-device/screenshot")
-    tapped = client.post(
-        "/api/v1/legal/android-device/tap",
-        json={"x": 220, "y": 440},
-    )
-
-    assert status.status_code == 200
-    assert status.json()["data"]["online"] is True
-    assert screenshot.status_code == 200
-    assert screenshot.headers["content-type"] == "image/png"
-    assert screenshot.headers["cache-control"].startswith("no-store")
-    assert tapped.status_code == 200
-    assert captured == {"x": 220, "y": 440}
+    assert identity.status_code == 200
     get_settings.cache_clear()
 
 
@@ -188,11 +221,19 @@ def test_device_text_is_masked_and_screenshot_polling_is_not_audited():
     assert summary == {"json": {"input_text": "***"}}
     login_summary = middleware._request_summary(
         json.dumps(
-            {"phone": "13800138000", "verification_code": "123456"}
+            {
+                "phone": "13800138000",
+                "verification_code": "123456",
+                "identity_number": "11010119900101123X",
+            }
         ).encode("utf-8")
     )
     assert login_summary == {
-        "json": {"phone": "***", "verification_code": "***"}
+        "json": {
+            "phone": "***",
+            "verification_code": "***",
+            "identity_number": "***",
+        }
     }
     assert (
         "GET",

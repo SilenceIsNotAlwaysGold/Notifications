@@ -20,6 +20,7 @@ SENSITIVE_KEYWORDS = (
     "input_text",
     "phone",
     "verification_code",
+    "identity_number",
 )
 
 AUDIT_EXCLUDED_ENDPOINTS = {

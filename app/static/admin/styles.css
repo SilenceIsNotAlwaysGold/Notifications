@@ -424,7 +424,8 @@ button.danger-button {
 
 .sender-native-login h3,
 .sender-login-empty h3,
-.sender-login-complete h3 {
+.sender-login-complete h3,
+.sender-login-verification h3 {
   margin: 10px 0 0;
   font-size: 23px;
   letter-spacing: 0;
@@ -488,8 +489,13 @@ button.danger-button {
   line-height: 1.7;
 }
 
-.sender-login-verification button {
+.sender-login-verification > button {
   margin-top: 24px;
+}
+
+.sender-identity-form {
+  width: min(100%, 420px);
+  text-align: left;
 }
 
 .sender-verification-mark {
