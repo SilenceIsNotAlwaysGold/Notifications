@@ -453,7 +453,8 @@ button.danger-button {
 }
 
 .sender-login-empty,
-.sender-login-complete {
+.sender-login-complete,
+.sender-login-verification {
   display: grid;
   justify-items: center;
   min-height: 360px;
@@ -479,6 +480,28 @@ button.danger-button {
 
 .sender-login-complete p {
   margin-top: 10px;
+}
+
+.sender-login-verification p {
+  max-width: 520px;
+  margin-top: 12px;
+  line-height: 1.7;
+}
+
+.sender-login-verification button {
+  margin-top: 24px;
+}
+
+.sender-verification-mark {
+  display: grid;
+  place-items: center;
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  background: #fff4e5;
+  color: var(--warning);
+  font-size: 28px;
+  font-weight: 800;
 }
 
 .form-grid {

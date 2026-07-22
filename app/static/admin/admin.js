@@ -329,6 +329,16 @@ function senderLoginContent(stage) {
       </div>
     `;
   }
+  if (stage === "identity_verification") {
+    return `
+      <div class="sender-login-verification">
+        <div class="sender-verification-mark">!</div>
+        <h3>需要完成企业微信身份校验</h3>
+        <p>企业微信正在要求当前账号完成身份证与人脸验证。为保护隐私，本系统不接收身份证或人脸信息。</p>
+        <button id="sender-refresh-status-btn" type="button" class="ghost">刷新登录状态</button>
+      </div>
+    `;
+  }
   return `
     <div class="sender-login-empty">
       <div class="sender-account-mark">企</div>
@@ -399,6 +409,8 @@ function bindSenderLogin(stage) {
       }
     });
   }
+  const statusButton = $("#sender-refresh-status-btn");
+  if (statusButton) statusButton.addEventListener("click", reloadSenderLogin);
   state.deviceRefreshTimer = setInterval(async () => {
     if (stage === "qr_code") await refreshDeviceScreenshot();
     try {
@@ -418,6 +430,7 @@ async function renderAndroidDevice() {
     phone: "输入手机号",
     verification_code: "输入验证码",
     qr_code: "等待扫码确认",
+    identity_verification: "需要身份校验",
     login_pending: "登录处理中",
     logged_in: "已登录",
   };

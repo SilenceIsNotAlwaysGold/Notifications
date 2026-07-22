@@ -92,7 +92,7 @@ def test_sender_login_status_and_phone_flow_are_stage_gated(monkeypatch):
     assert values == ["13800138000"]
 
 
-def test_sender_login_status_reports_qr_and_logged_in(monkeypatch):
+def test_sender_login_status_reports_qr_identity_check_and_logged_in(monkeypatch):
     monkeypatch.setattr("shutil.which", lambda value: f"/usr/bin/{value}")
     control = AndroidDeviceControl(serial="127.0.0.1:5555")
     outputs = iter(
@@ -100,12 +100,15 @@ def test_sender_login_status_reports_qr_and_logged_in(monkeypatch):
             "mFocusedApp=ActivityRecord{1 u0 "
             "com.tencent.wework/.common.web.JsWebActivity t12}",
             "mFocusedApp=ActivityRecord{1 u0 "
+            "com.tencent.wework/.setting.controller.UserRealNameCardIdCheckActivity t12}",
+            "mFocusedApp=ActivityRecord{1 u0 "
             "com.tencent.wework/.foundation.views.WwMainActivity t12}",
         ]
     )
     monkeypatch.setattr(control, "_run_text", lambda args: next(outputs))
 
     assert control.sender_login_status()["stage"] == "qr_code"
+    assert control.sender_login_status()["stage"] == "identity_verification"
     assert control.sender_login_status()["stage"] == "logged_in"
 
 

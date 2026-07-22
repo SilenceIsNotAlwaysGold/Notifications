@@ -130,10 +130,20 @@ class AndroidDeviceControl:
                 stage = "verification_code"
             elif "jswebactivity" in activity:
                 stage = "qr_code"
+            elif any(
+                marker in activity
+                for marker in ("realname", "cardidcheck", "facecheck", "faceverify")
+            ):
+                stage = "identity_verification"
             elif "login" in activity:
                 stage = "login_pending"
-            else:
+            elif any(
+                marker in activity
+                for marker in ("wwmainactivity", "launcherui", "mainactivity")
+            ):
                 stage = "logged_in"
+            else:
+                stage = "login_pending"
         return {"stage": stage, "online": True}
 
     def open_sender_login(self) -> None:
