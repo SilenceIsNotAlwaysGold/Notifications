@@ -56,6 +56,10 @@ curl -X POST http://127.0.0.1:8092/api/qw/capabilities/probe \
   "transport": "native_lab_scaffold",
   "protocol_ready": false,
   "implemented_capabilities": [],
+  "diagnostic_capabilities": [
+    "wecom_gaphub_dns_preflight",
+    "wecom_gaphub_zero_byte_tcp_preflight"
+  ],
   "verified_protocol_facts": [
     "wecom_pad_qr_state_machine",
     "wecom_pad_check_qrcode_schema",
@@ -66,6 +70,21 @@ curl -X POST http://127.0.0.1:8092/api/qw/capabilities/probe \
   "next_capability": "wecom_gaphub_connection_probe"
 }
 ```
+
+可单独运行不携带账号材料的网络预检：
+
+```bash
+python -m wecom_native_lab.cli connection-probe
+```
+
+默认只解析静态分析已确认的 GapHub 候选域名。只有从官方调用证据确认端口后，才允许
+通过 `WECOM_NATIVE_LAB_GAPHUB_ENDPOINTS_JSON` 显式配置零字节 TCP 连接，例如
+`[{"host":"gap.work.weixin.qq.com","port":已确认端口}]`。配置只接受候选域名白名单，
+最多 8 个端点，超时最多 10 秒。该预检不会发送握手数据，结果始终保持
+`server_correlated=false` 和 `protocol_ready=false`。
+
+DNS 结果可能来自系统代理、VPN 或透明解析器，例如返回 `198.18.0.0/15` 基准测试网段的
+合成地址。探针原样展示解析结果但不判断其归属；域名可解析不代表已连接腾讯服务。
 
 只有底层传输返回服务端可关联回执后，能力才允许加入
 `implemented_capabilities`。HTTP 200、本地入队或 UI 点击均不能作为送达证明。

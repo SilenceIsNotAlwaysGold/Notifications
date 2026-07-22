@@ -151,6 +151,13 @@ iLink 二维码状态：`NO_SCAN(0)`、`SCANNED(1)`、`CONFIRMED(2)`、
 这些属于已验证协议结构，不列入 `implemented_capabilities`。实验 CLI 仍返回
 `protocol_ready=false`。
 
+`wecom_native_lab.transport` 另提供网络预检：默认只解析已确认的 GapHub 候选域名；仅在
+显式提供白名单主机和经验证端口时执行零字节 TCP 连接。预检不发送握手、不提交账号
+材料，并固定返回 `server_correlated=false`、`protocol_ready=false`。它只能用于排除
+DNS 和基础网络问题，不能证明 GapHub 会话已经建立。
+系统代理可能返回 `198.18.0.0/15` 等合成地址，因此解析成功本身也不作为真实服务地址
+或可达性的证据。
+
 ## 尚未解决
 
 1. `GapHubLogicTCP` 的最小初始化输入、传输帧边界和错误回调语义。
