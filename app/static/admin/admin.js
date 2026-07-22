@@ -420,12 +420,17 @@ function bindSenderLogin(stage) {
     identityForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       const identityNumber = $("#sender-identity-input").value.trim();
+      const submitButton = identityForm.querySelector('button[type="submit"]');
+      submitButton.disabled = true;
+      submitButton.textContent = "正在提交";
       try {
         await sendDeviceAction("login/identity", { identity_number: identityNumber });
         $("#sender-identity-input").value = "";
         await reloadSenderLogin();
       } catch (error) {
         showAlert(error.message, "error");
+        submitButton.disabled = false;
+        submitButton.textContent = "提交并继续";
       }
     });
   }

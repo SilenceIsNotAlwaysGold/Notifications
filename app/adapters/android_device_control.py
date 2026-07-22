@@ -1,6 +1,7 @@
 import re
 import shutil
 import subprocess
+import time
 from typing import Any
 
 
@@ -182,8 +183,14 @@ class AndroidDeviceControl:
             raise ValueError("请输入正确的身份证号码")
         self._require_login_stage("identity_verification")
         self.tap(620, 995)
+        self._send_keyevents(
+            "KEYCODE_MOVE_END",
+            *(["KEYCODE_DEL"] * 24),
+        )
         self.input_text(normalized)
+        self._send_keyevents("KEYCODE_BACK")
         self.tap(540, 1150)
+        self._wait_for_login_stage_change("identity_verification")
 
     def refresh_sender_qr_code(self) -> None:
         self._require_login_stage("qr_code")
@@ -214,6 +221,27 @@ class AndroidDeviceControl:
         actual = self.sender_login_status()["stage"]
         if actual != expected:
             raise AndroidDeviceControlError("企业微信登录步骤已变化，请刷新页面")
+
+    def _send_keyevents(self, *keycodes: str) -> None:
+        self._run_text(
+            [
+                "-s",
+                self.serial,
+                "shell",
+                "input",
+                "keyevent",
+                *keycodes,
+            ]
+        )
+
+    def _wait_for_login_stage_change(self, previous_stage: str) -> None:
+        for _ in range(5):
+            time.sleep(0.5)
+            if self.sender_login_status()["stage"] != previous_stage:
+                return
+        raise AndroidDeviceControlError(
+            "企业微信未进入下一步，请检查身份证号后重试"
+        )
 
     def _run_text(self, args: list[str]) -> str:
         completed = self._run(args, text=True)

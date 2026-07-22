@@ -4,7 +4,10 @@ import subprocess
 import pytest
 from fastapi import HTTPException
 
-from app.adapters.android_device_control import AndroidDeviceControl
+from app.adapters.android_device_control import (
+    AndroidDeviceControl,
+    AndroidDeviceControlError,
+)
 from app.api.v1.android_device import _admin_operator
 from app.core.config import get_settings
 from app.middleware.audit_middleware import (
@@ -160,15 +163,52 @@ def test_sender_identity_number_is_forwarded_only_on_identity_stage(monkeypatch)
             "com.tencent.wework/.setting.controller.UserRealNameCardIdCheckActivity t12}"
         ),
     )
-    taps = []
-    values = []
-    monkeypatch.setattr(control, "tap", lambda x, y: taps.append((x, y)))
-    monkeypatch.setattr(control, "input_text", values.append)
+    actions = []
+    monkeypatch.setattr(
+        control,
+        "tap",
+        lambda x, y: actions.append(("tap", x, y)),
+    )
+    monkeypatch.setattr(
+        control,
+        "_send_keyevents",
+        lambda *keys: actions.append(("keyevents", *keys)),
+    )
+    monkeypatch.setattr(
+        control,
+        "input_text",
+        lambda value: actions.append(("input", value)),
+    )
+    monkeypatch.setattr(
+        control,
+        "_wait_for_login_stage_change",
+        lambda stage: actions.append(("wait", stage)),
+    )
 
     control.submit_sender_identity_number("11010119900101123x")
 
-    assert taps == [(620, 995), (540, 1150)]
-    assert values == ["11010119900101123X"]
+    assert actions == [
+        ("tap", 620, 995),
+        ("keyevents", "KEYCODE_MOVE_END", *(["KEYCODE_DEL"] * 24)),
+        ("input", "11010119900101123X"),
+        ("keyevents", "KEYCODE_BACK"),
+        ("tap", 540, 1150),
+        ("wait", "identity_verification"),
+    ]
+
+
+def test_sender_identity_number_reports_when_wecom_does_not_advance(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda value: f"/usr/bin/{value}")
+    control = AndroidDeviceControl(serial="127.0.0.1:5555")
+    monkeypatch.setattr(
+        control,
+        "sender_login_status",
+        lambda: {"stage": "identity_verification", "online": True},
+    )
+    monkeypatch.setattr("time.sleep", lambda seconds: None)
+
+    with pytest.raises(AndroidDeviceControlError, match="未进入下一步"):
+        control._wait_for_login_stage_change("identity_verification")
 
 
 def test_sender_login_api_exposes_native_stage(client, monkeypatch):
