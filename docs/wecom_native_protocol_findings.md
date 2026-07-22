@@ -78,6 +78,31 @@ Pad JNI 位于 `libwework_framework.so`：
 `handle, type, value, token, callback`。JNI 构造内部异步任务后交给通用任务调度器；调度器
 入参中的常量 `7` 目前只能确认是内部类别索引，不能据此认定为网络命令号。
 
+### Java/JNI 调用合同
+
+| 操作 | 输入 | 回调 |
+|---|---|---|
+| 启动 GapHub | `handle` | `(errorCode, token, strings[])`；另有 `(errorCode, bytes)` |
+| 获取二维码 | `handle, type, targetVid, token` | `(errorCode, keepSeconds, auxiliaryValue, qrImageBytes)` |
+| 检查二维码 | `handle` | `(errorCode, errorMessage, CheckQrcodeData)` |
+| 身份校验 | `handle, VerifyRequest` | `(errorCode, authErrorBytes)` |
+| Gap 推送检查 | `handle, empty request` | `(errorCode, errorMessage, LoginAuthError)` |
+
+普通 Pad 登录页面传 `type=0`、`targetVid=0`；解锁页面覆盖为 `type=3` 并传入待解锁
+账号的 vid。获取二维码回调第二个 long 值被页面作为二维码有效秒数使用。第三个 long
+值在该页面没有使用，当前只记为辅助值。
+
+`VerifyRequest` 原始类为 `ji40`：
+
+| 编号 | 类型 | 已验证行为 |
+|---:|---|---|
+| 1 | `CliInfoProtocol.CliInfo` | 可选，页面未设置 |
+| 2 | bytes | 可选，语义未确认 |
+| 3 | bytes | 页面将用户输入按 UTF-8 原样写入 |
+
+`OnGapPushCheckStatusForPad` 的请求类 `ii40` 是空 protobuf。它是状态检查触发器，不是
+登录凭证。状态推送与 800ms 主动轮询均存在，后续实现不能只依赖其中一条路径。
+
 库内存在 `GapHubLogicTCP`、ECC 会话、心跳和登录专用 token 相关实现，并包含
 `gap.work.weixin.qq.com`、`gap6.work.weixin.qq.com`、`gp.work.weixin.qq.com`、
 `i.work.weixin.qq.com`、`i6.work.weixin.qq.com`、`szfront.wxwork.qq.com` 等主机名。
@@ -118,6 +143,7 @@ iLink 二维码状态：`NO_SCAN(0)`、`SCANNED(1)`、`CONFIRMED(2)`、
 - iLink 获取二维码请求的受限 protobuf 编码。
 - 获取二维码与检查二维码响应的严格 protobuf 解码。
 - 企业微信 Pad `CheckQrcodeData` 非敏感字段的严格 protobuf 解码。
+- Pad 身份校验字段 3 和 Gap 推送空请求的受限编码。
 - 未知状态、错误 wire type、截断字段、超长输入和非法 UTF-8 拒绝处理。
 - iLink 与企业微信 Pad 两套状态枚举，避免把状态 10 错当成登录成功。
 - 状态 2 只标记为 `qr_login_succeeded`，在获得账号在线回执前不标记为在线。
@@ -128,11 +154,11 @@ iLink 二维码状态：`NO_SCAN(0)`、`SCANNED(1)`、`CONFIRMED(2)`、
 ## 尚未解决
 
 1. `GapHubLogicTCP` 的最小初始化输入、传输帧边界和错误回调语义。
-2. Pad 获取二维码请求和响应在 native 层的序列化类型。
+2. `VerifyRequest` 字段 2 的含义以及 `CliInfo` 是否由其他登录入口设置。
 3. 长连接握手、会话恢复和心跳的服务端关联回执。
 4. 企业微信账号会话与外部客户群消息协议的合法映射。
 5. 服务端消息 ID 和外部群实际收件结果的双重验证。
 
-下一里程碑是 `wecom_pad_transport_boundary`：确认 `GapHubLogicTCP` 的公开调用边界和
-Pad 请求序列化类型，不提交账号材料、不绕过身份校验。获得真实服务端关联回执前，生产
-发送继续保持 Mock。
+下一里程碑是 `wecom_gaphub_connection_probe`：在隔离测试环境中验证 GapHub 启动的
+错误回调、主机选择和可关联连接结果，不提交账号材料、不绕过身份校验。获得真实服务端
+关联回执前，生产发送继续保持 Mock。

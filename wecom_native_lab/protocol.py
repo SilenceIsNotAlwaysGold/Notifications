@@ -141,6 +141,24 @@ def decode_wecom_pad_qr_check(payload: bytes) -> WecomPadQrCheck:
     )
 
 
+def encode_wecom_pad_verification_request(verification_value: str) -> bytes:
+    if any(
+        ord(character) < 32 or ord(character) == 127
+        for character in verification_value
+    ):
+        raise ValueError("verification_value contains control characters")
+    normalized = verification_value.strip()
+    if not normalized:
+        raise ValueError("verification_value must not be empty")
+    if len(normalized) > 64:
+        raise ValueError("verification_value exceeds 64 character limit")
+    return _field_bytes(3, normalized.encode("utf-8"))
+
+
+def encode_wecom_pad_gap_push_check_request() -> bytes:
+    return b""
+
+
 def _decode_fields(payload: bytes) -> dict[int, list[int | bytes]]:
     if len(payload) > 1024 * 1024:
         raise ProtocolDecodeError("protobuf payload exceeds 1 MiB limit")

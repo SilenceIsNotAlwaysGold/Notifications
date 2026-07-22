@@ -41,6 +41,20 @@ class SenderVerificationCodeRequest(BaseModel):
     verification_code: str = Field(pattern=r"^\d{4,8}$")
 
 
+class SenderProtocolVerificationRequest(BaseModel):
+    verification_value: str = Field(min_length=1, max_length=64)
+
+    @field_validator("verification_value")
+    @classmethod
+    def reject_control_characters(cls, value: str) -> str:
+        if any(ord(character) < 32 or ord(character) == 127 for character in value):
+            raise ValueError("身份校验信息不能包含控制字符")
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("身份校验信息不能为空")
+        return normalized
+
+
 class SenderIdentityVerificationRequest(BaseModel):
     identity_number: str = Field(pattern=r"^(?:\d{15}|\d{17}[0-9Xx])$")
 

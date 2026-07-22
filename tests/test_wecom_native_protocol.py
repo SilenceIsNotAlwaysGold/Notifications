@@ -8,6 +8,8 @@ from wecom_native_lab.protocol import (
     decode_get_login_qr_code_response,
     decode_wecom_pad_qr_check,
     encode_get_login_qr_code_request,
+    encode_wecom_pad_gap_push_check_request,
+    encode_wecom_pad_verification_request,
 )
 from wecom_protocol_gateway.native_lab import _state_for
 
@@ -109,3 +111,19 @@ def test_decodes_verified_wecom_pad_qr_check_without_exposing_session_material()
 def test_rejects_invalid_wecom_pad_qr_check(payload):
     with pytest.raises(ProtocolDecodeError):
         decode_wecom_pad_qr_check(payload)
+
+
+def test_encodes_verified_wecom_pad_identity_value_as_field_three():
+    assert encode_wecom_pad_verification_request(" 520102199001011234 ") == (
+        b"\x1a\x12520102199001011234"
+    )
+
+
+@pytest.mark.parametrize("value", ["", "   ", "x\n", "x" * 65])
+def test_rejects_invalid_wecom_pad_verification_value(value):
+    with pytest.raises(ValueError):
+        encode_wecom_pad_verification_request(value)
+
+
+def test_gap_push_check_request_is_verified_empty_message():
+    assert encode_wecom_pad_gap_push_check_request() == b""

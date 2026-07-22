@@ -87,11 +87,19 @@ class WeComProtocolAccount:
             "verification_required": verification_required,
         }
 
-    def verify_login(self, code: str) -> dict[str, Any]:
-        if not code.isdigit() or not 4 <= len(code) <= 8:
-            raise ValueError("请输入 4-8 位数字验证码")
+    def verify_login(self, verification_value: str) -> dict[str, Any]:
+        if any(
+            ord(character) < 32 or ord(character) == 127
+            for character in verification_value
+        ):
+            raise ValueError("身份校验信息不能包含控制字符")
+        normalized = verification_value.strip()
+        if not normalized or len(normalized) > 64:
+            raise ValueError("请输入有效的身份校验信息")
         self._require_config()
-        payload = self._invoke("/login/verifyLoginQrcode", {"code": code})
+        payload = self._invoke(
+            "/login/verifyLoginQrcode", {"verificationValue": normalized}
+        )
         data = self._data(payload)
         return {
             "backend": "protocol",

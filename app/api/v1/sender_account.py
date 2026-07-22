@@ -7,7 +7,7 @@ from app.adapters.wecom_protocol_account import (
 from app.api.deps_auth import get_current_operator
 from app.api.v1.response import ok, raise_fail
 from app.core.config import get_settings
-from app.schemas.android_device import SenderVerificationCodeRequest
+from app.schemas.android_device import SenderProtocolVerificationRequest
 
 router = APIRouter(prefix="/legal/sender-account", tags=["legal-sender-account"])
 
@@ -60,11 +60,11 @@ def poll_sender_account_login():
 
 
 @router.post("/login/verify", dependencies=[Depends(_admin_operator)])
-def verify_sender_account_login(payload: SenderVerificationCodeRequest):
+def verify_sender_account_login(payload: SenderProtocolVerificationRequest):
     _require_protocol_mode()
     return ok(
         "登录验证已提交",
-        _run(lambda: _account().verify_login(payload.verification_code)),
+        _run(lambda: _account().verify_login(payload.verification_value)),
     )
 
 

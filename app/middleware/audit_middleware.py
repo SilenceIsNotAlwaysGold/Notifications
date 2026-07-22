@@ -20,6 +20,7 @@ SENSITIVE_KEYWORDS = (
     "input_text",
     "phone",
     "verification_code",
+    "verification_value",
     "identity_number",
 )
 

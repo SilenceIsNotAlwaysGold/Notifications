@@ -101,6 +101,35 @@ def test_pad_qr_success_without_online_receipt_is_not_reported_as_logged_in(
     assert result["online"] is False
 
 
+def test_protocol_identity_verification_is_forwarded_without_digit_restriction(
+    monkeypatch,
+):
+    captured = {}
+
+    def fake_post(url, **kwargs):
+        captured.update(kwargs["json"])
+        return FakeResponse({"code": 0, "data": {"online": False}})
+
+    monkeypatch.setattr("app.adapters.wecom_protocol_account.httpx.post", fake_post)
+
+    result = account().verify_login(" 520102199001011234 ")
+
+    assert result["stage"] == "login_pending"
+    assert captured == {
+        "method": "/login/verifyLoginQrcode",
+        "params": {
+            "guid": "sender-guid",
+            "verificationValue": "520102199001011234",
+        },
+    }
+
+
+@pytest.mark.parametrize("value", ["", "x\n", "x" * 65])
+def test_protocol_identity_verification_rejects_unsafe_values(value):
+    with pytest.raises(ValueError):
+        account().verify_login(value)
+
+
 def test_gateway_business_error_is_not_reported_as_login_state(monkeypatch):
     monkeypatch.setattr(
         "app.adapters.wecom_protocol_account.httpx.post",
@@ -126,4 +155,34 @@ def test_sender_account_api_reports_missing_configuration(client, monkeypatch):
         "WECOM_PROTOCOL_ACCOUNT_TOKEN",
         "WECOM_PROTOCOL_ACCOUNT_GUID",
     ]
+    get_settings.cache_clear()
+
+
+def test_sender_account_api_accepts_identity_verification_value(client, monkeypatch):
+    monkeypatch.setenv("WECOM_ACCOUNT_LOGIN_MODE", "protocol")
+    monkeypatch.setenv("WECOM_PROTOCOL_ACCOUNT_BASE_URL", "https://gateway.example.test")
+    monkeypatch.setenv("WECOM_PROTOCOL_ACCOUNT_TOKEN", "test-token")
+    monkeypatch.setenv("WECOM_PROTOCOL_ACCOUNT_GUID", "sender-guid")
+    get_settings.cache_clear()
+    captured = {}
+
+    def fake_post(url, **kwargs):
+        captured.update(kwargs["json"])
+        return FakeResponse({"code": 0, "data": {"online": False}})
+
+    monkeypatch.setattr("app.adapters.wecom_protocol_account.httpx.post", fake_post)
+
+    response = client.post(
+        "/api/v1/legal/sender-account/login/verify",
+        json={"verification_value": "520102199001011234"},
+    )
+    legacy = client.post(
+        "/api/v1/legal/sender-account/login/verify",
+        json={"verification_code": "123456"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["stage"] == "login_pending"
+    assert captured["params"]["verificationValue"] == "520102199001011234"
+    assert legacy.status_code == 422
     get_settings.cache_clear()

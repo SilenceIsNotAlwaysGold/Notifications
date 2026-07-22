@@ -643,12 +643,16 @@ function protocolLoginContent(status) {
   }
   if (status.stage === "verification_code") {
     return `
-      <div class="sender-native-login">
+      <div class="sender-login-verification">
+        <div class="sender-verification-mark">!</div>
         <span class="sender-step-label">登录确认</span>
-        <h3>输入企业微信验证码</h3>
-        <form id="protocol-code-form" class="sender-login-form">
-          <label for="protocol-code-input">验证码</label>
-          <input id="protocol-code-input" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="4-8 位验证码" required />
+        <h3>完成企业微信身份校验</h3>
+        <form id="protocol-verification-form" class="sender-login-form sender-identity-form">
+          <label for="protocol-verification-input">身份校验信息</label>
+          <div class="sender-secret-input">
+            <input id="protocol-verification-input" type="password" autocomplete="off" maxlength="64" required />
+            <button id="protocol-verification-visibility" type="button" aria-pressed="false" title="显示身份校验信息">显示</button>
+          </div>
           <button type="submit">确认登录</button>
         </form>
       </div>
@@ -682,14 +686,23 @@ function bindProtocolLogin(status) {
   if (startButton) startButton.addEventListener("click", () => startLogin().catch((error) => showAlert(error.message, "error")));
   const refreshButton = $("#protocol-refresh-qr-btn");
   if (refreshButton) refreshButton.addEventListener("click", () => startLogin().catch((error) => showAlert(error.message, "error")));
-  const codeForm = $("#protocol-code-form");
-  if (codeForm) {
-    codeForm.addEventListener("submit", async (event) => {
+  const verificationForm = $("#protocol-verification-form");
+  if (verificationForm) {
+    const verificationInput = $("#protocol-verification-input");
+    const visibilityButton = $("#protocol-verification-visibility");
+    visibilityButton.addEventListener("click", () => {
+      const isVisible = verificationInput.type === "text";
+      verificationInput.type = isVisible ? "password" : "text";
+      visibilityButton.textContent = isVisible ? "显示" : "隐藏";
+      visibilityButton.title = isVisible ? "显示身份校验信息" : "隐藏身份校验信息";
+      visibilityButton.setAttribute("aria-pressed", String(!isVisible));
+    });
+    verificationForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       try {
         const result = await api("/api/v1/legal/sender-account/login/verify", {
           method: "POST",
-          body: JSON.stringify({ verification_code: $("#protocol-code-input").value.trim() }),
+          body: JSON.stringify({ verification_value: verificationInput.value.trim() }),
         });
         await renderProtocolAccount(result);
       } catch (error) {
@@ -730,7 +743,7 @@ async function renderProtocolAccount(providedStatus = null) {
     not_configured: "待配置",
     logged_out: "尚未登录",
     qr_code: "等待扫码",
-    verification_code: "等待验证码",
+    verification_code: "等待身份校验",
     login_pending: "登录处理中",
     logged_in: "已登录",
   };
