@@ -498,6 +498,33 @@ button.danger-button {
   text-align: left;
 }
 
+.sender-secret-input {
+  position: relative;
+}
+
+.sender-secret-input input {
+  width: 100%;
+  padding-right: 66px;
+}
+
+.sender-login-form .sender-secret-input button {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 58px;
+  height: 46px;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.sender-login-form .sender-secret-input button:hover {
+  background: var(--panel-muted);
+}
+
 .sender-verification-mark {
   display: grid;
   place-items: center;

@@ -337,7 +337,10 @@ function senderLoginContent(stage) {
         <p>身份证号仅用于填入当前企业微信官方验证页，本系统不保存该内容。</p>
         <form id="sender-identity-form" class="sender-login-form sender-identity-form">
           <label for="sender-identity-input">身份证号码</label>
-          <input id="sender-identity-input" name="identity_number" type="password" autocomplete="off" maxlength="18" pattern="(?:\\d{15}|\\d{17}[0-9Xx])" placeholder="15 或 18 位身份证号码" required />
+          <div class="sender-secret-input">
+            <input id="sender-identity-input" name="identity_number" type="password" autocomplete="off" maxlength="18" pattern="(?:\\d{15}|\\d{17}[0-9Xx])" placeholder="15 或 18 位身份证号码" required />
+            <button id="sender-identity-visibility" type="button" aria-pressed="false" title="显示身份证号码">显示</button>
+          </div>
           <button type="submit">提交并继续</button>
         </form>
         <button id="sender-login-back-btn" type="button" class="ghost">返回重新登录</button>
@@ -417,15 +420,25 @@ function bindSenderLogin(stage) {
   }
   const identityForm = $("#sender-identity-form");
   if (identityForm) {
+    const identityInput = $("#sender-identity-input");
+    const visibilityButton = $("#sender-identity-visibility");
+    visibilityButton.addEventListener("click", () => {
+      const shouldShow = identityInput.type === "password";
+      identityInput.type = shouldShow ? "text" : "password";
+      visibilityButton.textContent = shouldShow ? "隐藏" : "显示";
+      visibilityButton.title = shouldShow ? "隐藏身份证号码" : "显示身份证号码";
+      visibilityButton.setAttribute("aria-pressed", String(shouldShow));
+      identityInput.focus();
+    });
     identityForm.addEventListener("submit", async (event) => {
       event.preventDefault();
-      const identityNumber = $("#sender-identity-input").value.trim();
+      const identityNumber = identityInput.value.trim();
       const submitButton = identityForm.querySelector('button[type="submit"]');
       submitButton.disabled = true;
       submitButton.textContent = "正在提交";
       try {
         await sendDeviceAction("login/identity", { identity_number: identityNumber });
-        $("#sender-identity-input").value = "";
+        identityInput.value = "";
         await reloadSenderLogin();
       } catch (error) {
         showAlert(error.message, "error");

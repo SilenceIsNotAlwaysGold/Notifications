@@ -183,12 +183,9 @@ class AndroidDeviceControl:
             raise ValueError("请输入正确的身份证号码")
         self._require_login_stage("identity_verification")
         self.tap(620, 995)
-        self._send_keyevents(
-            "KEYCODE_MOVE_END",
-            *(["KEYCODE_DEL"] * 24),
-        )
+        self._clear_focused_text()
         self.input_text(normalized)
-        self._send_keyevents("KEYCODE_BACK")
+        self.keyevent("back")
         self.tap(540, 1150)
         self._wait_for_login_stage_change("identity_verification")
 
@@ -222,15 +219,18 @@ class AndroidDeviceControl:
         if actual != expected:
             raise AndroidDeviceControlError("企业微信登录步骤已变化，请刷新页面")
 
-    def _send_keyevents(self, *keycodes: str) -> None:
+    def _clear_focused_text(self) -> None:
+        # This Android build drops all but the first key in a multi-keyevent call.
         self._run_text(
             [
                 "-s",
                 self.serial,
                 "shell",
-                "input",
-                "keyevent",
-                *keycodes,
+                "sh",
+                "-c",
+                "i=0; input keyevent KEYCODE_MOVE_END; "
+                "while [ \"$i\" -lt 100 ]; do "
+                "input keyevent KEYCODE_DEL; i=$((i + 1)); done",
             ]
         )
 

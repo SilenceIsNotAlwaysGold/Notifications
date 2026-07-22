@@ -171,13 +171,18 @@ def test_sender_identity_number_is_forwarded_only_on_identity_stage(monkeypatch)
     )
     monkeypatch.setattr(
         control,
-        "_send_keyevents",
-        lambda *keys: actions.append(("keyevents", *keys)),
+        "_clear_focused_text",
+        lambda: actions.append(("clear",)),
     )
     monkeypatch.setattr(
         control,
         "input_text",
         lambda value: actions.append(("input", value)),
+    )
+    monkeypatch.setattr(
+        control,
+        "keyevent",
+        lambda key: actions.append(("keyevent", key)),
     )
     monkeypatch.setattr(
         control,
@@ -189,9 +194,9 @@ def test_sender_identity_number_is_forwarded_only_on_identity_stage(monkeypatch)
 
     assert actions == [
         ("tap", 620, 995),
-        ("keyevents", "KEYCODE_MOVE_END", *(["KEYCODE_DEL"] * 24)),
+        ("clear",),
         ("input", "11010119900101123X"),
-        ("keyevents", "KEYCODE_BACK"),
+        ("keyevent", "back"),
         ("tap", 540, 1150),
         ("wait", "identity_verification"),
     ]
