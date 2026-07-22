@@ -51,3 +51,7 @@ class SenderIdentityVerificationRequest(BaseModel):
         if not is_valid_china_identity_number(normalized):
             raise ValueError("身份证号码校验未通过")
         return normalized
+
+
+class SenderCameraPermissionRequest(BaseModel):
+    permission_mode: Literal["once", "while_using"]

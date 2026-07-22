@@ -460,6 +460,7 @@ def test_admin_console_static_files_available(client):
     assert "需要完成企业微信身份校验" in js_response.text
     assert "sender-identity-form" in js_response.text
     assert "sender-start-face-btn" in js_response.text
+    assert "sender-camera-once-btn" in js_response.text
     assert "sender-qr-crop" in js_response.text
     assert "手机号或验证码" not in js_response.text
     assert "data-device-key=\"home\"" not in js_response.text
@@ -470,6 +471,7 @@ def test_admin_console_static_files_available(client):
     assert "position: sticky" in css_response.text
     assert "height: 100vh" in css_response.text
     assert "overflow-y: auto" in css_response.text
+    assert "@media (max-width: 820px)" in css_response.text
 
 
 def test_health_detail_does_not_expose_sensitive_values(client, monkeypatch):

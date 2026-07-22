@@ -171,6 +171,44 @@ def test_sender_login_status_reports_qr_identity_face_check_and_logged_in(monkey
     assert control.sender_login_status()["stage"] == "logged_in"
 
 
+def test_sender_login_status_reports_camera_permission(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda value: f"/usr/bin/{value}")
+    control = AndroidDeviceControl(serial="127.0.0.1:5555")
+    monkeypatch.setattr(
+        control,
+        "_run_text",
+        lambda args: (
+            "mFocusedApp=ActivityRecord{1 u0 com.android.permissioncontroller/"
+            ".permission.ui.GrantPermissionsActivity t12}"
+        ),
+    )
+
+    assert control.sender_login_status()["stage"] == "camera_permission"
+
+
+@pytest.mark.parametrize(
+    ("permission_mode", "expected_y"),
+    [("once", 1068), ("while_using", 918)],
+)
+def test_sender_camera_permission_uses_selected_mode(
+    monkeypatch,
+    permission_mode,
+    expected_y,
+):
+    control = AndroidDeviceControl(serial="127.0.0.1:5555")
+    taps = []
+    monkeypatch.setattr(
+        control,
+        "sender_login_status",
+        lambda: {"stage": "camera_permission", "online": True},
+    )
+    monkeypatch.setattr(control, "tap", lambda x, y: taps.append((x, y)))
+
+    control.grant_sender_camera_permission(permission_mode)
+
+    assert taps == [(540, expected_y)]
+
+
 def test_sender_face_verification_accepts_agreement(monkeypatch):
     control = AndroidDeviceControl(serial="127.0.0.1:5555")
     taps = []

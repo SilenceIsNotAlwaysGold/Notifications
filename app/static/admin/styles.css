@@ -20,7 +20,7 @@
 
 body {
   margin: 0;
-  min-width: 1080px;
+  min-width: 0;
   background: var(--bg);
   color: var(--text);
   font-family:
@@ -849,4 +849,92 @@ tr:hover td {
   color: #344054;
   font-size: 12px;
   line-height: 1.6;
+}
+
+@media (max-width: 820px) {
+  .app-shell {
+    display: block;
+  }
+
+  .sidebar {
+    z-index: 10;
+    width: 100%;
+    height: auto;
+    padding: 10px 12px;
+    overflow: hidden;
+  }
+
+  .brand {
+    display: none;
+  }
+
+  .nav {
+    display: flex;
+    gap: 4px;
+    margin: 0;
+    overflow-x: auto;
+    scrollbar-width: thin;
+  }
+
+  .nav-item {
+    width: auto;
+    flex: 0 0 auto;
+    padding: 9px 11px;
+  }
+
+  .main {
+    padding: 16px 14px 28px;
+  }
+
+  .topbar {
+    display: grid;
+    gap: 14px;
+  }
+
+  .key-panel {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    width: 100%;
+  }
+
+  .key-panel input {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .sender-account-login {
+    width: 100%;
+  }
+
+  .sender-login-empty,
+  .sender-login-complete,
+  .sender-login-verification {
+    min-height: 320px;
+    padding: 42px 20px;
+  }
+
+  .sender-native-login {
+    max-width: none;
+    min-height: 320px;
+    padding: 42px 20px;
+  }
+
+  .sender-qr-section {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 28px;
+    padding: 32px 20px;
+  }
+
+  .sender-qr-frame {
+    width: min(100%, 340px);
+    height: auto;
+    aspect-ratio: 1;
+    justify-self: center;
+  }
+
+  .sender-qr-crop {
+    width: min(88%, 300px);
+    height: auto;
+    aspect-ratio: 1;
+  }
 }

@@ -359,6 +359,17 @@ function senderLoginContent(stage) {
       </div>
     `;
   }
+  if (stage === "camera_permission") {
+    return `
+      <div class="sender-login-verification">
+        <div class="sender-verification-mark">!</div>
+        <h3>需要使用相机</h3>
+        <p>企业微信需要相机权限完成人脸识别。授权仅作用于服务器上的发送账号设备。</p>
+        <button id="sender-camera-once-btn" type="button">仅本次允许</button>
+        <button id="sender-camera-while-btn" type="button" class="ghost">使用企业微信时允许</button>
+      </div>
+    `;
+  }
   return `
     <div class="sender-login-empty">
       <div class="sender-account-mark">企</div>
@@ -502,6 +513,24 @@ function bindSenderLogin(stage) {
       }
     });
   }
+  const grantCameraPermission = async (permissionMode, button) => {
+    button.disabled = true;
+    try {
+      await sendDeviceAction("login/camera-permission", { permission_mode: permissionMode });
+      await reloadSenderLogin();
+    } catch (error) {
+      showAlert(error.message, "error");
+      button.disabled = false;
+    }
+  };
+  const cameraOnceButton = $("#sender-camera-once-btn");
+  if (cameraOnceButton) {
+    cameraOnceButton.addEventListener("click", () => grantCameraPermission("once", cameraOnceButton));
+  }
+  const cameraWhileButton = $("#sender-camera-while-btn");
+  if (cameraWhileButton) {
+    cameraWhileButton.addEventListener("click", () => grantCameraPermission("while_using", cameraWhileButton));
+  }
   const statusButton = $("#sender-refresh-status-btn");
   if (statusButton) statusButton.addEventListener("click", reloadSenderLogin);
   const backButton = $("#sender-login-back-btn");
@@ -536,6 +565,7 @@ async function renderAndroidDevice() {
     qr_code: "等待扫码确认",
     identity_verification: "需要身份校验",
     face_verification: "等待人脸验证",
+    camera_permission: "需要相机权限",
     login_pending: "登录处理中",
     logged_in: "已登录",
   };

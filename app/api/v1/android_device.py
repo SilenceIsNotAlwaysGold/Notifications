@@ -12,6 +12,7 @@ from app.schemas.android_device import (
     AndroidSwipeRequest,
     AndroidTapRequest,
     AndroidTextRequest,
+    SenderCameraPermissionRequest,
     SenderIdentityVerificationRequest,
     SenderPhoneLoginRequest,
     SenderVerificationCodeRequest,
@@ -127,6 +128,16 @@ def refresh_sender_qr_code():
 def start_sender_face_verification():
     _run_action(lambda: _control().start_sender_face_verification())
     return ok("已进入企业微信人脸识别流程")
+
+
+@router.post("/login/camera-permission", dependencies=[Depends(_admin_operator)])
+def grant_sender_camera_permission(payload: SenderCameraPermissionRequest):
+    _run_action(
+        lambda: _control().grant_sender_camera_permission(
+            payload.permission_mode
+        )
+    )
+    return ok("企业微信相机权限已授权")
 
 
 @router.post("/tap", dependencies=[Depends(_admin_operator)])

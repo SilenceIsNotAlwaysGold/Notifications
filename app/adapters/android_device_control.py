@@ -121,7 +121,14 @@ class AndroidDeviceControl:
     def sender_login_status(self) -> dict[str, Any]:
         self._ensure_available()
         component = self._foreground_component()
-        if component is None or component[0] != self._wecom_package:
+        if component is None:
+            stage = "not_open"
+        elif (
+            component[0] == "com.android.permissioncontroller"
+            and "grantpermissionsactivity" in component[1].lower()
+        ):
+            stage = "camera_permission"
+        elif component[0] != self._wecom_package:
             stage = "not_open"
         else:
             activity = component[1].lower()
@@ -209,6 +216,17 @@ class AndroidDeviceControl:
         self.tap(72, 984)
         time.sleep(0.4)
         self.tap(540, 1175)
+
+    def grant_sender_camera_permission(self, permission_mode: str) -> None:
+        self._require_login_stage("camera_permission")
+        y_coordinates = {
+            "while_using": 918,
+            "once": 1068,
+        }
+        y_coordinate = y_coordinates.get(permission_mode)
+        if y_coordinate is None:
+            raise ValueError("不支持的相机权限模式")
+        self.tap(540, y_coordinate)
 
     def _ensure_available(self) -> None:
         if shutil.which(self.adb_binary) is None:
