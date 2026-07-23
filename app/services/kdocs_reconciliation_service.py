@@ -100,7 +100,14 @@ class KDocsReconciliationService:
 
     @staticmethod
     def _normalize(value: object) -> str:
+        if isinstance(value, bool):
+            return "true" if value else "false"
         text = str(value if value is not None else "").strip()
+        boolean = text.casefold()
+        if boolean in {"true", "yes", "是"}:
+            return "true"
+        if boolean in {"false", "no", "否"}:
+            return "false"
         try:
             number = float(text.replace(",", ""))
             return f"{number:.8f}".rstrip("0").rstrip(".")
