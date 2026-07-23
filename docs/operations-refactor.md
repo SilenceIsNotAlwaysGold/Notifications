@@ -10,4 +10,6 @@ AI 结构化会发送 OCR 原文及相关窗口内的群聊上下文。业务已
 
 维护窗口顺序：停止入口写入，执行完整备份，对生产数据库副本运行 `scripts/migration_preflight.py` 和 Alembic 升级，确认后停止服务、正式升级、记录 Git commit 和 migration revision，再启动并检查健康接口。历史重放必须分批执行，每批完成金山读回对账后才能继续。
 
+源码发布使用删除式同步时，必须保留 `.env`、`.venv`、`data/`、`storage/`、`backups/`、`wecom_archive_seq.txt` 和 `wecom_archive_sidecar/sdk/`。SDK 动态库不进入 Git；缺失时只能执行 `scripts/install_wecom_sdk.sh wecom_archive_sidecar/sdk`，并依赖脚本内固定的 SHA-256 与 MD5 校验恢复。
+
 法律资料默认永久保留，`LEGAL_DATA_RETENTION_ENABLED=false`。只有管理员明确设置为 `true` 后，每日任务才会按 `LEGAL_DATA_RETENTION_DAYS` 和 `LEGAL_DATA_RETENTION_REVIEW_STATUSES` 删除本地文件字节；数据库记录、哈希和审计不会删除。启用前必须确认备份、合规期限和允许清理的复核状态。
