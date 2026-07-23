@@ -4,6 +4,7 @@ from sqlalchemy import select
 
 from app.models.merchant_question import MerchantQuestion
 from app.models.reminder import Reminder
+from app.core.config import get_settings
 from app.services.merchant_question_service import MerchantQuestionService
 from app.utils.datetime_utils import app_timezone
 
@@ -56,8 +57,8 @@ def test_external_question_times_out_once_and_internal_reply_closes_it(client, d
     first = service.scan_timeouts(asked_at + timedelta(minutes=6))
     second = service.scan_timeouts(asked_at + timedelta(minutes=7))
     db_session.commit()
-    assert first == {"checked": 1, "created_reminders": 1}
-    assert second == {"checked": 0, "created_reminders": 0}
+    assert first == {"checked": 1, "created_reminders": 1, "created_escalations": 0}
+    assert second == {"checked": 0, "created_reminders": 0, "created_escalations": 0}
     reminders = list(db_session.scalars(select(Reminder).where(Reminder.reminder_type == "merchant_question_timeout")).all())
     assert len(reminders) == 1
     assert reminders[0].target_userid == "manager_001"
@@ -98,6 +99,30 @@ def test_question_timeout_feature_can_be_disabled(client, db_session):
     )
 
     assert db_session.scalar(select(MerchantQuestion)) is None
+
+
+def test_question_deadline_uses_business_hours_and_escalates(client, db_session, monkeypatch):
+    monkeypatch.setenv("MERCHANT_WORKDAY_START", "09:00")
+    monkeypatch.setenv("MERCHANT_WORKDAY_END", "18:00")
+    monkeypatch.setenv("MERCHANT_WORKDAYS", "0,1,2,3,4")
+    monkeypatch.setenv("MERCHANT_QUESTION_ESCALATION_MINUTES", "30")
+    get_settings.cache_clear()
+    _create_group(client, alerts=["owner_001", "supervisor_001"])
+    friday_evening = datetime(2026, 7, 24, 19, 0, tzinfo=app_timezone())
+    _text(client, "merchant_group", "merchant_001", "周末前的问题", friday_evening)
+    question = db_session.scalar(select(MerchantQuestion))
+
+    assert question.deadline_at == datetime(2026, 7, 27, 9, 5, tzinfo=app_timezone())
+    service = MerchantQuestionService(db_session)
+    timeout = service.scan_timeouts(datetime(2026, 7, 27, 9, 6, tzinfo=app_timezone()))
+    escalation = service.scan_timeouts(datetime(2026, 7, 27, 9, 36, tzinfo=app_timezone()))
+    reminders = list(db_session.scalars(select(Reminder).order_by(Reminder.id)).all())
+
+    assert timeout["created_reminders"] == 1
+    assert escalation["created_escalations"] == 1
+    assert reminders[-1].reminder_type == "merchant_question_escalation"
+    assert reminders[-1].target_userid == "supervisor_001"
+    get_settings.cache_clear()
 
 
 def test_question_can_be_manually_closed(client, db_session):

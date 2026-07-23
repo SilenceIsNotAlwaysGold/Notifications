@@ -13,3 +13,5 @@ AI 结构化会发送 OCR 原文及相关窗口内的群聊上下文。业务已
 源码发布使用删除式同步时，必须保留 `.env`、`.venv`、`data/`、`storage/`、`backups/`、`wecom_archive_seq.txt` 和 `wecom_archive_sidecar/sdk/`。SDK 动态库不进入 Git；缺失时只能执行 `scripts/install_wecom_sdk.sh wecom_archive_sidecar/sdk`，并依赖脚本内固定的 SHA-256 与 MD5 校验恢复。
 
 法律资料默认永久保留，`LEGAL_DATA_RETENTION_ENABLED=false`。只有管理员明确设置为 `true` 后，每日任务才会按 `LEGAL_DATA_RETENTION_DAYS` 和 `LEGAL_DATA_RETENTION_REVIEW_STATUSES` 删除本地文件字节；数据库记录、哈希和审计不会删除。启用前必须确认备份、合规期限和允许清理的复核状态。
+
+商家问题超时只在 `MERCHANT_WORKDAYS` 与 `MERCHANT_WORKDAY_START/END` 定义的工作时间内计时。群的第一个告警人员是负责人；超过 `MERCHANT_QUESTION_ESCALATION_MINUTES` 仍未回复时，升级给第二个告警人员（未配置第二人时仍通知负责人）。

@@ -100,6 +100,10 @@ class Settings(BaseSettings):
     kdocs_paid_amount_column: str = Field(default="已还金额", alias="KDOCS_PAID_AMOUNT_COLUMN")
     repayment_reminder_days_before: int = Field(default=3, ge=0, alias="REPAYMENT_REMINDER_DAYS_BEFORE")
     default_upgrade_days_after_overdue: int = Field(default=3, ge=1, alias="DEFAULT_UPGRADE_DAYS_AFTER_OVERDUE")
+    merchant_workday_start: str = Field(default="09:00", pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$", alias="MERCHANT_WORKDAY_START")
+    merchant_workday_end: str = Field(default="18:00", pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$", alias="MERCHANT_WORKDAY_END")
+    merchant_workdays: str = Field(default="0,1,2,3,4", alias="MERCHANT_WORKDAYS")
+    merchant_question_escalation_minutes: int = Field(default=30, ge=1, le=10080, alias="MERCHANT_QUESTION_ESCALATION_MINUTES")
     case_status_scan_enabled: bool = Field(default=True, alias="CASE_STATUS_SCAN_ENABLED")
     case_status_scan_hour: int = Field(default=1, ge=0, le=23, alias="CASE_STATUS_SCAN_HOUR")
     case_status_scan_minute: int = Field(default=0, ge=0, le=59, alias="CASE_STATUS_SCAN_MINUTE")
@@ -158,6 +162,18 @@ class Settings(BaseSettings):
             for status in (item.strip() for item in self.legal_data_retention_review_statuses.split(","))
             if status in allowed
         ]
+
+    @property
+    def merchant_workday_list(self) -> list[int]:
+        values: list[int] = []
+        for item in self.merchant_workdays.split(","):
+            try:
+                value = int(item.strip())
+            except ValueError:
+                continue
+            if 0 <= value <= 6 and value not in values:
+                values.append(value)
+        return values or [0, 1, 2, 3, 4]
 
 
 @lru_cache
