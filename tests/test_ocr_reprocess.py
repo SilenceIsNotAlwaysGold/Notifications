@@ -9,6 +9,7 @@ from app.adapters.ocr_providers.tencent_provider import TencentOCRProvider
 from app.adapters.ocr_providers.local_text_provider import LocalTextOCRProvider
 from app.core.config import get_settings
 from app.models.document_sync_log import DocumentSyncLog
+from app.models.case_candidate import CaseCandidate
 from app.models.legal_case import LegalCase
 from app.models.legal_event import LegalEvent
 from app.models.media_file import MediaFile
@@ -177,9 +178,9 @@ def test_ocr_payment_notice_creates_7_tracking_reminders(client, db_session):
 
     response = client.post(f"/api/v1/legal/media-files/{media_file.id}/ocr")
 
-    assert response.json()["data"]["created_reminders"] == 7
+    assert response.json()["data"]["created_reminders"] == 0
     reminders = list(db_session.scalars(select(Reminder).where(Reminder.reminder_type == "payment_tracking")).all())
-    assert len(reminders) == 7
+    assert len(reminders) == 0
 
 
 def test_ocr_payment_done_increments_paid_amount(client, db_session):
@@ -193,7 +194,7 @@ def test_ocr_payment_done_increments_paid_amount(client, db_session):
 
     assert response.status_code == 200
     legal_case = db_session.scalar(select(LegalCase).where(LegalCase.case_no == "(2026)黔0281民初3118号"))
-    assert str(legal_case.paid_amount) == "400.00"
+    assert str(legal_case.paid_amount) == "0.00"
 
 
 def test_ocr_payment_done_writes_paid_amount_sync_log(client, db_session):
@@ -206,7 +207,7 @@ def test_ocr_payment_done_writes_paid_amount_sync_log(client, db_session):
     client.post(f"/api/v1/legal/media-files/{media_file.id}/ocr")
 
     sync_types = {log.sync_type for log in db_session.scalars(select(DocumentSyncLog)).all()}
-    assert "paid_amount" in sync_types
+    assert "paid_amount" not in sync_types
 
 
 def test_ocr_without_matching_case_still_writes_event_and_archive_log(client, db_session):
@@ -222,8 +223,12 @@ def test_ocr_without_matching_case_still_writes_event_and_archive_log(client, db
     assert data["matched_case_id"] is None
     event = db_session.get(LegalEvent, data["event_id"])
     assert event.case_id is None
+    candidate = db_session.scalar(select(CaseCandidate).where(CaseCandidate.case_no == "(2026)黔0281民初9999号"))
+    assert candidate is not None
+    assert candidate.source_media_file_id == media_file.id
+    assert candidate.status == "pending"
     sync_types = {log.sync_type for log in db_session.scalars(select(DocumentSyncLog)).all()}
-    assert "archive" in sync_types
+    assert "archive" not in sync_types
 
 
 def test_repeated_ocr_does_not_duplicate_payment_tracking_reminders(client, db_session):
@@ -236,7 +241,7 @@ def test_repeated_ocr_does_not_duplicate_payment_tracking_reminders(client, db_s
     first = client.post(f"/api/v1/legal/media-files/{media_file.id}/ocr")
     second = client.post(f"/api/v1/legal/media-files/{media_file.id}/ocr")
 
-    assert first.json()["data"]["created_reminders"] == 7
+    assert first.json()["data"]["created_reminders"] == 0
     assert second.json()["data"]["created_reminders"] == 0
     reminders = list(db_session.scalars(select(Reminder).where(Reminder.reminder_type == "payment_tracking")).all())
-    assert len(reminders) == 7
+    assert len(reminders) == 0

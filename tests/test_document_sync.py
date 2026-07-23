@@ -84,11 +84,7 @@ def test_legal_event_creation_writes_archive_sync_log(client, db_session):
     )
 
     archive_log = db_session.scalar(select(DocumentSyncLog).where(DocumentSyncLog.sync_type == "archive"))
-    assert archive_log is not None
-    assert archive_log.sync_target == "kdocs"
-    payload = json.loads(archive_log.request_payload_json)
-    assert payload["operation"] == "append_archive_row"
-    assert payload["payload"]["row"]["event_type"] == "payment_notice"
+    assert archive_log is None
 
 
 def test_payment_screenshot_ocr_writes_paid_amount_sync_log(client, db_session):
@@ -123,9 +119,9 @@ def test_payment_screenshot_ocr_writes_paid_amount_sync_log(client, db_session):
     client.post(f"/api/v1/legal/media-files/{media_file.id}/ocr")
 
     legal_case = db_session.scalar(select(LegalCase).where(LegalCase.case_no == "(2026)黔0281民初3118号"))
-    assert str(legal_case.paid_amount) == "400.00"
+    assert str(legal_case.paid_amount) == "0.00"
     sync_types = {log.sync_type for log in db_session.scalars(select(DocumentSyncLog)).all()}
-    assert "paid_amount" in sync_types
+    assert "paid_amount" not in sync_types
 
 
 def test_status_update_writes_status_sync_log(client, db_session):
@@ -156,7 +152,7 @@ def test_document_sync_logs_query_api(client):
     response = client.get("/api/v1/legal/document-sync-logs", params={"sync_type": "archive"})
 
     assert response.status_code == 200
-    assert response.json()["data"]["total"] >= 1
+    assert response.json()["data"]["total"] == 0
 
 
 def test_failed_sync_log_can_retry(client, db_session):
@@ -184,7 +180,7 @@ def test_failed_sync_log_can_retry(client, db_session):
 
     assert response.status_code == 200
     data = response.json()["data"]
-    assert data["status"] == "success"
+    assert data["status"] == "applied"
     assert data["retry_count"] == 1
 
 
@@ -232,7 +228,7 @@ def test_kdocs_failed_log_retry_uses_real_gateway_without_leaking_token(client, 
 
     assert response.status_code == 200
     data = response.json()["data"]
-    assert data["status"] == "success"
+    assert data["status"] == "applied"
     assert data["retry_count"] == 1
     assert captured["url"] == "https://kdocs-gateway.test/kdocs/append_court_time_row"
     assert captured["headers"] == {"Authorization": "Bearer secret-token"}
@@ -265,7 +261,7 @@ def test_manual_case_snapshot_sync_api(client):
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["sync_type"] == "case_snapshot"
-    assert data["status"] == "success"
+    assert data["status"] == "applied"
 
 
 class CountingKDocsAdapter:
@@ -299,7 +295,7 @@ def test_duplicate_sync_returns_reserved_log_without_second_gateway_call(db_sess
     second = service.sync_court_time(event, row)
 
     assert first.id == second.id
-    assert first.status == "success"
+    assert first.status == "applied"
     assert adapter.calls == 1
     assert len(list(db_session.scalars(select(DocumentSyncLog)).all())) == 1
 
@@ -318,7 +314,7 @@ def test_failed_sync_requires_retry_and_reuses_original_log(db_session):
     retried = service.retry_failed_sync(failed.id)
 
     assert duplicate.id == failed.id == retried.id
-    assert retried.status == "success"
+    assert retried.status == "applied"
     assert retried.retry_count == 1
     assert adapter.calls == 2
     assert len(list(db_session.scalars(select(DocumentSyncLog)).all())) == 1

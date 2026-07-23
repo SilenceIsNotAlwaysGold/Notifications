@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Date, Numeric, String
+from sqlalchemy import Date, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
@@ -17,6 +17,15 @@ class LegalCase(Base):
     debtor_name: Mapped[str] = mapped_column(String(128), index=True)
     tenant_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     group_id: Mapped[str] = mapped_column(String(128), index=True)
+    plaintiff_name: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    court_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    document_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    filing_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    enforcement_case_no: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    responsible_contact_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
+    lifecycle_stage: Mapped[str] = mapped_column(String(32), default="active", index=True)
+    source: Mapped[str] = mapped_column(String(32), default="manual")
+    extra_identifiers_json: Mapped[str] = mapped_column(Text, default="[]")
     debtor_wecom_userid: Mapped[str | None] = mapped_column(String(128), nullable=True)
     lawyer_wecom_userid: Mapped[str | None] = mapped_column(String(128), nullable=True)
     due_date: Mapped[date] = mapped_column(Date)

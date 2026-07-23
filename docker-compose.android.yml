@@ -1,8 +1,0 @@
-services:
-  wecom-sender:
-    ports:
-      - "127.0.0.1:${WECOM_SENDER_PORT:-8092}:8092"
-
-  wecom-android:
-    ports:
-      - "127.0.0.1:${WECOM_ANDROID_ADB_PORT:-5555}:5555"

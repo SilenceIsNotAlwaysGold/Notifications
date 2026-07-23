@@ -1,4 +1,6 @@
 import json
+import hashlib
+import time
 from typing import Any
 from urllib.parse import urljoin
 
@@ -15,7 +17,12 @@ class LegalLLMAdapter:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
 
-    def extract(self, text: str, regex_hints: dict[str, Any]) -> dict[str, Any]:
+    def extract(
+        self,
+        text: str,
+        regex_hints: dict[str, Any],
+        context_messages: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         if not self.settings.legal_llm_base_url:
             raise LegalLLMError("未配置 LEGAL_LLM_BASE_URL")
         if not self.settings.legal_llm_model:
@@ -39,7 +46,10 @@ class LegalLLMAdapter:
                         "event_type 只能是 judgment、court_notice、payment_notice、"
                         "payment_screenshot、keyword、unknown；document_type 只能是判决书、"
                         "调解书、裁定书、开庭传票或 null。court_time 使用带时区的 ISO 8601；"
-                        "amount 使用阿拉伯数字；confidence 是 0 到 1。不得猜测原文中没有的信息。"
+                        "amount 使用阿拉伯数字；confidence 是 0 到 1。OCR 文本是判断材料内容的主要依据；"
+                        "群聊上下文包含相邻消息、附件 OCR 摘要、群资料和已绑定案件，可用于补充案号、当事人和材料用途，"
+                        "但不得把明显属于其他案件的信息套用到当前材料。群内存在多个案件时，必须依据明确案号或紧邻对话建立关联。"
+                        "信息冲突或无法确认关联时必须 requires_review=true，并在 review_reasons 中说明。"
                     ),
                 },
                 {
@@ -58,9 +68,11 @@ class LegalLLMAdapter:
                                 "confidence": "number",
                                 "requires_review": "boolean",
                                 "review_reasons": "string[]",
+                                "field_sources": "object",
                             },
                             "regex_hints": self._json_safe_hints(regex_hints),
                             "ocr_text": prompt_text,
+                            "group_context": context_messages or [],
                         },
                         ensure_ascii=False,
                     ),
@@ -68,6 +80,7 @@ class LegalLLMAdapter:
             ],
         }
 
+        started_at = time.monotonic()
         try:
             response = httpx.post(
                 endpoint,
@@ -82,10 +95,18 @@ class LegalLLMAdapter:
             raise LegalLLMError(f"LLM 抽取请求失败：{type(exc).__name__}") from exc
 
         parsed = self._decode_json_object(content)
+        usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
         parsed["_response_metadata"] = {
             "model": data.get("model") or self.settings.legal_llm_model,
             "finish_reason": data.get("choices", [{}])[0].get("finish_reason"),
             "truncated": len(text) > self.settings.legal_llm_max_text_length,
+            "context_message_count": len(context_messages or []),
+            "request_hash": hashlib.sha256(
+                json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            ).hexdigest(),
+            "duration_ms": int((time.monotonic() - started_at) * 1000),
+            "input_tokens": usage.get("prompt_tokens"),
+            "output_tokens": usage.get("completion_tokens"),
         }
         return parsed
 

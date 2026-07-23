@@ -14,6 +14,7 @@ from app.models.legal_case import LegalCase
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_TABLES = {
+    "case_candidates",
     "legal_cases",
     "group_messages",
     "legal_events",
@@ -28,6 +29,8 @@ EXPECTED_TABLES = {
     "tenants",
     "tenant_settings",
     "wecom_archive_groups",
+    "wecomapi_room_cache",
+    "wecomapi_room_member_cache",
     "reminder_rules",
     "merchant_questions",
     "system_alerts",

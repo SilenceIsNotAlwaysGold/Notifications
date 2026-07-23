@@ -1,9 +1,0 @@
-<resources>
-    <string name="app_name">致和法务发送端</string>
-    <string name="accessibility_service_name">致和法务企业微信发送</string>
-    <string name="accessibility_service_description">仅在收到本机网关指令后，向白名单企业微信群发送文本。</string>
-    <string name="gateway_channel_name">发送网关连接</string>
-    <string name="gateway_connecting">正在连接本机发送网关</string>
-    <string name="gateway_connected">发送网关已连接</string>
-    <string name="gateway_disconnected">发送网关等待重连</string>
-</resources>

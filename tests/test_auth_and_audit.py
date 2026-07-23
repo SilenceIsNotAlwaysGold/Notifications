@@ -171,37 +171,3 @@ def test_audit_request_summary_masks_sensitive_json_values(client, db_session, m
     summary = json.loads(audit_log.request_summary_json)
     assert summary["json"]["secret"] == "***"
     assert summary["json"]["private_key"] == "***"
-
-
-def test_audit_request_summary_masks_protocol_verification_value(
-    client, db_session, monkeypatch
-):
-    _enable_auth(monkeypatch)
-    monkeypatch.setenv("WECOM_ACCOUNT_LOGIN_MODE", "protocol")
-    monkeypatch.setenv(
-        "WECOM_PROTOCOL_ACCOUNT_BASE_URL", "https://gateway.example.test"
-    )
-    monkeypatch.setenv("WECOM_PROTOCOL_ACCOUNT_TOKEN", "test-token")
-    monkeypatch.setenv("WECOM_PROTOCOL_ACCOUNT_GUID", "sender-guid")
-    get_settings.cache_clear()
-
-    monkeypatch.setattr(
-        "app.adapters.wecom_protocol_account.WeComProtocolAccount.verify_login",
-        lambda self, value: {"stage": "login_pending", "online": False},
-    )
-    response = client.post(
-        "/api/v1/legal/sender-account/login/verify",
-        headers={"X-API-Key": ADMIN_KEY},
-        json={"verification_value": "520102199001011234"},
-    )
-
-    assert response.status_code == 200
-    audit_log = db_session.scalar(
-        select(OperationAuditLog).where(
-            OperationAuditLog.path == "/api/v1/legal/sender-account/login/verify"
-        )
-    )
-    summary = json.loads(audit_log.request_summary_json)
-    assert summary["json"]["verification_value"] == "***"
-    assert "520102199001011234" not in audit_log.request_summary_json
-    get_settings.cache_clear()

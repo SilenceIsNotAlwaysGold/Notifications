@@ -4,7 +4,7 @@ from typing import Any
 from fastapi import APIRouter
 from sqlalchemy import text
 
-from app.adapters.wecom_sender_status import WeComSenderStatusClient
+from app.adapters.wecomapi import WeComApiAdapter
 from app.core.config import get_settings
 from app.core.config_validator import validate_runtime_config
 from app.core.scheduler import scheduler
@@ -95,13 +95,26 @@ def _sender_status() -> dict[str, Any]:
         return {
             "status": "disabled",
             "mode": settings.wecom_send_mode,
-            "message": "Android 发送端未启用",
+            "message": "wecomapi 发送通道未启用",
         }
-    result = WeComSenderStatusClient(
+    result = WeComApiAdapter(
         base_url=settings.wecomapi_base_url,
+        api_path=settings.wecomapi_api_path,
+        token=settings.wecomapi_token,
+        token_header=settings.wecomapi_token_header,
+        guid=settings.wecomapi_guid,
         timeout_seconds=settings.wecom_timeout_seconds,
-    ).check()
-    return {"mode": "wecomapi", **result}
+        min_interval_seconds=settings.wecomapi_min_interval_seconds,
+        daily_limit=settings.wecomapi_daily_limit,
+        failure_threshold=settings.wecomapi_failure_threshold,
+        cooldown_seconds=settings.wecomapi_cooldown_seconds,
+    ).list_rooms(max_pages=1)
+    return {
+        "mode": "wecomapi",
+        "status": "ok" if result.get("success") else "error",
+        "message": "wecomapi 发送通道正常" if result.get("success") else result.get("error"),
+        "room_count": len(result.get("rooms") or []),
+    }
 
 
 @router.get("/detail")

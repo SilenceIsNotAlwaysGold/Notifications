@@ -12,6 +12,8 @@ from app.models.legal_case import LegalCase
 from app.models.legal_event import LegalEvent
 from app.schemas.legal import MockMessageCreate
 from app.services.case_service import CaseService
+from app.services.case_candidate_service import CaseCandidateService
+from app.services.attribution_service import AttributionService
 from app.services.document_sync_service import DocumentSyncService
 from app.services.media_file_service import MediaFileService
 from app.services.merchant_question_service import MerchantQuestionService
@@ -45,6 +47,15 @@ class MessageService:
             group_message.group_id,
             group_message.tenant_id,
         )
+        if not legal_case and extracted.get("case_no"):
+            CaseCandidateService(self.db).detect(
+                case_no=extracted.get("case_no"),
+                group_id=group_message.group_id,
+                tenant_id=group_message.tenant_id,
+                source_type="text_message",
+                source_message_id=group_message.id,
+                extracted=extracted,
+            )
         tenant_id = legal_case.tenant_id if legal_case else group_message.tenant_id
         if tenant_id and group_message.tenant_id != tenant_id:
             group_message.tenant_id = tenant_id
@@ -67,36 +78,22 @@ class MessageService:
             )
             event_ids.append(event.id)
             events_by_type[event_type] = event
-            if WeComArchiveGroupService(self.db).feature_enabled(group_message.group_id, "document_sync"):
-                self.document_sync.sync_archive_event(event)
+            if legal_case:
+                event.attribution_status = "confirmed"
+                event.business_status = "staged"
+            else:
+                event.attribution_status = "pending"
+                event.business_status = "staged"
+                AttributionService(self.db).ensure_event(event, group_id=group_message.group_id, reason="文本消息无法唯一确定案件")
 
         reminder_ids: list[int] = []
-        if legal_case and "payment_screenshot" in event_types and extracted.get("amount") is not None:
-            self.case_service.update_paid_amount(legal_case, extracted["amount"])
-            self.reminder_service.cancel_pending_payment_tracking(
-                legal_case.id,
-                f"付款完成消息已确认（消息 {group_message.id}）",
-            )
-
-        if legal_case and "keyword" in event_types:
-            text = extracted.get("extracted_text") or ""
-            if "强制执行" in text or "仲裁" in text:
-                self.case_service.mark_defaulted(legal_case)
-            elif "逾期" in text:
-                self.case_service.mark_overdue(legal_case)
-
-        if legal_case and "payment_notice" in event_types and self._payment_tracking_enabled(legal_case.tenant_id, legal_case.group_id):
-            payment_event = events_by_type.get("payment_notice")
-            reminders = self.reminder_service.create_payment_tracking(
-                legal_case.id,
-                start_date=today_tz(),
-                days=7,
-                source_event_id=payment_event.id if payment_event else None,
-                payment_amount=extracted.get("amount"),
-            )
-            reminder_ids.extend([reminder.id for reminder in reminders])
 
         self._handle_media_payload(group_message, payload, legal_case.id if legal_case else None)
+        if payload.msg_type == "text" and extracted.get("case_no"):
+            try:
+                self.media_file_service.reanalyze_recent_pending_with_context(group_message, extracted.get("case_no"))
+            except Exception:
+                logger.exception("群聊补充案号触发材料重分析失败 group_message_id=%s", group_message.id)
 
         self.db.flush()
         return {

@@ -132,6 +132,33 @@ class KDocsMcpClient:
             arguments["content_format"] = content_format
         return self.call_tool("upload_file", arguments)
 
+    def search_files(
+        self,
+        *,
+        drive_id: str,
+        keyword: str,
+        page_size: int,
+        page_token: str | None = None,
+    ) -> dict[str, Any]:
+        arguments: dict[str, Any] = {
+            "keyword": keyword,
+            "type": "file_name",
+            "file_type": "file",
+            "drive_ids": [drive_id],
+            "page_size": page_size,
+        }
+        if page_token:
+            arguments["page_token"] = page_token
+        return self.call_tool("search_files", arguments)
+
+    def get_file_link(self, file_id: str) -> str | None:
+        payload = self.call_tool("get_file_link", {"file_id": file_id})
+        for key in ("link_url", "url", "link"):
+            value = self._find_value(payload, key)
+            if isinstance(value, str) and value.startswith("https://"):
+                return value
+        return None
+
     def _ensure_session(self) -> None:
         if self._session_id:
             return

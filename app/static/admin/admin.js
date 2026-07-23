@@ -3,32 +3,93 @@ const state = {
   apiKey: localStorage.getItem("legal_wecom_api_key") || "",
   data: {},
   editingCaseId: null,
+  editingCandidateId: null,
   selectedReviewId: null,
   reviewStatusFilter: "pending",
   reviewPreviewUrl: null,
   editingReminderId: null,
-  deviceRefreshTimer: null,
-  deviceScreenshotUrl: null,
-  deviceScreenshotBusy: false,
-  deviceLoginBusy: false,
-  deviceLoginStage: null,
-  protocolLoginState: null,
+  kdocsTarget: "enforcement",
+  kdocsPage: 1,
+  kdocsQuery: "判决书",
+  kdocsDocumentToken: null,
+  kdocsDocumentTokenStack: [],
+  wecomPlatformGroups: [],
+  selectedCaseId: null,
 };
 
 const titles = {
-  overview: ["总览", "系统状态、调度器和部署健康情况"],
-  cases: ["案件", "创建、查询和同步案件"],
-  messages: ["消息", "模拟企业微信群消息进入识别链路"],
-  "archive-groups": ["归档群", "企业微信会话发现与法务群白名单"],
+  overview: ["工作台", "集中处理待办、失败任务和业务异常"],
+  cases: ["案件", "确认自动识别的案件并管理正式案件"],
+  "case-workspace": ["案件工作台", "集中查看案件事实、资料、付款、提醒和外部同步"],
+  attribution: ["待归属", "批量确认资料和事件所属案件"],
+  messages: ["来源消息", "查看进入自动化链路的企业微信消息"],
+  "archive-groups": ["企业微信群", "管理会话发现、案件识别和发送目标映射"],
   "ocr-reviews": ["人工复核", "核对识别结果并控制业务同步"],
-  reminders: ["提醒", "查看提醒、手动触发到期提醒发送"],
-  "merchant-questions": ["商家提问", "跟踪外部消息回复时效"],
-  "android-device": ["发送账号登录", "登录企业微信发送账号"],
-  "system-alerts": ["系统告警", "归档、识别、同步、机器人、备份和磁盘健康"],
-  events: ["事件", "查看系统抽取出的结构化法务事件"],
-  media: ["媒体", "图片、PDF、文件和 OCR 状态"],
-  sync: ["同步日志", "金山文档同步日志和重试结果"],
+  "recognition-settings": ["识别与 AI", "配置腾讯 OCR 和法律文书结构化模型"],
+  reminders: ["提醒任务", "查看、编辑和执行企业微信提醒"],
+  "merchant-questions": ["商家待回复", "跟踪外部消息回复时效"],
+  "send-platform": ["发送通道", "配置 wecomapi token、guid 和公网回调地址"],
+  "system-alerts": ["系统异常", "处理归档、识别、写入、发送和运行异常"],
+  events: ["识别记录", "查看系统抽取出的结构化法务事件"],
+  media: ["附件记录", "查看图片、PDF、文件和 OCR 状态"],
+  sync: ["写入记录", "查看金山文档写入日志和失败重试结果"],
+  "kdocs-browser": ["文档内容", "查看金山表格和归档文件的真实内容"],
 };
+
+const sections = {
+  workbench: {
+    label: "工作台",
+    defaultView: "overview",
+    views: [{ view: "overview", label: "任务总览" }],
+  },
+  cases: {
+    label: "案件与群",
+    defaultView: "cases",
+    views: [
+      { view: "cases", label: "案件" },
+      { view: "case-workspace", label: "案件工作台" },
+      { view: "archive-groups", label: "企业微信群" },
+    ],
+  },
+  materials: {
+    label: "资料处理",
+    defaultView: "ocr-reviews",
+    views: [
+      { view: "attribution", label: "待归属" },
+      { view: "ocr-reviews", label: "人工复核" },
+      { view: "media", label: "附件记录" },
+      { view: "messages", label: "来源消息" },
+      { view: "events", label: "识别记录" },
+    ],
+  },
+  reminders: {
+    label: "提醒任务",
+    defaultView: "reminders",
+    views: [
+      { view: "reminders", label: "提醒任务" },
+      { view: "merchant-questions", label: "商家待回复" },
+    ],
+  },
+  kdocs: {
+    label: "金山结果",
+    defaultView: "kdocs-browser",
+    views: [
+      { view: "kdocs-browser", label: "文档内容" },
+      { view: "sync", label: "写入记录" },
+    ],
+  },
+  settings: {
+    label: "系统配置",
+    defaultView: "recognition-settings",
+    views: [
+      { view: "recognition-settings", label: "识别与 AI" },
+      { view: "send-platform", label: "发送通道" },
+      { view: "system-alerts", label: "系统异常" },
+    ],
+  },
+};
+
+const viewAliases = {};
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -66,15 +127,34 @@ async function api(path, options = {}) {
 }
 
 function normalizedView(view) {
-  return Object.prototype.hasOwnProperty.call(titles, view) ? view : "overview";
+  const canonicalView = viewAliases[view] || view;
+  return Object.prototype.hasOwnProperty.call(titles, canonicalView) ? canonicalView : "overview";
 }
 
 function viewFromLocation() {
   return normalizedView(window.location.hash.replace(/^#/, "") || state.view);
 }
 
+function sectionForView(view) {
+  return Object.entries(sections).find(([, section]) => section.views.some((item) => item.view === view))?.[0] || "workbench";
+}
+
+function renderSectionTabs(view) {
+  const section = sections[sectionForView(view)];
+  const tabs = $("#section-tabs");
+  tabs.innerHTML = section.views
+    .map(
+      (item) =>
+        `<button class="section-tab ${item.view === view ? "active" : ""}" type="button" data-section-view="${item.view}">${escapeHtml(item.label)}</button>`,
+    )
+    .join("");
+  tabs.classList.toggle("single", section.views.length === 1);
+  tabs.querySelectorAll("[data-section-view]").forEach((button) => {
+    button.addEventListener("click", () => setView(button.dataset.sectionView));
+  });
+}
+
 function setView(view, { syncLocation = true, replaceLocation = false } = {}) {
-  stopDeviceConsole();
   const nextView = normalizedView(view);
   state.view = nextView;
   localStorage.setItem("legal_wecom_view", nextView);
@@ -85,9 +165,11 @@ function setView(view, { syncLocation = true, replaceLocation = false } = {}) {
   const [title, subtitle] = titles[nextView];
   $("#view-title").textContent = title;
   $("#view-subtitle").textContent = subtitle;
+  const activeSection = sectionForView(nextView);
   document.querySelectorAll(".nav-item").forEach((item) => {
-    item.classList.toggle("active", item.dataset.view === nextView);
+    item.classList.toggle("active", item.dataset.section === activeSection);
   });
+  renderSectionTabs(nextView);
   showAlert("");
   loadView();
 }
@@ -117,6 +199,23 @@ function fmt(value) {
   return escapeHtml(value);
 }
 
+function safeExternalUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    return url.protocol === "https:" ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
+function formatFileSize(value) {
+  const size = Number(value);
+  if (!Number.isFinite(size) || size < 0) return "-";
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
 function badge(value) {
   const text = String(value || "-");
   const cls = ["ok", "success", "sent", "paid", "normal", "downloaded", "processed", "resolved"].includes(text)
@@ -134,13 +233,13 @@ function healthStatusClass(status) {
   return "status-warning";
 }
 
-function table(columns, rows) {
+function table(columns, rows, className = "") {
   if (!rows || rows.length === 0) {
     return document.querySelector("#empty-state-template").innerHTML;
   }
   return `
     <div class="table-wrap">
-      <table>
+      <table class="${escapeHtml(className)}">
         <thead><tr>${columns.map((column) => `<th>${column.label}</th>`).join("")}</tr></thead>
         <tbody>
           ${rows
@@ -163,676 +262,476 @@ function table(columns, rows) {
   `;
 }
 
-async function renderOverview() {
-  const [health, detail] = await Promise.all([api("/api/v1/health"), api("/api/v1/health/detail")]);
-  const config = detail.config || {};
-  const jobs = (detail.scheduler && detail.scheduler.jobs) || [];
-  const sender = detail.sender || { status: "disabled", message: "发送端状态未知" };
-  const senderLabels = { ok: "设备在线", disabled: "未启用", degraded: "需配置", error: "不可用" };
-  const senderLabel = senderLabels[sender.status] || sender.status;
-  $("#content").innerHTML = `
-    <div class="grid cols-4">
-      <div class="panel stat"><div class="stat-label">系统状态</div><div class="stat-value ${healthStatusClass(detail.status)}">${escapeHtml(detail.status || health.status)}</div></div>
-      <div class="panel stat"><div class="stat-label">运行环境</div><div class="stat-value">${escapeHtml(health.env)}</div></div>
-      <div class="panel stat"><div class="stat-label">调度器</div><div class="stat-value ${detail.scheduler.running ? "status-ok" : "status-warning"}">${detail.scheduler.running ? "running" : "stopped"}</div></div>
-      <div class="panel stat"><div class="stat-label">Android 发送端</div><div class="stat-value ${healthStatusClass(sender.status)}">${escapeHtml(senderLabel)}</div><div class="stat-note">${escapeHtml(sender.message)}</div></div>
-    </div>
-    <div class="grid cols-2" style="margin-top:14px">
-      ${panel(
-        "配置自检",
-        table(
-          [
-            { label: "项目", key: "name" },
-            { label: "状态", render: (row) => badge(row.status) },
-            { label: "说明", key: "message" },
-          ],
-          config.items || [],
-        ),
-      )}
-      ${panel(
-        "调度任务",
-        table(
-          [
-            { label: "任务", key: "id" },
-            { label: "下次运行", key: "next_run_time" },
-          ],
-          jobs,
-        ),
-      )}
-    </div>
-  `;
-}
-
-function stopDeviceConsole() {
-  if (state.deviceRefreshTimer) {
-    clearInterval(state.deviceRefreshTimer);
-    state.deviceRefreshTimer = null;
-  }
-  if (state.deviceScreenshotUrl) {
-    URL.revokeObjectURL(state.deviceScreenshotUrl);
-    state.deviceScreenshotUrl = null;
-  }
-  state.deviceScreenshotBusy = false;
-  state.deviceLoginStage = null;
-  state.protocolLoginState = null;
-}
-
-async function fetchDeviceScreenshot() {
-  const headers = {};
-  if (state.apiKey) headers["X-API-Key"] = state.apiKey;
-  const response = await fetch(`/api/v1/legal/android-device/screenshot?t=${Date.now()}`, {
-    headers,
-    cache: "no-store",
-  });
-  if (!response.ok) {
-    let message = `截图失败：${response.status}`;
-    try {
-      const body = await response.json();
-      message = body.message || message;
-    } catch {
-      // Keep the status-based error when the response is not JSON.
-    }
-    throw new Error(message);
-  }
-  return response.blob();
-}
-
-async function refreshDeviceScreenshot() {
-  if (state.view !== "android-device" || state.deviceScreenshotBusy || !$("#device-screen")) return;
-  state.deviceScreenshotBusy = true;
-  const status = $("#device-live-status");
-  try {
-    const blob = await fetchDeviceScreenshot();
-    if (state.view !== "android-device") return;
-    const nextUrl = URL.createObjectURL(blob);
-    const screen = $("#device-screen");
-    if (!screen) {
-      URL.revokeObjectURL(nextUrl);
-      return;
-    }
-    const previousUrl = state.deviceScreenshotUrl;
-    state.deviceScreenshotUrl = nextUrl;
-    screen.onload = () => positionDeviceQr(screen);
-    screen.src = nextUrl;
-    if (screen.complete) positionDeviceQr(screen);
-    if (previousUrl) URL.revokeObjectURL(previousUrl);
-    if (status) {
-      status.textContent = "画面已同步";
-      status.className = "device-live-status status-ok";
-    }
-  } catch (error) {
-    if (status) {
-      status.textContent = error.message;
-      status.className = "device-live-status status-error";
-    }
-  } finally {
-    state.deviceScreenshotBusy = false;
-  }
-}
-
-function positionDeviceQr(screen) {
-  const rawBounds = screen.dataset.qrBounds || "";
-  const bounds = rawBounds.split(",").map(Number);
-  if (bounds.length !== 4 || bounds.some((value) => !Number.isFinite(value))) {
-    screen.style.position = "static";
-    screen.style.width = "100%";
-    screen.style.height = "100%";
-    screen.style.left = "auto";
-    screen.style.top = "auto";
-    screen.style.objectFit = "contain";
-    return;
-  }
-  const [left, top, right, bottom] = bounds;
-  const qrWidth = right - left;
-  const qrHeight = bottom - top;
-  if (qrWidth <= 0 || qrHeight <= 0 || screen.naturalWidth <= 0) return;
-
-  const padding = Math.max(12, Math.round(Math.max(qrWidth, qrHeight) * 0.08));
-  const sourceSize = Math.max(qrWidth, qrHeight) + padding * 2;
-  const sourceLeft = (left + right - sourceSize) / 2;
-  const sourceTop = (top + bottom - sourceSize) / 2;
-  const scale = 100 / sourceSize;
-
-  screen.style.position = "absolute";
-  screen.style.width = `${screen.naturalWidth * scale}%`;
-  screen.style.height = "auto";
-  screen.style.left = `${-sourceLeft * scale}%`;
-  screen.style.top = `${-sourceTop * scale}%`;
-  screen.style.objectFit = "fill";
-}
-
-async function sendDeviceAction(path, payload) {
-  await api(`/api/v1/legal/android-device/${path}`, {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-  await new Promise((resolve) => setTimeout(resolve, 250));
-  await refreshDeviceScreenshot();
-}
-
-function senderLoginContent(stage, qrBounds = null) {
-  if (stage === "phone") {
-    return `
-      <div class="sender-native-login">
-        <span class="sender-step-label">账号登录</span>
-        <h3>输入发送账号手机号</h3>
-        <form id="sender-phone-form" class="sender-login-form">
-          <label for="sender-phone-input">手机号</label>
-          <input id="sender-phone-input" name="phone" type="tel" inputmode="numeric" autocomplete="tel" maxlength="11" placeholder="11 位手机号" required />
-          <button type="submit">下一步</button>
-        </form>
-      </div>
-    `;
-  }
-  if (stage === "verification_code") {
-    return `
-      <div class="sender-native-login">
-        <span class="sender-step-label">安全验证</span>
-        <h3>输入企业微信验证码</h3>
-        <form id="sender-code-form" class="sender-login-form">
-          <label for="sender-code-input">手机端显示的数字</label>
-          <input id="sender-code-input" name="verification_code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="4-8 位数字" required />
-          <button type="submit">确认</button>
-        </form>
-      </div>
-    `;
-  }
-  if (stage === "agreement_required") {
-    return `
-      <div class="sender-login-verification">
-        <div class="sender-verification-mark">!</div>
-        <span class="sender-step-label">登录确认</span>
-        <h3>确认企业微信服务协议</h3>
-        <p>企业微信要求再次确认软件许可与隐私政策。点击后将在官方登录页执行“同意”。</p>
-        <button id="sender-agreement-btn" type="button">同意并继续</button>
-      </div>
-    `;
-  }
-  if (stage === "qr_code") {
-    const qrBoundsValue = qrBounds
-      ? [qrBounds.left, qrBounds.top, qrBounds.right, qrBounds.bottom].join(",")
-      : "";
-    return `
-      <div class="sender-qr-section">
-        <div class="sender-qr-copy">
-          <span class="sender-step-label">新设备确认</span>
-          <h3>使用原手机企业微信扫码</h3>
-          <p>在原手机企业微信中打开扫一扫，完成新设备确认。</p>
-          <button id="sender-refresh-qr-btn" type="button">刷新二维码</button>
-          <span id="device-live-status" class="device-live-status status-warning">正在获取二维码</span>
-        </div>
-        <div class="sender-qr-frame" aria-label="企业微信登录二维码">
-          <div class="sender-qr-crop">
-            <img id="device-screen" data-qr-bounds="${escapeHtml(qrBoundsValue)}" alt="企业微信登录二维码" draggable="false" />
-          </div>
-        </div>
-      </div>
-    `;
-  }
-  if (stage === "logged_in") {
-    return `
-      <div class="sender-login-complete">
-        <div class="sender-login-check">✓</div>
-        <h3>发送账号已登录</h3>
-        <p>企业微信发送服务可以开始执行消息任务。</p>
-      </div>
-    `;
-  }
-  if (stage === "identity_verification") {
-    return `
-      <div class="sender-login-verification">
-        <div class="sender-verification-mark">!</div>
-        <h3>需要完成企业微信身份校验</h3>
-        <p>身份证号仅用于填入当前企业微信官方验证页，本系统不保存该内容。</p>
-        <form id="sender-identity-form" class="sender-login-form sender-identity-form">
-          <label for="sender-identity-input">身份证号码</label>
-          <div class="sender-secret-input">
-            <input id="sender-identity-input" name="identity_number" type="password" autocomplete="off" maxlength="18" pattern="(?:\\d{15}|\\d{17}[0-9Xx])" placeholder="15 或 18 位身份证号码" required />
-            <button id="sender-identity-visibility" type="button" aria-pressed="false" title="显示身份证号码">显示</button>
-          </div>
-          <button type="submit">提交并继续</button>
-        </form>
-        <button id="sender-login-back-btn" type="button" class="ghost">返回重新登录</button>
-      </div>
-    `;
-  }
-  if (stage === "face_verification") {
-    return `
-      <div class="sender-login-verification">
-        <div class="sender-verification-mark">!</div>
-        <h3>需要完成人脸验证</h3>
-        <p>同意企业微信官方人脸识别协议后，继续完成本人验证。</p>
-        <button id="sender-start-face-btn" type="button">同意并开始人脸验证</button>
-        <button id="sender-refresh-status-btn" type="button">刷新登录状态</button>
-        <button id="sender-login-back-btn" type="button" class="ghost">返回重新登录</button>
-      </div>
-    `;
-  }
-  if (stage === "camera_permission") {
-    return `
-      <div class="sender-login-verification">
-        <div class="sender-verification-mark">!</div>
-        <h3>需要使用相机</h3>
-        <p>企业微信需要相机权限完成人脸识别。授权仅作用于服务器上的发送账号设备。</p>
-        <button id="sender-camera-once-btn" type="button">仅本次允许</button>
-        <button id="sender-camera-while-btn" type="button" class="ghost">使用企业微信时允许</button>
-      </div>
-    `;
-  }
-  if (stage === "face_capture") {
-    return `
-      <div class="sender-login-verification">
-        <div class="sender-verification-mark">!</div>
-        <h3>人脸识别进行中</h3>
-        <p>企业微信正在通过发送账号设备采集本人活体信息。</p>
-        <button id="sender-refresh-status-btn" type="button">刷新登录状态</button>
-      </div>
-    `;
-  }
-  if (stage === "face_camera_error") {
-    return `
-      <div class="sender-login-verification">
-        <div class="sender-verification-mark">!</div>
-        <h3>服务器没有可用相机</h3>
-        <p>相机权限已授予，但当前云端 Android 未检测到摄像头，无法完成企业微信活体人脸识别。</p>
-        <button id="sender-login-back-btn" type="button">返回身份验证</button>
-      </div>
-    `;
-  }
+function workbenchTaskCard({ label, count, note, view, tone = "" }) {
   return `
-    <div class="sender-login-empty">
-      <div class="sender-account-mark">企</div>
-      <h3>${stage === "login_pending" ? "正在准备登录" : "发送账号尚未登录"}</h3>
-      <button id="sender-open-login-btn" type="button">打开账号登录</button>
+    <button class="workbench-task-card ${tone}" type="button" data-workbench-view="${view}">
+      <span class="workbench-task-label">${escapeHtml(label)}</span>
+      <strong>${count}</strong>
+      <span class="workbench-task-note">${escapeHtml(note)}</span>
+      <span class="workbench-task-action">进入处理</span>
+    </button>
+  `;
+}
+
+function workbenchConnection(label, status, note) {
+  const normalizedStatus = ["ok", "success"].includes(status) ? "ok" : ["warning", "degraded", "disabled"].includes(status) ? "warning" : "error";
+  const statusLabel = normalizedStatus === "ok" ? "正常" : normalizedStatus === "warning" ? "需关注" : "异常";
+  return `
+    <div class="workbench-connection">
+      <span class="connection-dot ${normalizedStatus}"></span>
+      <div><strong>${escapeHtml(label)}</strong><span>${escapeHtml(note || statusLabel)}</span></div>
+      <span class="connection-status ${normalizedStatus}">${statusLabel}</span>
     </div>
   `;
 }
 
-function isValidChinaIdentityNumber(value) {
-  const normalized = value.trim().toUpperCase();
-  if (!/^(?:\d{15}|\d{17}[0-9X])$/.test(normalized) || normalized.startsWith("000000")) return false;
-  const birthDate = normalized.length === 18 ? normalized.slice(6, 14) : `19${normalized.slice(6, 12)}`;
-  const year = Number(birthDate.slice(0, 4));
-  const month = Number(birthDate.slice(4, 6));
-  const day = Number(birthDate.slice(6, 8));
-  const parsedDate = new Date(Date.UTC(year, month - 1, day));
-  if (
-    parsedDate.getUTCFullYear() !== year ||
-    parsedDate.getUTCMonth() !== month - 1 ||
-    parsedDate.getUTCDate() !== day
-  ) return false;
-  const sequence = normalized.length === 18 ? normalized.slice(14, 17) : normalized.slice(12, 15);
-  if (sequence === "000") return false;
-  if (normalized.length === 15) return true;
-  const weights = [7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2];
-  const checkCodes = "10X98765432";
-  const checksum = normalized.slice(0, 17).split("").reduce(
-    (total, digit, index) => total + Number(digit) * weights[index],
-    0,
-  );
-  return normalized[17] === checkCodes[checksum % 11];
+async function renderOverview() {
+  const [candidatesData, reviewsData, syncData, remindersData, questionsData, alertsData, detail] = await Promise.all([
+    api("/api/v1/legal/cases/candidates?status=pending&page_size=100"),
+    api("/api/v1/legal/ocr-reviews?review_status=pending&page_size=100"),
+    api("/api/v1/legal/document-sync-logs?status=failed&page_size=100"),
+    api("/api/v1/legal/reminders?status=failed&limit=100"),
+    api("/api/v1/legal/merchant-questions?status=open&limit=200"),
+    api("/api/v1/legal/system-alerts?status=open&page_size=200"),
+    api("/api/v1/health/detail"),
+  ]);
+  const reviews = reviewsData.items || [];
+  const configItems = (detail.config && detail.config.items) || [];
+  const configByName = (name) => configItems.find((item) => item.name === name) || {};
+  const archive = configByName("WECOM_ARCHIVE_MODE");
+  const ocr = configByName("OCR_PROVIDER");
+  const ai = configByName("LEGAL_EXTRACTION_MODE");
+  const kdocs = configByName("KDOCS_MODE");
+  const sender = detail.sender || { status: "disabled", message: "发送通道未启用" };
+  const queueRows = reviews.slice(0, 8);
+
+  $("#content").innerHTML = `
+    <section class="workbench" data-business-workbench>
+      <div class="workbench-heading">
+        <div><h2>当前待办</h2><p>数量最多显示当前接口返回的前 100 条，商家回复和系统异常最多 200 条。</p></div>
+        <span class="workbench-updated">刚刚刷新</span>
+      </div>
+      <div class="workbench-summary">
+        ${workbenchTaskCard({ label: "待确认案件", count: candidatesData.total ?? (candidatesData.items || []).length, note: "补齐识别结果后确认建立正式案件", view: "cases", tone: (candidatesData.items || []).length ? "warning" : "clear" })}
+        ${workbenchTaskCard({ label: "待人工复核", count: reviewsData.total ?? reviews.length, note: "识别结果需确认后才能进入业务台账", view: "ocr-reviews", tone: reviews.length ? "warning" : "clear" })}
+        ${workbenchTaskCard({ label: "金山写入失败", count: syncData.total ?? (syncData.items || []).length, note: "检查失败原因并决定是否重试", view: "sync", tone: (syncData.items || []).length ? "danger" : "clear" })}
+        ${workbenchTaskCard({ label: "提醒发送失败", count: remindersData.total ?? (remindersData.items || []).length, note: "处理未送达的企业微信提醒", view: "reminders", tone: (remindersData.items || []).length ? "danger" : "clear" })}
+        ${workbenchTaskCard({ label: "商家待回复", count: questionsData.total ?? (questionsData.items || []).length, note: "跟进尚未收到答复的客户问题", view: "merchant-questions", tone: (questionsData.items || []).length ? "warning" : "clear" })}
+        ${workbenchTaskCard({ label: "系统异常", count: alertsData.total ?? (alertsData.items || []).length, note: "查看当前未恢复的运行异常", view: "system-alerts", tone: (alertsData.items || []).length ? "danger" : "clear" })}
+      </div>
+
+      <div class="workbench-layout">
+        <section class="workbench-queue">
+          <header><div><h2>最近待复核资料</h2><p>优先确认识别结果，再执行后续提醒和金山写入。</p></div><button class="ghost small" type="button" data-workbench-view="ocr-reviews">查看全部</button></header>
+          ${
+            queueRows.length
+              ? `<div class="workbench-queue-list">${queueRows
+                  .map((item) => {
+                    const result = item.ocr_result || {};
+                    const name = item.original_filename || `资料 ${item.media_file_id}`;
+                    const detailText = [result.case_no, result.document_type || result.event_type, item.group_id].filter(Boolean).join(" · ");
+                    return `<button type="button" class="workbench-queue-row" data-review-entry="${item.media_file_id}"><span class="queue-file">${escapeHtml(name)}</span><span class="queue-detail">${escapeHtml(detailText || "待确认资料类型")}</span><span class="queue-time">${escapeHtml(item.updated_at || "")}</span><span class="queue-action">复核</span></button>`;
+                  })
+                  .join("")}</div>`
+              : '<div class="workbench-empty"><strong>当前没有待复核资料</strong><span>新的企业微信材料进入后会显示在这里。</span></div>'
+          }
+        </section>
+
+        <aside class="workbench-connections">
+          <header><h2>系统连接</h2><button class="ghost small" type="button" data-workbench-view="recognition-settings">管理配置</button></header>
+          ${workbenchConnection("企业微信会话存档", archive.status || "warning", archive.message || "等待状态检查")}
+          ${workbenchConnection("OCR 识别", ocr.status || "warning", ocr.message || "等待状态检查")}
+          ${workbenchConnection("AI 结构化", ai.status || "warning", ai.message || "等待状态检查")}
+          ${workbenchConnection("金山文档", kdocs.status || "warning", kdocs.message || "等待状态检查")}
+          ${workbenchConnection("消息发送通道", sender.status, sender.message || "等待状态检查")}
+        </aside>
+      </div>
+    </section>
+  `;
+  document.querySelectorAll("[data-workbench-view]").forEach((button) => {
+    button.addEventListener("click", () => setView(button.dataset.workbenchView));
+  });
+  document.querySelectorAll("[data-review-entry]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.reviewStatusFilter = "pending";
+      state.selectedReviewId = Number(button.dataset.reviewEntry);
+      setView("ocr-reviews");
+    });
+  });
 }
 
-async function reloadSenderLogin() {
-  if (state.deviceLoginBusy || state.view !== "android-device") return;
-  state.deviceLoginBusy = true;
-  try {
-    stopDeviceConsole();
-    await renderAndroidDevice();
-  } catch (error) {
-    showAlert(error.message, "error");
-  } finally {
-    state.deviceLoginBusy = false;
-  }
+function wecomApiStageLabel(stage) {
+  const labels = {
+    not_configured: "未完成配置",
+    request_failed: "连接失败",
+    invalid_response: "返回异常",
+    remote_error: "平台返回错误",
+    login_expired: "登录态过期",
+    logged_out: "未登录",
+    logged_in: "已在线",
+  };
+  return labels[stage] || "未检测";
 }
 
-function bindSenderLogin(stage) {
-  const openButton = $("#sender-open-login-btn");
-  if (openButton) {
-    openButton.addEventListener("click", async () => {
-      try {
-        await sendDeviceAction("login/open", {});
-        await reloadSenderLogin();
-      } catch (error) {
-        showAlert(error.message, "error");
-      }
-    });
+function wecomApiStatusClass(status) {
+  if (!status) return "";
+  if (status.online) return "online";
+  if (status.stage === "not_configured") return "warning";
+  return "error";
+}
+
+function renderWeComApiStatus(status) {
+  if (!status) {
+    return `
+      <div class="platform-status-box">
+        <span class="platform-status-dot warning"></span>
+        <div>
+          <strong>尚未检测登录态</strong>
+          <p>点击检测后会调用第三方平台 <span class="mono">/login/checkLogin</span>，登录和重新登录都在第三方平台完成。</p>
+        </div>
+      </div>
+    `;
   }
-  const phoneForm = $("#sender-phone-form");
-  if (phoneForm) {
-    phoneForm.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const phone = $("#sender-phone-input").value.trim();
-      try {
-        await sendDeviceAction("login/phone", { phone });
-        await reloadSenderLogin();
-      } catch (error) {
-        showAlert(error.message, "error");
-      }
+  const message = status.vendor_message || (status.missing || []).join("、") || (status.online ? "第三方平台返回账号在线。" : "请在第三方平台确认账号登录态。");
+  return `
+    <div class="platform-status-box ${status.online ? "success" : "warn"}">
+      <span class="platform-status-dot ${wecomApiStatusClass(status)}"></span>
+      <div>
+        <strong>${escapeHtml(wecomApiStageLabel(status.stage))}</strong>
+        <p>${escapeHtml(message)}</p>
+        ${status.account_name ? `<p>当前账号：${escapeHtml(status.account_name)}</p>` : ""}
+      </div>
+    </div>
+  `;
+}
+
+async function renderWeComApiPlatform(initialStatus = null) {
+  const settings = await api("/api/v1/legal/wecomapi-settings");
+  const endpoint = `${settings.base_url || ""}${settings.api_path || ""}`;
+  const configured = settings.has_token && settings.has_guid;
+  const sendModeClass = settings.send_mode === "wecomapi" ? "live" : "mock";
+  $("#content").innerHTML = `
+    <section class="platform-console">
+      <header class="platform-hero">
+        <div class="platform-hero-main">
+          <div class="platform-hero-mark">API</div>
+          <div>
+            <h2>第三方 wecomapi 发送平台</h2>
+            <div class="platform-hero-meta">
+              <span class="platform-pill ${configured ? "ready" : "warn"}">${configured ? "Token 和 guid 已配置" : "Token 或 guid 待配置"}</span>
+              <span class="platform-pill ${sendModeClass}">发送模式：${escapeHtml(settings.send_mode)}</span>
+            </div>
+          </div>
+        </div>
+        <div class="platform-hero-actions">
+          <a class="button-like ghost" href="${escapeHtml(settings.platform_url)}" target="_blank" rel="noreferrer">打开平台</a>
+          <button id="check-wecomapi-login-btn" type="button">检测登录态</button>
+        </div>
+      </header>
+      <div class="platform-body">
+        <div id="wecomapi-status-result">${renderWeComApiStatus(initialStatus)}</div>
+        <div class="platform-info-grid">
+          <div class="platform-info-item primary">
+            <span>平台接口</span>
+            <strong class="mono">${escapeHtml(endpoint || "-")}</strong>
+          </div>
+          <div class="platform-info-item">
+            <span>Token Header</span>
+            <strong>${escapeHtml(settings.token_header || "-")}</strong>
+          </div>
+          <div class="platform-info-item">
+            <span>guid</span>
+            <strong class="mono">${escapeHtml(settings.guid || "未配置")}</strong>
+          </div>
+          <div class="platform-info-item">
+            <span>回调校验</span>
+            <strong>${settings.callback_auth_enabled ? "已启用 Token 校验" : "不校验 Token"}</strong>
+          </div>
+        </div>
+        <div class="callback-line">
+          <div>
+            <span>消息回调地址</span>
+            <strong class="mono">${escapeHtml(settings.callback_url)}</strong>
+          </div>
+          <button type="button" class="ghost" data-copy-platform-callback>复制回调</button>
+        </div>
+        <section class="platform-settings-card">
+          <div class="platform-section-head">
+            <div>
+              <h3>连接配置</h3>
+              <p>token 不会明文回显，留空时保留服务器现有值。</p>
+            </div>
+            <span class="platform-security-note">敏感字段已保护</span>
+          </div>
+          <form id="wecomapi-settings-form" class="form-grid platform-form">
+            <div class="field">
+              <label>发送模式</label>
+              <select name="send_mode">
+                ${["mock", "wecomapi"].map((value) => `<option value="${value}" ${settings.send_mode === value ? "selected" : ""}>${value}</option>`).join("")}
+              </select>
+            </div>
+            <div class="field">
+              <label>Token Header</label>
+              <input name="token_header" maxlength="64" value="${escapeHtml(settings.token_header || "WECOM-TOKEN")}" />
+            </div>
+            <div class="field wide">
+              <label>平台 Base URL</label>
+              <input name="base_url" maxlength="255" value="${escapeHtml(settings.base_url || "")}" placeholder="https://manager.wecomapi.com" />
+            </div>
+            <div class="field">
+              <label>接口 Path</label>
+              <input name="api_path" maxlength="128" value="${escapeHtml(settings.api_path || "/wecom/finder/api")}" />
+            </div>
+            <div class="field">
+              <label>guid</label>
+              <input name="guid" class="mono" maxlength="128" value="${escapeHtml(settings.guid || "")}" placeholder="第三方平台设备 guid" />
+            </div>
+            <div class="field wide">
+              <label>token${settings.has_token ? "（已配置，留空不修改）" : ""}</label>
+              <input name="token" type="password" maxlength="512" autocomplete="off" placeholder="${settings.has_token ? settings.token_mask : "粘贴第三方平台 token"}" />
+            </div>
+            <div class="field form-actions platform-form-actions">
+              <button type="submit">保存配置</button>
+              <button type="reset" class="ghost">恢复当前值</button>
+            </div>
+          </form>
+        </section>
+      </div>
+    </section>
+  `;
+  document.querySelectorAll("[data-copy-platform-callback]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await navigator.clipboard.writeText(settings.callback_url);
+      showAlert("回调地址已复制");
     });
-  }
-  const agreementButton = $("#sender-agreement-btn");
-  if (agreementButton) {
-    agreementButton.addEventListener("click", async () => {
-      agreementButton.disabled = true;
-      try {
-        await sendDeviceAction("login/agreement", {});
-        await reloadSenderLogin();
-      } catch (error) {
-        showAlert(error.message, "error");
-        agreementButton.disabled = false;
-      }
-    });
-  }
-  const codeForm = $("#sender-code-form");
-  if (codeForm) {
-    codeForm.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const verificationCode = $("#sender-code-input").value.trim();
-      try {
-        await sendDeviceAction("login/verification-code", { verification_code: verificationCode });
-        await reloadSenderLogin();
-      } catch (error) {
-        showAlert(error.message, "error");
-      }
-    });
-  }
-  const identityForm = $("#sender-identity-form");
-  if (identityForm) {
-    const identityInput = $("#sender-identity-input");
-    const visibilityButton = $("#sender-identity-visibility");
-    visibilityButton.addEventListener("click", () => {
-      const shouldShow = identityInput.type === "password";
-      identityInput.type = shouldShow ? "text" : "password";
-      visibilityButton.textContent = shouldShow ? "隐藏" : "显示";
-      visibilityButton.title = shouldShow ? "隐藏身份证号码" : "显示身份证号码";
-      visibilityButton.setAttribute("aria-pressed", String(shouldShow));
-      identityInput.focus();
-    });
-    identityForm.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const identityNumber = identityInput.value.trim();
-      if (!isValidChinaIdentityNumber(identityNumber)) {
-        showAlert("身份证号码校验未通过，请检查出生日期和最后一位校验码", "error");
-        return;
-      }
-      const submitButton = identityForm.querySelector('button[type="submit"]');
-      submitButton.disabled = true;
-      submitButton.textContent = "正在提交";
-      try {
-        await sendDeviceAction("login/identity", { identity_number: identityNumber });
-        identityInput.value = "";
-        await reloadSenderLogin();
-      } catch (error) {
-        showAlert(error.message, "error");
-        submitButton.disabled = false;
-        submitButton.textContent = "提交并继续";
-      }
-    });
-  }
-  const qrButton = $("#sender-refresh-qr-btn");
-  if (qrButton) {
-    qrButton.addEventListener("click", async () => {
-      try {
-        await sendDeviceAction("login/refresh-qr", {});
-      } catch (error) {
-        showAlert(error.message, "error");
-      }
-    });
-  }
-  const faceButton = $("#sender-start-face-btn");
-  if (faceButton) {
-    faceButton.addEventListener("click", async () => {
-      faceButton.disabled = true;
-      faceButton.textContent = "正在进入";
-      try {
-        await sendDeviceAction("login/face-verification/start", {});
-        await reloadSenderLogin();
-      } catch (error) {
-        showAlert(error.message, "error");
-        faceButton.disabled = false;
-        faceButton.textContent = "同意并开始人脸验证";
-      }
-    });
-  }
-  const grantCameraPermission = async (permissionMode, button) => {
-    button.disabled = true;
+  });
+  $("#wecomapi-settings-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const formData = new FormData(form);
+    const payload = {
+      send_mode: formData.get("send_mode"),
+      base_url: formData.get("base_url"),
+      api_path: formData.get("api_path"),
+      token_header: formData.get("token_header"),
+      guid: formData.get("guid"),
+    };
+    const token = String(formData.get("token") || "").trim();
+    if (token) payload.token = token;
     try {
-      await sendDeviceAction("login/camera-permission", { permission_mode: permissionMode });
-      await reloadSenderLogin();
+      await api("/api/v1/legal/wecomapi-settings", {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      });
+      showAlert("第三方发送平台配置已保存");
+      await renderWeComApiPlatform();
+    } catch (error) {
+      showAlert(error.message, "error");
+    }
+  });
+  $("#check-wecomapi-login-btn").addEventListener("click", async () => {
+    try {
+      const status = await api("/api/v1/legal/wecomapi-settings/check-login", { method: "POST" });
+      $("#wecomapi-status-result").innerHTML = renderWeComApiStatus(status);
+    } catch (error) {
+      showAlert(error.message, "error");
+    }
+  });
+}
+
+function renderRecognitionStatus(label, status) {
+  if (!status) {
+    return `
+      <div class="platform-status-box">
+        <span class="platform-status-dot warning"></span>
+        <div><strong>${escapeHtml(label)}尚未检测</strong><p>保存配置后点击检测服务。</p></div>
+      </div>
+    `;
+  }
+  const statusClass = status.available ? "success" : "warn";
+  const dotClass = status.available ? "online" : "error";
+  return `
+    <div class="platform-status-box ${statusClass}">
+      <span class="platform-status-dot ${dotClass}"></span>
+      <div>
+        <strong>${escapeHtml(label)}${status.available ? "可用" : "不可用"}</strong>
+        <p>${escapeHtml(status.message || "未返回状态")}</p>
+      </div>
+    </div>
+  `;
+}
+
+async function renderRecognitionSettings(initialStatus = null) {
+  const settings = await api("/api/v1/legal/recognition-settings");
+  const ocrReady = settings.ocr_provider === "tencent" && settings.has_tencent_secret_id && settings.has_tencent_secret_key;
+  const llmReady = settings.extraction_mode === "llm" && settings.has_llm_api_key && settings.llm_base_url && settings.llm_model;
+  $("#content").innerHTML = `
+    <section class="platform-console">
+      <header class="platform-hero">
+        <div class="platform-hero-main">
+          <div class="platform-hero-mark">AI</div>
+          <div>
+            <h2>文书识别与结构化</h2>
+            <div class="platform-hero-meta">
+              <span class="platform-pill ${ocrReady ? "ready" : "warn"}">OCR：${escapeHtml(settings.ocr_provider)}</span>
+              <span class="platform-pill ${llmReady ? "live" : "warn"}">结构化：${escapeHtml(settings.extraction_mode)}</span>
+            </div>
+          </div>
+        </div>
+        <div class="platform-hero-actions">
+          <button id="check-recognition-btn" type="button">检测服务</button>
+        </div>
+      </header>
+      <div class="platform-body">
+        <div class="grid cols-2 recognition-status-grid">
+          ${renderRecognitionStatus("OCR 服务", initialStatus && initialStatus.ocr)}
+          ${renderRecognitionStatus("AI 模型", initialStatus && initialStatus.llm)}
+        </div>
+        <form id="recognition-settings-form" class="recognition-settings-form">
+          <section class="platform-settings-card">
+            <div class="platform-section-head">
+              <div><h3>腾讯 OCR</h3><p>负责把图片和 PDF 转成原始文字；云密钥由独立 OCR 服务隔离管理。</p></div>
+              <span class="platform-security-note">${ocrReady ? "服务凭证已配置" : "服务凭证待配置"}</span>
+            </div>
+            <div class="form-grid platform-form">
+              <div class="field">
+                <label>OCR 提供商</label>
+                <select name="ocr_provider">
+                  ${["tencent", "aliyun", "local_text", "mock"].map((value) => `<option value="${value}" ${settings.ocr_provider === value ? "selected" : ""}>${value}</option>`).join("")}
+                </select>
+              </div>
+              <div class="field wide">
+                <label>OCR Sidecar 地址</label>
+                <input name="ocr_sidecar_url" maxlength="255" value="${escapeHtml(settings.ocr_sidecar_url || "")}" placeholder="http://127.0.0.1:9002" />
+              </div>
+              <div class="field wide service-managed-note">
+                OCR SecretId、SecretKey、区域和 PDF 页数保留在独立服务的受保护配置中，网页只读取可用状态。
+              </div>
+            </div>
+          </section>
+          <section class="platform-settings-card recognition-ai-card">
+            <div class="platform-section-head">
+              <div><h3>AI 结构化</h3><p>从 OCR 文字中提取案号、当事人、金额、日期和材料类型。</p></div>
+              <span class="platform-security-note">低置信度进入人工复核</span>
+            </div>
+            <div class="form-grid platform-form">
+              <div class="field">
+                <label>抽取模式</label>
+                <select name="extraction_mode">
+                  <option value="llm" ${settings.extraction_mode === "llm" ? "selected" : ""}>AI + 规则校验</option>
+                  <option value="regex" ${settings.extraction_mode === "regex" ? "selected" : ""}>仅规则</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>模型名称</label>
+                <input name="llm_model" maxlength="128" value="${escapeHtml(settings.llm_model || "")}" placeholder="deepseek-chat" />
+              </div>
+              <div class="field wide">
+                <label>模型 API 地址</label>
+                <input name="llm_base_url" maxlength="255" value="${escapeHtml(settings.llm_base_url || "")}" placeholder="https://api.deepseek.com/v1" />
+              </div>
+              <div class="field wide">
+                <label>API Key${settings.has_llm_api_key ? "（已配置，留空不修改）" : ""}</label>
+                <input name="llm_api_key" type="password" maxlength="512" autocomplete="off" placeholder="${settings.has_llm_api_key ? settings.secret_mask : "模型 API Key"}" />
+              </div>
+              <div class="field">
+                <label>置信度阈值</label>
+                <input name="llm_min_confidence" type="number" min="0" max="1" step="0.05" value="${escapeHtml(settings.llm_min_confidence)}" />
+              </div>
+              <div class="field">
+                <label>超时时间（秒）</label>
+                <input name="llm_timeout_seconds" type="number" min="1" max="120" value="${escapeHtml(settings.llm_timeout_seconds)}" />
+              </div>
+              <div class="field">
+                <label>最大文本长度</label>
+                <input name="llm_max_text_length" type="number" min="1000" max="100000" value="${escapeHtml(settings.llm_max_text_length)}" />
+              </div>
+              <label class="field check-field">
+                <span>模型失败时回退规则</span>
+                <input name="llm_fallback_to_regex" type="checkbox" ${settings.llm_fallback_to_regex ? "checked" : ""} />
+              </label>
+              <div class="field form-actions platform-form-actions wide">
+                <button type="submit">保存配置</button>
+                <button type="reset" class="ghost">恢复当前值</button>
+              </div>
+            </div>
+          </section>
+          <section class="platform-settings-card">
+            <div class="platform-section-head">
+              <div><h3>法律资料留存</h3><p>默认永久保留；启用后仅清理符合期限和复核状态的本地文件，业务记录与审计继续保留。</p></div>
+              <span class="platform-security-note">${settings.data_retention_enabled ? "自动清理已启用" : "自动清理未启用"}</span>
+            </div>
+            <div class="form-grid platform-form">
+              <label class="field check-field">
+                <span>启用自动清理</span>
+                <input name="data_retention_enabled" type="checkbox" ${settings.data_retention_enabled ? "checked" : ""} />
+              </label>
+              <div class="field">
+                <label>保留天数</label>
+                <input name="data_retention_days" type="number" min="30" max="36500" value="${escapeHtml(settings.data_retention_days)}" />
+              </div>
+              <div class="field wide">
+                <label>允许清理的复核状态</label>
+                <select name="data_retention_review_statuses" multiple size="4">
+                  ${[["rejected","已驳回"],["approved","已批准"],["corrected","已更正"],["not_required","无需复核"]].map(([value,label]) => `<option value="${value}" ${(settings.data_retention_review_statuses || []).includes(value) ? "selected" : ""}>${label}</option>`).join("")}
+                </select>
+              </div>
+              <div class="field form-actions platform-form-actions wide">
+                <button type="submit">保存配置</button>
+                <button type="reset" class="ghost">恢复当前值</button>
+              </div>
+            </div>
+          </section>
+        </form>
+      </div>
+    </section>
+  `;
+
+  $("#recognition-settings-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const formData = new FormData(form);
+    const payload = {
+      ocr_provider: formData.get("ocr_provider"),
+      ocr_sidecar_url: formData.get("ocr_sidecar_url"),
+      extraction_mode: formData.get("extraction_mode"),
+      llm_base_url: formData.get("llm_base_url"),
+      llm_model: formData.get("llm_model"),
+      llm_timeout_seconds: Number(formData.get("llm_timeout_seconds")),
+      llm_max_text_length: Number(formData.get("llm_max_text_length")),
+      llm_min_confidence: Number(formData.get("llm_min_confidence")),
+      llm_fallback_to_regex: formData.get("llm_fallback_to_regex") === "on",
+      data_retention_enabled: formData.get("data_retention_enabled") === "on",
+      data_retention_days: Number(formData.get("data_retention_days")),
+      data_retention_review_statuses: formData.getAll("data_retention_review_statuses"),
+    };
+    for (const secretField of ["llm_api_key"]) {
+      const value = String(formData.get(secretField) || "").trim();
+      if (value) payload[secretField] = value;
+    }
+    try {
+      await api("/api/v1/legal/recognition-settings", { method: "PUT", body: JSON.stringify(payload) });
+      showAlert("识别与 AI 配置已保存");
+      await renderRecognitionSettings();
+    } catch (error) {
+      showAlert(error.message, "error");
+    }
+  });
+
+  $("#check-recognition-btn").addEventListener("click", async () => {
+    const button = $("#check-recognition-btn");
+    button.disabled = true;
+    button.textContent = "检测中...";
+    try {
+      const status = await api("/api/v1/legal/recognition-settings/check", { method: "POST" });
+      showAlert(status.ocr.available && status.llm.available ? "OCR 与 AI 服务均可用" : "检测完成，请查看服务状态");
+      await renderRecognitionSettings(status);
     } catch (error) {
       showAlert(error.message, "error");
       button.disabled = false;
+      button.textContent = "检测服务";
     }
-  };
-  const cameraOnceButton = $("#sender-camera-once-btn");
-  if (cameraOnceButton) {
-    cameraOnceButton.addEventListener("click", () => grantCameraPermission("once", cameraOnceButton));
-  }
-  const cameraWhileButton = $("#sender-camera-while-btn");
-  if (cameraWhileButton) {
-    cameraWhileButton.addEventListener("click", () => grantCameraPermission("while_using", cameraWhileButton));
-  }
-  const statusButton = $("#sender-refresh-status-btn");
-  if (statusButton) statusButton.addEventListener("click", reloadSenderLogin);
-  const backButton = $("#sender-login-back-btn");
-  if (backButton) {
-    backButton.addEventListener("click", async () => {
-      try {
-        await sendDeviceAction("keyevent", { key: "back" });
-        await reloadSenderLogin();
-      } catch (error) {
-        showAlert(error.message, "error");
-      }
-    });
-  }
-  state.deviceRefreshTimer = setInterval(async () => {
-    if (stage === "qr_code") await refreshDeviceScreenshot();
-    try {
-      const current = await api("/api/v1/legal/android-device/login/status");
-      if (current.stage !== state.deviceLoginStage) await reloadSenderLogin();
-    } catch (error) {
-      showAlert(error.message, "error");
-    }
-  }, 3000);
-}
-
-async function renderAndroidLogin() {
-  const status = await api("/api/v1/legal/android-device/login/status");
-  state.deviceLoginStage = status.stage;
-  const stageLabels = {
-    not_open: "尚未登录",
-    phone: "输入手机号",
-    verification_code: "输入验证码",
-    agreement_required: "等待协议确认",
-    qr_code: "等待扫码确认",
-    identity_verification: "需要身份校验",
-    face_verification: "等待人脸验证",
-    camera_permission: "需要相机权限",
-    face_capture: "正在进行人脸识别",
-    face_camera_error: "相机不可用",
-    login_pending: "登录处理中",
-    logged_in: "已登录",
-  };
-  $("#content").innerHTML = `
-    <section class="sender-account-login">
-      <div class="sender-account-summary">
-        <div class="sender-account-mark">企</div>
-        <div class="sender-account-heading">
-          <h2>企业微信发送账号</h2>
-          <div class="sender-account-state">
-            <span class="sender-state-dot ${status.online ? "online" : ""}"></span>
-            ${escapeHtml(stageLabels[status.stage] || "状态确认中")}
-          </div>
-        </div>
-      </div>
-      ${senderLoginContent(status.stage, status.qr_bounds)}
-    </section>
-  `;
-  bindSenderLogin(status.stage);
-  if (status.stage === "qr_code") await refreshDeviceScreenshot();
-}
-
-function protocolLoginContent(status) {
-  if (status.stage === "not_configured") {
-    return `
-      <div class="sender-login-verification">
-        <div class="sender-verification-mark">!</div>
-        <h3>发送账号登录服务待配置</h3>
-        <p>自研登录网关尚未在当前服务器启用。完成实验环境验证后，登录二维码会直接显示在这里。</p>
-        <p class="mono">缺少：${escapeHtml((status.missing || []).join("、"))}</p>
-      </div>
-    `;
-  }
-  if (status.stage === "qr_code") {
-    return `
-      <div class="sender-qr-section">
-        <div class="sender-qr-copy">
-          <span class="sender-step-label">账号托管登录</span>
-          <h3>使用企业微信扫码</h3>
-          <p>二维码由协议网关生成。扫码确认后，本页会自动获取登录状态。</p>
-          <button id="protocol-refresh-qr-btn" type="button">刷新二维码</button>
-          <span class="device-live-status status-warning">等待扫码确认</span>
-        </div>
-        <div class="sender-qr-frame" aria-label="企业微信协议登录二维码">
-          <div class="sender-qr-crop protocol-qr-crop">
-            <img src="${escapeHtml(status.qr_code || "")}" alt="企业微信登录二维码" draggable="false" />
-          </div>
-        </div>
-      </div>
-    `;
-  }
-  if (status.stage === "verification_code") {
-    return `
-      <div class="sender-login-verification">
-        <div class="sender-verification-mark">!</div>
-        <span class="sender-step-label">登录确认</span>
-        <h3>完成企业微信身份校验</h3>
-        <form id="protocol-verification-form" class="sender-login-form sender-identity-form">
-          <label for="protocol-verification-input">身份校验信息</label>
-          <div class="sender-secret-input">
-            <input id="protocol-verification-input" type="password" autocomplete="off" maxlength="64" required />
-            <button id="protocol-verification-visibility" type="button" aria-pressed="false" title="显示身份校验信息">显示</button>
-          </div>
-          <button type="submit">确认登录</button>
-        </form>
-      </div>
-    `;
-  }
-  if (status.stage === "logged_in") {
-    return `
-      <div class="sender-login-complete">
-        <div class="sender-login-check">✓</div>
-        <h3>发送账号已登录</h3>
-        <p>${status.account_name ? `当前账号：${escapeHtml(status.account_name)}` : "协议网关已持有在线会话，可以执行外部群消息任务。"}</p>
-        <button id="protocol-logout-btn" type="button" class="ghost">退出发送账号</button>
-      </div>
-    `;
-  }
-  return `
-    <div class="sender-login-empty">
-      <div class="sender-account-mark">企</div>
-      <h3>${status.stage === "login_pending" ? "正在确认登录" : "发送账号尚未登录"}</h3>
-      <button id="protocol-start-login-btn" type="button">生成登录二维码</button>
-    </div>
-  `;
-}
-
-function bindProtocolLogin(status) {
-  const startLogin = async () => {
-    const login = await api("/api/v1/legal/sender-account/login/start", { method: "POST" });
-    await renderProtocolAccount(login);
-  };
-  const startButton = $("#protocol-start-login-btn");
-  if (startButton) startButton.addEventListener("click", () => startLogin().catch((error) => showAlert(error.message, "error")));
-  const refreshButton = $("#protocol-refresh-qr-btn");
-  if (refreshButton) refreshButton.addEventListener("click", () => startLogin().catch((error) => showAlert(error.message, "error")));
-  const verificationForm = $("#protocol-verification-form");
-  if (verificationForm) {
-    const verificationInput = $("#protocol-verification-input");
-    const visibilityButton = $("#protocol-verification-visibility");
-    visibilityButton.addEventListener("click", () => {
-      const isVisible = verificationInput.type === "text";
-      verificationInput.type = isVisible ? "password" : "text";
-      visibilityButton.textContent = isVisible ? "显示" : "隐藏";
-      visibilityButton.title = isVisible ? "显示身份校验信息" : "隐藏身份校验信息";
-      visibilityButton.setAttribute("aria-pressed", String(!isVisible));
-    });
-    verificationForm.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      try {
-        const result = await api("/api/v1/legal/sender-account/login/verify", {
-          method: "POST",
-          body: JSON.stringify({ verification_value: verificationInput.value.trim() }),
-        });
-        await renderProtocolAccount(result);
-      } catch (error) {
-        showAlert(error.message, "error");
-      }
-    });
-  }
-  const logoutButton = $("#protocol-logout-btn");
-  if (logoutButton) {
-    logoutButton.addEventListener("click", async () => {
-      try {
-        const result = await api("/api/v1/legal/sender-account/logout", { method: "POST" });
-        await renderProtocolAccount(result);
-      } catch (error) {
-        showAlert(error.message, "error");
-      }
-    });
-  }
-  if (["qr_code", "verification_code", "login_pending"].includes(status.stage)) {
-    state.deviceRefreshTimer = setInterval(async () => {
-      try {
-        const current = await api("/api/v1/legal/sender-account/login/poll");
-        if (current.stage !== state.deviceLoginStage) await renderProtocolAccount(current);
-      } catch (error) {
-        showAlert(error.message, "error");
-      }
-    }, 3000);
-  }
-}
-
-async function renderProtocolAccount(providedStatus = null) {
-  if (state.deviceRefreshTimer) clearInterval(state.deviceRefreshTimer);
-  state.deviceRefreshTimer = null;
-  const status = providedStatus || await api("/api/v1/legal/sender-account/status");
-  state.protocolLoginState = status;
-  state.deviceLoginStage = status.stage;
-  const stageLabels = {
-    not_configured: "待配置",
-    logged_out: "尚未登录",
-    qr_code: "等待扫码",
-    verification_code: "等待身份校验",
-    login_pending: "登录处理中",
-    logged_in: "已登录",
-  };
-  $("#content").innerHTML = `
-    <section class="sender-account-login">
-      <div class="sender-account-summary">
-        <div class="sender-account-mark">企</div>
-        <div class="sender-account-heading">
-          <h2>企业微信发送账号</h2>
-          <div class="sender-account-state">
-            <span class="sender-state-dot ${status.online ? "online" : ""}"></span>
-            ${escapeHtml(stageLabels[status.stage] || "状态确认中")}
-          </div>
-        </div>
-      </div>
-      ${protocolLoginContent(status)}
-    </section>
-  `;
-  bindProtocolLogin(status);
-}
-
-async function renderAndroidDevice() {
-  const account = await api("/api/v1/legal/sender-account/status");
-  if (account.backend === "protocol") {
-    await renderProtocolAccount(account);
-    return;
-  }
-  await renderAndroidLogin();
+  });
 }
 
 function archiveGroupDatalist(groups) {
@@ -886,18 +785,72 @@ function caseEditForm(item) {
   `;
 }
 
+function caseCandidateItem(item, groups) {
+  const editing = state.editingCandidateId === item.id;
+  const confidence = item.confidence === null || item.confidence === undefined ? "-" : `${Math.round(Number(item.confidence) * 100)}%`;
+  const sourceLabel = item.source_type.startsWith("media") ? "附件 OCR" : "企业微信消息";
+  if (!editing) {
+    return `
+      <article class="case-candidate-item">
+        <div class="case-candidate-main">
+          <div class="case-candidate-title"><strong>${escapeHtml(item.case_no)}</strong>${badge("pending")}</div>
+          <div class="case-candidate-meta">
+            <span>债务人：${escapeHtml(item.debtor_name || "待补充")}</span>
+            <span>识别金额：${escapeHtml(item.total_amount ?? "-")}</span>
+            <span>来源：${escapeHtml(sourceLabel)}</span>
+            <span>置信度：${escapeHtml(confidence)}</span>
+            <span>发现 ${escapeHtml(item.occurrence_count)} 次</span>
+          </div>
+          <div class="case-candidate-group">${caseGroupLabel(item.group_id, groups)}</div>
+        </div>
+        <div class="case-candidate-actions">
+          ${item.source_media_file_id ? `<button type="button" class="ghost small" data-open-candidate-media="${item.source_media_file_id}">查看材料</button>` : ""}
+          <button type="button" class="small" data-edit-candidate="${item.id}">确认建案</button>
+          <button type="button" class="ghost small danger-text" data-dismiss-candidate="${item.id}">忽略</button>
+        </div>
+      </article>
+    `;
+  }
+  return `
+    <article class="case-candidate-item editing">
+      <form class="case-candidate-form form-grid" data-confirm-candidate="${item.id}">
+        <div class="field"><label>识别案号</label><input value="${escapeHtml(item.case_no)}" disabled /></div>
+        <div class="field"><label>债务人</label><input name="debtor_name" required maxlength="128" value="${escapeHtml(item.debtor_name || "")}" /></div>
+        <div class="field"><label>归档群</label><input name="group_id" list="case-group-options" required maxlength="128" value="${escapeHtml(item.group_id)}" /></div>
+        <div class="field"><label>到期日</label><input name="due_date" type="date" required value="${escapeHtml(item.due_date || "")}" /></div>
+        <div class="field"><label>总金额</label><input name="total_amount" type="number" min="0" step="0.01" required value="${escapeHtml(item.total_amount ?? "0.00")}" /></div>
+        <div class="field"><label>所属客户 ID</label><input name="tenant_id" maxlength="128" value="${escapeHtml(item.tenant_id || "")}" /></div>
+        <div class="field"><label>债务人企微 ID</label><input name="debtor_wecom_userid" maxlength="128" /></div>
+        <div class="field"><label>法务企微 ID</label><input name="lawyer_wecom_userid" maxlength="128" /></div>
+        <div class="field form-actions candidate-form-actions"><button type="submit">确认并建案</button><button type="button" class="ghost" data-cancel-candidate>取消</button></div>
+      </form>
+    </article>
+  `;
+}
+
 async function renderCases() {
-  const [data, archiveGroupsData] = await Promise.all([
+  const [data, candidatesData, archiveGroupsData] = await Promise.all([
     api("/api/v1/legal/cases?limit=50"),
+    api("/api/v1/legal/cases/candidates?status=pending&page_size=100"),
     api("/api/v1/legal/wecom-archive/groups?page_size=200"),
   ]);
   const cases = data.items || [];
+  const candidates = candidatesData.items || [];
   const archiveGroups = archiveGroupsData.items || [];
   const editingCase = cases.find((item) => item.id === state.editingCaseId);
   if (state.editingCaseId && !editingCase) state.editingCaseId = null;
   $("#content").innerHTML = `
     <div class="grid">
       ${archiveGroupDatalist(archiveGroups)}
+      <section class="case-candidates">
+        <header class="case-section-header">
+          <div><h2>待确认案件</h2><p>系统从企业微信消息和附件中自动识别，补齐必要信息后建立正式案件。</p></div>
+          <div class="case-section-actions"><span class="case-candidate-count">${candidates.length}</span><button id="scan-case-candidates-btn" type="button" class="ghost small">扫描现有资料</button></div>
+        </header>
+        <div class="case-candidate-list">
+          ${candidates.length ? candidates.map((item) => caseCandidateItem(item, archiveGroups)).join("") : '<div class="workbench-empty"><strong>当前没有待确认案件</strong><span>识别到新的案号后会自动出现在这里。</span></div>'}
+        </div>
+      </section>
       ${panel("创建案件", caseForm())}
       ${editingCase ? panel(`编辑案件 · ${escapeHtml(editingCase.case_no)}`, caseEditForm(editingCase)) : ""}
       ${panel(
@@ -913,7 +866,7 @@ async function renderCases() {
             { label: "归档群", render: (row) => caseGroupLabel(row.group_id, archiveGroups) },
             { label: "债务人企微 ID", key: "debtor_wecom_userid" },
             { label: "法务企微 ID", key: "lawyer_wecom_userid" },
-            { label: "操作", render: (row) => `<button class="small ghost" data-edit-case="${row.id}">编辑</button>` },
+            { label: "操作", render: (row) => `<button class="small" data-open-case="${row.id}">工作台</button> <button class="small ghost" data-edit-case="${row.id}">编辑</button>` },
           ],
           cases,
         ),
@@ -921,11 +874,52 @@ async function renderCases() {
       )}
     </div>
   `;
+  document.querySelectorAll("[data-edit-candidate]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.editingCandidateId = Number(button.dataset.editCandidate);
+      renderCases();
+    });
+  });
+  $("#scan-case-candidates-btn").addEventListener("click", async () => {
+    const result = await api("/api/v1/legal/cases/candidates/scan", { method: "POST", body: "{}" });
+    showAlert(`扫描完成：检查附件 ${result.scanned_media} 条、消息 ${result.scanned_messages} 条，新增候选 ${result.created_candidates} 个`);
+    renderCases();
+  });
+  document.querySelectorAll("[data-cancel-candidate]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.editingCandidateId = null;
+      renderCases();
+    });
+  });
+  document.querySelectorAll("[data-confirm-candidate]").forEach((form) => {
+    form.addEventListener("submit", submitCaseCandidate);
+  });
+  document.querySelectorAll("[data-dismiss-candidate]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (!window.confirm("确定忽略这个候选案件吗？后续相同案号不会再次进入待确认列表。")) return;
+      await api(`/api/v1/legal/cases/candidates/${button.dataset.dismissCandidate}/dismiss`, { method: "POST", body: "{}" });
+      showAlert("候选案件已忽略");
+      renderCases();
+    });
+  });
+  document.querySelectorAll("[data-open-candidate-media]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.reviewStatusFilter = "pending";
+      state.selectedReviewId = Number(button.dataset.openCandidateMedia);
+      setView("ocr-reviews");
+    });
+  });
   $("#case-form").addEventListener("submit", submitCase);
   document.querySelectorAll("[data-edit-case]").forEach((button) => {
     button.addEventListener("click", () => {
       state.editingCaseId = Number(button.dataset.editCase);
       renderCases();
+    });
+  });
+  document.querySelectorAll("[data-open-case]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.selectedCaseId = Number(button.dataset.openCase);
+      setView("case-workspace");
     });
   });
   if (editingCase) {
@@ -940,6 +934,23 @@ async function renderCases() {
     showAlert("案件状态扫描完成");
     renderCases();
   });
+}
+
+async function submitCaseCandidate(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const payload = Object.fromEntries(new FormData(form).entries());
+  for (const key of ["tenant_id", "debtor_wecom_userid", "lawyer_wecom_userid"]) {
+    if (payload[key] === "") payload[key] = null;
+  }
+  const result = await api(`/api/v1/legal/cases/candidates/${form.dataset.confirmCandidate}/confirm`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  state.editingCandidateId = null;
+  const linked = Number(result.linked_media_files || 0) + Number(result.linked_events || 0);
+  showAlert(`案件 ${result.case.case_no} 已建立，关联历史材料 ${linked} 条`);
+  renderCases();
 }
 
 async function submitCaseUpdate(event) {
@@ -1089,19 +1100,35 @@ async function renderArchiveGroups() {
     },
     { discovered: 0, enabled: 0, disabled: 0 },
   );
+  const callbackUrl = `${window.location.origin}/api/v1/wecomapi/callback`;
+  const platformGroups = state.wecomPlatformGroups || [];
+  const platformGroupOptions = platformGroups
+    .map((room) => `<option value="${escapeHtml(room.room_id)}">${escapeHtml(room.room_name || "未命名群")} · ${escapeHtml(room.member_count ?? "-")} 人</option>`)
+    .join("");
   $("#content").innerHTML = `
     <div class="grid cols-3">
       <div class="panel stat"><div class="stat-label">待确认</div><div class="stat-value status-warning">${counts.discovered}</div></div>
       <div class="panel stat"><div class="stat-label">已启用</div><div class="stat-value status-ok">${counts.enabled}</div></div>
       <div class="panel stat"><div class="stat-label">已停用</div><div class="stat-value">${counts.disabled}</div></div>
     </div>
+    <div class="integration-note">
+      <div>
+        <div class="integration-note-title">第三方 wecomapi 发送平台</div>
+        <div class="integration-note-body">平台接口使用 <span class="mono">https://manager.wecomapi.com/wecom/finder/api</span>。发送目标请填写平台返回的群 <span class="mono">toId/roomId</span>，不要填写会话存档的 <span class="mono">wr...</span> roomid。</div>
+      </div>
+      <div class="callback-url-block">
+        <span>消息回调地址</span>
+        <input class="mono" readonly value="${escapeHtml(callbackUrl)}" />
+        <button id="copy-wecomapi-callback-btn" type="button" class="small ghost">复制</button>
+      </div>
+    </div>
     <div class="grid archive-group-grid">
       ${panel(
         "登记法务群",
         `
         <form id="archive-group-form" class="form-grid">
-          <div class="field"><label>群 roomid</label><input name="room_id" required maxlength="128" placeholder="wrxxxxxxxx" /></div>
-          <div class="field"><label>发送目标 ID</label><input name="wecomapi_room_id" maxlength="128" placeholder="例如 zhihe-legal" /></div>
+          <div class="field"><label>会话存档 roomid</label><input name="room_id" required maxlength="128" placeholder="wrxxxxxxxx" /></div>
+          <div class="field"><label>平台群 ID（toId/roomId）</label><input name="wecomapi_room_id" list="wecomapi-room-options" maxlength="128" placeholder="同步后可选择平台群" /></div>
           <div class="field"><label>显示名称</label><input name="display_name" maxlength="255" /></div>
           <div class="field"><label>所属客户 ID</label><input name="tenant_id" maxlength="128" /></div>
           <div class="field"><label>状态</label><select name="status">${archiveGroupStatusOptions("enabled")}</select></div>
@@ -1112,7 +1139,22 @@ async function renderArchiveGroups() {
           <div class="field field-command"><button type="submit">登记</button></div>
         </form>
         `,
-        '<button id="discover-groups-btn" class="ghost">立即拉取</button>',
+        '<div class="panel-actions"><button id="sync-platform-groups-btn" type="button" class="ghost">同步平台群资料</button><button id="discover-groups-btn" type="button" class="ghost">拉取会话存档</button></div>',
+      )}
+      ${panel(
+        "wecomapi 平台群",
+        platformGroups.length
+          ? table(
+              [
+                { label: "群名称", render: (room) => escapeHtml(room.room_name || "未命名群") },
+                { label: "成员数", render: (room) => escapeHtml(room.member_count ?? "-") },
+                { label: "群主 ID", render: (room) => `<span class="mono">${escapeHtml(room.owner_userid || "-")}</span>` },
+                { label: "平台群 ID", render: (room) => `<span class="mono">${escapeHtml(room.room_id)}</span>` },
+              ],
+              platformGroups,
+            )
+          : '<div class="platform-groups-empty">点击“同步平台群资料”获取当前账号的群列表，再将平台群 ID 填入下方发送映射。</div>',
+        `<span class="panel-meta">${platformGroups.length ? `本次获取 ${platformGroups.length} 个群` : "尚未同步"}</span>`,
       )}
       ${panel(
         "生成群名识别消息",
@@ -1125,13 +1167,13 @@ async function renderArchiveGroups() {
         `,
       )}
       ${panel(
-        "群聊白名单",
+        "群聊发送映射",
         table(
           [
-            { label: "roomid", render: (row) => `<span class="mono">${escapeHtml(row.room_id)}</span>` },
+            { label: "会话存档 roomid", render: (row) => `<span class="mono room-id-cell" title="${escapeHtml(row.room_id)}">${escapeHtml(row.room_id)}</span>` },
             {
-              label: "发送目标 ID",
-              render: (row) => `<input class="compact-input mono" data-field="wecomapi_room_id" value="${escapeHtml(row.wecomapi_room_id || "")}" maxlength="128" placeholder="未映射" />`,
+              label: "平台群 ID",
+              render: (row) => `<input class="compact-input mono" data-field="wecomapi_room_id" list="wecomapi-room-options" value="${escapeHtml(row.wecomapi_room_id || "")}" maxlength="128" placeholder="同步后选择平台群" />`,
             },
             {
               label: "显示名称",
@@ -1162,14 +1204,21 @@ async function renderArchiveGroups() {
             { label: "最后发现", key: "last_seen_at" },
             {
               label: "操作",
-              render: (row) => `<button class="small" data-save-archive-group="${escapeHtml(row.room_id)}">保存修改</button>`,
+              render: (row) => `<div class="mapping-row-actions"><button class="small" data-save-archive-group="${escapeHtml(row.room_id)}">保存</button><button class="small ghost" data-test-send-group="${escapeHtml(row.room_id)}" ${row.wecomapi_room_id ? "" : "disabled"}>测试发送</button></div>`,
             },
           ],
           groups,
+          "archive-mapping-table",
         ),
       )}
     </div>
+    <datalist id="wecomapi-room-options">${platformGroupOptions}</datalist>
   `;
+
+  $("#copy-wecomapi-callback-btn").addEventListener("click", async () => {
+    await navigator.clipboard.writeText(callbackUrl);
+    showAlert("回调地址已复制");
+  });
 
   $("#archive-group-form").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -1206,6 +1255,19 @@ async function renderArchiveGroups() {
     renderArchiveGroups();
   });
 
+  $("#sync-platform-groups-btn").addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      const result = await api("/api/v1/legal/wecomapi-settings/sync-groups", { method: "POST", body: "{}" });
+      state.wecomPlatformGroups = result.rooms || [];
+      showAlert(`平台群同步完成：获取 ${result.fetched} 个，已映射 ${result.mapped} 个，更新群名 ${result.updated} 个`);
+      await renderArchiveGroups();
+    } finally {
+      button.disabled = false;
+    }
+  });
+
   document.querySelectorAll("[data-save-archive-group]").forEach((button) => {
     button.addEventListener("click", async () => {
       const row = button.closest("tr");
@@ -1228,6 +1290,22 @@ async function renderArchiveGroups() {
       renderArchiveGroups();
     });
   });
+
+  document.querySelectorAll("[data-test-send-group]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (!window.confirm("确认向该企业微信群发送一条通道测试消息？")) return;
+      button.disabled = true;
+      try {
+        const result = await api("/api/v1/legal/wecomapi-settings/test-send", {
+          method: "POST",
+          body: JSON.stringify({ room_id: button.dataset.testSendGroup }),
+        });
+        showAlert(`测试消息发送成功，通道：${result.mode}`);
+      } finally {
+        button.disabled = false;
+      }
+    });
+  });
 }
 
 function reviewFieldValue(result, key) {
@@ -1237,9 +1315,25 @@ function reviewFieldValue(result, key) {
   return String(value);
 }
 
+function reviewContextTimeline(review) {
+  const messages = review.context_messages || [];
+  if (!messages.length) return '<div class="context-empty">当次分析未找到相邻群聊文本</div>';
+  return `<div class="context-timeline">${messages
+    .map(
+      (message) => `
+        <article class="context-message ${message.position === "after" ? "after" : "before"}">
+          <header><span class="mono">${escapeHtml(message.sender_id || "未知发送人")}</span><time>${escapeHtml(message.received_at || "")}</time></header>
+          <p>${escapeHtml(message.content || "")}</p>
+        </article>`,
+    )
+    .join("")}</div>`;
+}
+
 function reviewDetail(review) {
   const result = review.final_result || review.ocr_result || {};
   const editable = review.review_status === "pending";
+  const metadata = result.metadata || {};
+  const fieldSources = metadata.field_sources || {};
   const eventTypes = [
     ["judgment", "判决/调解/裁定"],
     ["court_notice", "开庭传票"],
@@ -1252,14 +1346,17 @@ function reviewDetail(review) {
   return `
     <div class="review-detail-header">
       <div><strong>${escapeHtml(review.original_filename || `媒体 ${review.media_file_id}`)}</strong><div class="muted mono">${escapeHtml(review.msg_id || "无消息 ID")}</div></div>
-      ${badge(review.review_status)}
+      <div class="review-header-actions">
+        ${editable ? '<button type="button" class="ghost small" data-review-reanalyze>结合最新群聊重新分析</button>' : ""}
+        ${badge(review.review_status)}
+      </div>
     </div>
     <div class="review-detail-grid">
       <section class="review-preview"><div id="review-preview" class="preview-placeholder">加载预览中...</div></section>
       <section class="review-fields">
         <form id="review-form" data-media-id="${review.media_file_id}">
           <div class="form-grid review-form-grid">
-            <div class="field"><label>案号</label><input name="case_no" value="${escapeHtml(reviewFieldValue(result, "case_no"))}" ${editable ? "" : "disabled"} /></div>
+            <div class="field"><label>案号 ${fieldSources.case_no ? `<span class="field-source">${escapeHtml(fieldSources.case_no)}</span>` : ""}</label><input name="case_no" value="${escapeHtml(reviewFieldValue(result, "case_no"))}" ${editable ? "" : "disabled"} /></div>
             <div class="field"><label>材料类型</label><select name="event_type" ${editable ? "" : "disabled"}>${eventTypes.map(([value, label]) => `<option value="${value}" ${result.event_type === value ? "selected" : ""}>${label}</option>`).join("")}</select></div>
             <div class="field"><label>文书类型</label><select name="document_type" ${editable ? "" : "disabled"}>${documentTypes.map((value) => `<option value="${value}" ${result.document_type === value ? "selected" : ""}>${value || "无"}</option>`).join("")}</select></div>
             <div class="field"><label>原告</label><input name="plaintiff" value="${escapeHtml(reviewFieldValue(result, "plaintiff"))}" ${editable ? "" : "disabled"} /></div>
@@ -1274,6 +1371,10 @@ function reviewDetail(review) {
               : `<div class="review-audit muted">复核人：${escapeHtml(review.reviewed_by || "-")} · 复核时间：${escapeHtml(review.reviewed_at || "-")} · 业务执行：${escapeHtml(review.business_applied_at || "未执行")}</div>`
           }
         </form>
+        <div class="review-context-block">
+          <div class="context-heading"><div><div class="field-label">AI 分析使用的群聊上下文</div><span>${review.context_messages.length} 条相邻消息</span></div>${metadata.context_used ? '<span class="context-used">已参与识别</span>' : ""}</div>
+          ${reviewContextTimeline(review)}
+        </div>
         <div class="ocr-text-block"><div class="field-label">OCR 原文</div><pre>${escapeHtml(review.extracted_text || "无识别文本")}</pre></div>
       </section>
     </div>
@@ -1320,6 +1421,20 @@ async function submitReviewDecision(review, decision) {
   });
   showAlert(`复核完成：生成提醒 ${result.created_reminders} 条，取消提醒 ${result.cancelled_reminders} 条`);
   await renderOCRReviews();
+}
+
+async function reanalyzeReview(review, button) {
+  button.disabled = true;
+  button.textContent = "分析中...";
+  try {
+    await api(`/api/v1/legal/media-files/${review.media_file_id}/ocr`, { method: "POST" });
+    showAlert("已结合最新群聊上下文重新分析");
+    await renderOCRReviews();
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "结合最新群聊重新分析";
+    throw error;
+  }
 }
 
 async function renderOCRReviews() {
@@ -1371,28 +1486,37 @@ async function renderOCRReviews() {
   document.querySelectorAll("[data-review-decision]").forEach((button) => {
     button.addEventListener("click", () => submitReviewDecision(selected, button.dataset.reviewDecision));
   });
+  const reanalyzeButton = document.querySelector("[data-review-reanalyze]");
+  if (reanalyzeButton && selected) {
+    reanalyzeButton.addEventListener("click", () => reanalyzeReview(selected, reanalyzeButton));
+  }
   if (selected) await loadReviewPreview(selected);
 }
 
 async function renderReminders() {
-  const [data, rulesData] = await Promise.all([
+  const [data, rulesData, groupsData] = await Promise.all([
     api("/api/v1/legal/reminders?limit=100"),
     api("/api/v1/legal/reminder-rules"),
+    api("/api/v1/legal/wecom-archive/groups?status=enabled&page_size=200"),
   ]);
   const reminders = data.items || [];
   const rules = rulesData.items || [];
+  const confirmedGroups = groupsData.items || [];
+  const reminderGroupOptions = confirmedGroups
+    .map((group) => `<option value="${escapeHtml(group.room_id)}">${escapeHtml(`${group.room_id}${group.display_name ? ` · ${group.display_name}` : ""}`)}</option>`)
+    .join("");
   const editing = reminders.find((item) => item.id === state.editingReminderId);
   $("#content").innerHTML = `
     <div class="grid">
       ${panel(
         "创建自定义提醒",
-        `<form id="custom-reminder-form" class="form-grid"><div class="field"><label>群 ID</label><input name="group_id" required /></div><div class="field"><label>提醒时间</label><input name="remind_at" type="datetime-local" required /></div><div class="field"><label>目标人员 ID</label><input name="target_userid" /></div><div class="field wide"><label>提醒内容</label><textarea name="content" required></textarea></div><div class="field"><button type="submit">创建提醒</button></div></form>`,
+        `<form id="custom-reminder-form" class="form-grid"><div class="field"><label>确认群</label><select id="custom-reminder-group" name="group_id" required><option value="">请选择群</option>${reminderGroupOptions}</select></div><div class="field"><label>@人员（可选）</label><select id="custom-reminder-target" name="target_userid" disabled><option value="">请先选择群</option></select></div><div class="field"><label>提醒时间</label><input name="remind_at" type="datetime-local" required /></div><div class="field wide"><label>提醒内容</label><textarea name="content" required></textarea></div><div class="field"><button type="submit" ${confirmedGroups.length ? "" : "disabled"}>创建提醒</button></div></form>`,
       )}
       ${
         editing
           ? panel(
               `编辑自定义提醒 · ${editing.id}`,
-              `<form id="edit-reminder-form" class="form-grid"><div class="field"><label>提醒时间</label><input name="remind_at" type="datetime-local" value="${escapeHtml(editing.remind_at.slice(0, 16))}" required /></div><div class="field"><label>目标人员 ID</label><input name="target_userid" value="${escapeHtml(editing.target_userid || "")}" /></div><div class="field wide"><label>提醒内容</label><textarea name="content" required>${escapeHtml(editing.content)}</textarea></div><div class="field form-actions"><button type="submit">保存</button><button type="button" class="ghost" id="cancel-reminder-edit">取消</button></div></form>`,
+              `<form id="edit-reminder-form" class="form-grid"><div class="field"><label>确认群</label><input value="${escapeHtml(caseGroupLabel(editing.group_id, confirmedGroups).replace(/<[^>]*>/g, ""))}" disabled /></div><div class="field"><label>@人员（可选）</label><select id="edit-reminder-target" name="target_userid"><option value="">正在加载群成员...</option></select></div><div class="field"><label>提醒时间</label><input name="remind_at" type="datetime-local" value="${escapeHtml(editing.remind_at.slice(0, 16))}" required /></div><div class="field wide"><label>提醒内容</label><textarea name="content" required>${escapeHtml(editing.content)}</textarea></div><div class="field form-actions"><button type="submit">保存</button><button type="button" class="ghost" id="cancel-reminder-edit">取消</button></div></form>`,
             )
           : ""
       }
@@ -1424,7 +1548,8 @@ async function renderReminders() {
             { label: "类型", key: "reminder_type" },
             { label: "状态", render: (row) => badge(row.status) },
             { label: "提醒时间", key: "remind_at" },
-            { label: "群", key: "group_id" },
+            { label: "群", render: (row) => caseGroupLabel(row.group_id, confirmedGroups) },
+            { label: "@人员", render: (row) => row.target_userid ? `<span class="mono">${escapeHtml(row.target_userid)}</span>` : "-" },
             { label: "内容", key: "content" },
             { label: "取消原因", key: "cancel_reason" },
             { label: "操作", render: (row) => row.status === "pending" ? `<div class="row-actions">${row.reminder_type === "custom" ? `<button class="small ghost" data-edit-reminder="${row.id}">编辑</button>` : ""}<button class="small ghost" data-cancel-reminder="${row.id}">取消</button></div>` : "" },
@@ -1435,10 +1560,39 @@ async function renderReminders() {
       )}
     </div>
   `;
+  const loadMemberOptions = async (groupId, select, selectedUserId = "") => {
+    if (!groupId) {
+      select.innerHTML = '<option value="">请先选择群</option>';
+      select.disabled = true;
+      return;
+    }
+    select.disabled = true;
+    select.innerHTML = '<option value="">正在加载群成员...</option>';
+    try {
+      const result = await api(`/api/v1/legal/wecomapi-settings/group-members?room_id=${encodeURIComponent(groupId)}`);
+      const members = result.members || [];
+      const selectedExists = members.some((member) => member.user_id === selectedUserId);
+      select.innerHTML = `
+        <option value="">不 @ 任何人</option>
+        ${!selectedExists && selectedUserId ? `<option value="${escapeHtml(selectedUserId)}">${escapeHtml(`${selectedUserId}（当前值）`)}</option>` : ""}
+        ${members.map((member) => `<option value="${escapeHtml(member.user_id)}">${escapeHtml(`${member.display_name} · ${member.user_id}`)}</option>`).join("")}
+      `;
+      select.value = selectedUserId || "";
+      select.disabled = false;
+      if (result.warning) showAlert(result.warning);
+    } catch (error) {
+      select.innerHTML = '<option value="">群成员加载失败</option>';
+      select.disabled = true;
+      showAlert(error.message, "error");
+    }
+  };
+  $("#custom-reminder-group").addEventListener("change", (event) => {
+    loadMemberOptions(event.target.value, $("#custom-reminder-target"));
+  });
   $("#custom-reminder-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const payload = Object.fromEntries(new FormData(event.currentTarget).entries());
-    if (!payload.target_userid) payload.target_userid = null;
+    payload.target_userid = payload.target_userid || null;
     await api("/api/v1/legal/reminders/custom", { method: "POST", body: JSON.stringify(payload) });
     showAlert("自定义提醒已创建");
     renderReminders();
@@ -1453,11 +1607,12 @@ async function renderReminders() {
     renderReminders();
   });
   if (editing) {
+    await loadMemberOptions(editing.group_id, $("#edit-reminder-target"), editing.target_userid || "");
     $("#cancel-reminder-edit").addEventListener("click", () => { state.editingReminderId = null; renderReminders(); });
     $("#edit-reminder-form").addEventListener("submit", async (event) => {
       event.preventDefault();
       const payload = Object.fromEntries(new FormData(event.currentTarget).entries());
-      if (!payload.target_userid) payload.target_userid = null;
+      payload.target_userid = payload.target_userid || null;
       await api(`/api/v1/legal/reminders/${editing.id}`, { method: "PATCH", body: JSON.stringify(payload) });
       state.editingReminderId = null;
       showAlert("自定义提醒已更新");
@@ -1614,22 +1769,284 @@ async function renderSync() {
   );
 }
 
+const kdocsVisibleColumns = {
+  enforcement: ["原告主体", "被告", "文书执行类型", "上传文件", "应还款时间", "民初案号", "总金额", "已还欠款", "案件状态", "备注"],
+  court: ["开庭时间", "时间", "公司（原告）", "民初案号", "被告", "开庭方式", "跟进人", "金额", "传票", "核对"],
+  payment: ["案号", "被告", "缴费类型", "金额", "文件链接", "识别摘要", "需人工复核", "消息ID"],
+};
+
+function kdocsValue(value) {
+  if (value === null || value === undefined || value === "") return '<span class="muted">-</span>';
+  const url = safeExternalUrl(value);
+  if (url) return `<a class="kdocs-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">打开</a>`;
+  return `<span class="kdocs-cell-text">${escapeHtml(value)}</span>`;
+}
+
+function kdocsTargetTabs(overview) {
+  const targets = [
+    ...(overview.targets || []).map((target) => ({ ...target, key: target.key })),
+    { key: "documents", name: "判决书文件", configured: Boolean(overview.drive_id), total_rows: null },
+  ];
+  return targets
+    .map(
+      (target) => `
+        <button type="button" class="kdocs-tab ${state.kdocsTarget === target.key ? "active" : ""}" data-kdocs-target="${escapeHtml(target.key)}">
+          <span>${escapeHtml(target.name)}</span>
+          ${target.total_rows === null ? "" : `<strong>${escapeHtml(target.total_rows || 0)}</strong>`}
+          <i class="${target.configured ? "ready" : ""}"></i>
+        </button>
+      `,
+    )
+    .join("");
+}
+
+function kdocsTableContent(data) {
+  const columns = kdocsVisibleColumns[data.target] || data.headers || [];
+  const rows = data.items || [];
+  const totalPages = Math.max(1, Math.ceil((data.total || 0) / data.page_size));
+  return `
+    <div class="kdocs-content-head">
+      <div>
+        <h3>${escapeHtml(data.sheet_name || data.target_name)}</h3>
+        <span>共 ${escapeHtml(data.total)} 条，第 ${escapeHtml(data.page)} / ${escapeHtml(totalPages)} 页</span>
+      </div>
+      ${safeExternalUrl(data.file_url) ? `<a class="button-like ghost" href="${escapeHtml(data.file_url)}" target="_blank" rel="noreferrer">在金山中打开</a>` : ""}
+    </div>
+    <div class="table-wrap kdocs-table-wrap">
+      <table class="kdocs-table">
+        <thead><tr><th class="kdocs-row-number">行</th>${columns.map((column) => `<th>${escapeHtml(column)}</th>`).join("")}</tr></thead>
+        <tbody>
+          ${rows.length ? rows.map((row) => `<tr><td class="kdocs-row-number">${escapeHtml(row.row_index + 1)}</td>${columns.map((column) => `<td>${kdocsValue((row.values || {})[column])}</td>`).join("")}</tr>`).join("") : `<tr><td colspan="${columns.length + 1}"><div class="empty-state">当前页暂无数据</div></td></tr>`}
+        </tbody>
+      </table>
+    </div>
+    <div class="kdocs-pagination">
+      <button type="button" class="ghost" data-kdocs-page="prev" ${data.page <= 1 ? "disabled" : ""}>&larr; 上一页</button>
+      <button type="button" class="ghost" data-kdocs-page="next" ${data.page >= totalPages ? "disabled" : ""}>下一页 &rarr;</button>
+    </div>
+  `;
+}
+
+function kdocsDocumentContent(data) {
+  return `
+    <div class="kdocs-content-head">
+      <div><h3>判决书文件</h3><span>${escapeHtml(data.items.length)} 个搜索结果</span></div>
+      <form id="kdocs-document-search" class="kdocs-search-form">
+        <input name="query" maxlength="100" value="${escapeHtml(state.kdocsQuery)}" placeholder="搜索文件名" />
+        <button type="submit">搜索</button>
+      </form>
+    </div>
+    <div class="kdocs-file-list">
+      ${data.items.length ? data.items.map((item) => {
+        const url = safeExternalUrl(item.url);
+        return `
+          <article class="kdocs-file-row">
+            <div class="kdocs-file-type">${escapeHtml((item.name.split(".").pop() || "文件").slice(0, 4).toUpperCase())}</div>
+            <div class="kdocs-file-main">
+              <strong>${escapeHtml(item.name)}</strong>
+              <span>${escapeHtml(item.path || "金山云盘")} · ${escapeHtml(formatFileSize(item.size))}</span>
+            </div>
+            <div class="kdocs-file-meta">
+              <span>${escapeHtml(item.modified_by || "-")}</span>
+              <span>${escapeHtml(item.modified_at || "-")}</span>
+            </div>
+            ${url ? `<a class="button-like ghost" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">打开</a>` : ""}
+          </article>
+        `;
+      }).join("") : '<div class="empty-state">没有找到匹配文件</div>'}
+    </div>
+    <div class="kdocs-pagination">
+      <button type="button" class="ghost" data-kdocs-doc-page="prev" ${state.kdocsDocumentTokenStack.length === 0 ? "disabled" : ""}>&larr; 上一页</button>
+      <button type="button" class="ghost" data-kdocs-doc-page="next" ${data.next_page_token ? "" : "disabled"}>下一页 &rarr;</button>
+    </div>
+  `;
+}
+
+async function renderKDocsBrowser({ refreshOverview = false } = {}) {
+  if (refreshOverview || !state.data.kdocsOverview) {
+    state.data.kdocsOverview = await api("/api/v1/legal/kdocs-browser");
+  }
+  const overview = state.data.kdocsOverview;
+  let contentData;
+  if (state.kdocsTarget === "documents") {
+    const params = new URLSearchParams({ query: state.kdocsQuery, page_size: "30" });
+    if (state.kdocsDocumentToken) params.set("page_token", state.kdocsDocumentToken);
+    contentData = await api(`/api/v1/legal/kdocs-browser/documents?${params}`);
+  } else {
+    contentData = await api(`/api/v1/legal/kdocs-browser/tables/${state.kdocsTarget}?page=${state.kdocsPage}&page_size=30`);
+  }
+  $("#content").innerHTML = `
+    <section class="kdocs-browser">
+      <header class="kdocs-header">
+        <div>
+          <div class="kdocs-title-line">
+            <h2>致和法务文档库</h2>
+            <span class="kdocs-live-badge ${overview.configured ? "ready" : ""}">${overview.configured ? "实时数据" : "配置异常"}</span>
+          </div>
+          <p>Drive ${escapeHtml(overview.drive_id || "未配置")} · ${escapeHtml(overview.transport)}</p>
+        </div>
+        <button id="refresh-kdocs-btn" type="button" class="ghost">刷新</button>
+      </header>
+      <nav class="kdocs-tabs" aria-label="金山文档视图">${kdocsTargetTabs(overview)}</nav>
+      <div class="kdocs-content">${state.kdocsTarget === "documents" ? kdocsDocumentContent(contentData) : kdocsTableContent(contentData)}</div>
+    </section>
+  `;
+
+  document.querySelectorAll("[data-kdocs-target]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      state.kdocsTarget = button.dataset.kdocsTarget;
+      state.kdocsPage = 1;
+      state.kdocsDocumentToken = null;
+      state.kdocsDocumentTokenStack = [];
+      await renderKDocsBrowser();
+    });
+  });
+  $("#refresh-kdocs-btn").addEventListener("click", () => renderKDocsBrowser({ refreshOverview: true }));
+  document.querySelectorAll("[data-kdocs-page]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      state.kdocsPage += button.dataset.kdocsPage === "next" ? 1 : -1;
+      await renderKDocsBrowser();
+    });
+  });
+  const searchForm = $("#kdocs-document-search");
+  if (searchForm) {
+    searchForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      state.kdocsQuery = String(new FormData(event.currentTarget).get("query") || "").trim() || "判决书";
+      state.kdocsDocumentToken = null;
+      state.kdocsDocumentTokenStack = [];
+      await renderKDocsBrowser();
+    });
+  }
+  document.querySelectorAll("[data-kdocs-doc-page]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (button.dataset.kdocsDocPage === "next" && contentData.next_page_token) {
+        state.kdocsDocumentTokenStack.push(state.kdocsDocumentToken);
+        state.kdocsDocumentToken = contentData.next_page_token;
+      } else if (button.dataset.kdocsDocPage === "prev" && state.kdocsDocumentTokenStack.length) {
+        state.kdocsDocumentToken = state.kdocsDocumentTokenStack.pop();
+      }
+      await renderKDocsBrowser();
+    });
+  });
+}
+
+function workspaceTable(title, rows, columns) {
+  return panel(title, table(columns, rows || []), `<span class="panel-meta">${(rows || []).length} 条</span>`);
+}
+
+async function renderCaseWorkspace() {
+  if (!state.selectedCaseId) {
+    const casesData = await api("/api/v1/legal/cases?limit=200");
+    const cases = casesData.items || [];
+    if (cases.length) state.selectedCaseId = cases[0].id;
+    else {
+      $("#content").innerHTML = '<div class="empty-state">暂无正式案件</div>';
+      return;
+    }
+  }
+  const data = await api(`/api/v1/legal/cases/${state.selectedCaseId}/workspace`);
+  const item = data.case;
+  $("#content").innerHTML = `
+    <section class="case-workspace-view">
+      <header class="case-workspace-header">
+        <div><button class="ghost small" id="back-to-cases" type="button">返回案件</button><h2>${escapeHtml(item.case_no)}</h2><p>${escapeHtml([item.plaintiff_name, item.debtor_name, item.court_name].filter(Boolean).join(" · ") || "案件信息待补充")}</p></div>
+        <div class="case-workspace-amount"><span>已付 / 总额</span><strong>${escapeHtml(item.paid_amount)} / ${escapeHtml(item.total_amount)}</strong>${badge(item.status)}</div>
+      </header>
+      <div class="workspace-stat-grid">
+        ${Object.entries(data.counts).map(([key, value]) => `<div><span>${escapeHtml({groups:"群",messages:"消息",media:"资料",events:"事件",payments:"付款",reminders:"提醒",sync_logs:"金山"}[key] || key)}</span><strong>${value}</strong></div>`).join("")}
+      </div>
+      <div class="workspace-columns">
+        <div class="workspace-main">
+          ${workspaceTable("付款流水", data.payments, [
+            { label: "类型", key: "record_type" }, { label: "金额", key: "amount" }, { label: "日期", key: "payment_date" },
+            { label: "付款人", key: "payer_name" }, { label: "状态", render: (row) => badge(row.status) },
+            { label: "操作", render: (row) => row.status === "pending" ? `<button class="small" data-approve-payment="${row.id}">批准</button>` : row.status === "approved" && row.record_type !== "reversal" ? `<button class="small ghost" data-reverse-payment="${row.id}">冲正</button>` : "-" },
+          ])}
+          ${panel("新增付款", `<form id="workspace-payment-form" class="form-grid"><div class="field"><label>金额</label><input name="amount" type="number" min="0.01" step="0.01" required /></div><div class="field"><label>付款日期</label><input name="payment_date" type="date" /></div><div class="field"><label>付款人</label><input name="payer_name" /></div><div class="field"><label>复核状态</label><select name="status"><option value="pending">待复核</option><option value="approved">已批准</option></select></div><div class="field wide"><label>备注</label><input name="note" /></div><div class="field"><button type="submit">登记流水</button></div></form>`)}
+          ${workspaceTable("资料", data.media, [{label:"文件",key:"original_filename"},{label:"类型",key:"media_type"},{label:"OCR",render:(row)=>badge(row.ocr_status)},{label:"复核",render:(row)=>badge(row.review_status)}])}
+          ${workspaceTable("业务事件", data.events, [{label:"类型",key:"event_type"},{label:"金额",key:"amount"},{label:"归属",render:(row)=>badge(row.attribution_status)},{label:"业务状态",render:(row)=>badge(row.business_status)},{label:"时间",key:"event_time"}])}
+          ${workspaceTable("群聊上下文", data.messages, [{label:"群",key:"group_id"},{label:"发送人",key:"sender_id"},{label:"类型",key:"msg_type"},{label:"内容",render:(row)=>escapeHtml(String(row.content||"").slice(0,180))},{label:"时间",key:"received_at"}])}
+        </div>
+        <aside class="workspace-side">
+          ${workspaceTable("关联群", data.groups, [{label:"群 ID",key:"group_id"},{label:"主群",render:(row)=>row.is_primary?"是":"否"}])}
+          ${workspaceTable("提醒", data.reminders, [{label:"时间",key:"remind_at"},{label:"内容",render:(row)=>escapeHtml(String(row.content||"").slice(0,80))},{label:"状态",render:(row)=>badge(row.status)}])}
+          ${workspaceTable("金山结果", data.sync_logs, [{label:"类型",key:"sync_type"},{label:"结果",render:(row)=>badge(row.outcome)},{label:"行",key:"external_row_index"}])}
+          ${workspaceTable("审计时间线", data.audit_timeline, [{label:"类型",key:"type"},{label:"内容",key:"label"},{label:"时间",key:"at"}])}
+        </aside>
+      </div>
+    </section>`;
+  $("#back-to-cases").addEventListener("click", () => setView("cases"));
+  $("#workspace-payment-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const payload = Object.fromEntries(new FormData(event.currentTarget).entries());
+    if (!payload.payment_date) payload.payment_date = null;
+    await api(`/api/v1/legal/cases/${item.id}/payments`, {method:"POST", body:JSON.stringify(payload)});
+    await renderCaseWorkspace();
+  });
+  document.querySelectorAll("[data-approve-payment]").forEach((button) => button.addEventListener("click", async () => {
+    await api(`/api/v1/legal/cases/${item.id}/payments/${button.dataset.approvePayment}`, {method:"PATCH", body:JSON.stringify({action:"approve"})});
+    await renderCaseWorkspace();
+  }));
+  document.querySelectorAll("[data-reverse-payment]").forEach((button) => button.addEventListener("click", async () => {
+    const note = window.prompt("填写冲正原因");
+    if (!note) return;
+    await api(`/api/v1/legal/cases/${item.id}/payments/${button.dataset.reversePayment}`, {method:"PATCH", body:JSON.stringify({action:"reverse", note})});
+    await renderCaseWorkspace();
+  }));
+}
+
+async function renderAttributionQueue() {
+  const [queueData, casesData] = await Promise.all([
+    api("/api/v1/legal/attribution-queue?status=pending&limit=200"),
+    api("/api/v1/legal/cases?limit=200"),
+  ]);
+  const items = queueData.items || [];
+  const cases = casesData.items || [];
+  $("#content").innerHTML = `
+    <section class="attribution-view">
+      <header class="case-section-header"><div><h2>案件归属复核</h2><p>按群、上下文和 AI 候选批量确认；确认前不会产生付款、提醒或金山写入。</p></div><span class="case-candidate-count">${queueData.total || 0}</span></header>
+      ${panel("批量操作", `<form id="attribution-form" class="form-grid"><div class="field wide"><label>目标案件</label><select name="case_id"><option value="">选择案件</option>${cases.map((row)=>`<option value="${row.id}">${escapeHtml(row.case_no)} · ${escapeHtml(row.debtor_name)}</option>`).join("")}</select></div><div class="field wide"><label>驳回原因</label><input name="reason" placeholder="仅驳回时填写" /></div><div class="field form-actions"><button type="submit" data-attribution-action="confirm">确认归属</button><button type="submit" class="danger" data-attribution-action="reject">明确驳回</button></div></form>`)}
+      ${panel("隔离队列", table([
+        {label:"选择",render:(row)=>`<input type="checkbox" data-attribution-id="${row.id}" />`},
+        {label:"群 ID",key:"group_id"},{label:"对象",render:(row)=>`${escapeHtml(row.subject_type)} #${row.subject_id}`},
+        {label:"候选案件",render:(row)=>fmt(row.suggested_case_id)},{label:"置信度",render:(row)=>fmt(row.confidence)},
+        {label:"原因",key:"reason"},{label:"进入时间",key:"created_at"},
+      ], items))}
+    </section>`;
+  $("#attribution-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const submitter = event.submitter;
+    const itemIds = [...document.querySelectorAll("[data-attribution-id]:checked")].map((input)=>Number(input.dataset.attributionId));
+    if (!itemIds.length) return showAlert("请至少选择一条待归属记录", "error");
+    const form = new FormData(event.currentTarget);
+    const decision = submitter.dataset.attributionAction;
+    const payload = {item_ids:itemIds, decision, case_id: decision === "confirm" ? Number(form.get("case_id")) || null : null, reason:String(form.get("reason")||"") || null};
+    await api("/api/v1/legal/attribution-queue/batch-confirm", {method:"POST", body:JSON.stringify(payload)});
+    showAlert("批量归属已处理");
+    await renderAttributionQueue();
+  });
+}
+
 async function loadView() {
-  if (state.view === "android-device") stopDeviceConsole();
   $("#content").innerHTML = '<div class="empty-state">加载中...</div>';
   try {
     if (state.view === "overview") await renderOverview();
     if (state.view === "cases") await renderCases();
+    if (state.view === "case-workspace") await renderCaseWorkspace();
+    if (state.view === "attribution") await renderAttributionQueue();
     if (state.view === "messages") await renderMessages();
     if (state.view === "archive-groups") await renderArchiveGroups();
     if (state.view === "ocr-reviews") await renderOCRReviews();
+    if (state.view === "recognition-settings") await renderRecognitionSettings();
     if (state.view === "reminders") await renderReminders();
     if (state.view === "merchant-questions") await renderMerchantQuestions();
-    if (state.view === "android-device") await renderAndroidDevice();
+    if (state.view === "send-platform") await renderWeComApiPlatform();
     if (state.view === "system-alerts") await renderSystemAlerts();
     if (state.view === "events") await renderEvents();
     if (state.view === "media") await renderMedia();
     if (state.view === "sync") await renderSync();
+    if (state.view === "kdocs-browser") await renderKDocsBrowser();
   } catch (error) {
     $("#content").innerHTML = "";
     showAlert(error.message, "error");

@@ -71,7 +71,7 @@ def test_external_question_times_out_once_and_internal_reply_closes_it(client, d
     assert reminder.status == "cancelled"
 
 
-def test_one_internal_reply_closes_all_previous_questions_in_same_group_only(client, db_session):
+def test_one_internal_reply_closes_only_latest_question_in_same_group(client, db_session):
     _create_group(client, "merchant_a")
     _create_group(client, "merchant_b")
     now = datetime(2026, 7, 20, 10, 0, tzinfo=app_timezone())
@@ -83,7 +83,7 @@ def test_one_internal_reply_closes_all_previous_questions_in_same_group_only(cli
     db_session.expire_all()
     group_a = list(db_session.scalars(select(MerchantQuestion).where(MerchantQuestion.group_id == "merchant_a")).all())
     group_b = list(db_session.scalars(select(MerchantQuestion).where(MerchantQuestion.group_id == "merchant_b")).all())
-    assert all(question.status == "replied" for question in group_a)
+    assert [question.status for question in group_a] == ["open", "replied"]
     assert group_b[0].status == "open"
 
 

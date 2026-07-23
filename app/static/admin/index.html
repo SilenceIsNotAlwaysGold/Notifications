@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>法务群自动化管理后台</title>
-    <link rel="stylesheet" href="/admin/styles.css?v=20260722-10" />
+    <link rel="stylesheet" href="/admin/styles.css?v=20260724-18" />
   </head>
   <body>
     <div class="app-shell">
@@ -17,26 +17,20 @@
           </div>
         </div>
         <nav class="nav">
-          <button class="nav-item active" data-view="overview">总览</button>
-          <button class="nav-item" data-view="cases">案件</button>
-          <button class="nav-item" data-view="messages">消息</button>
-          <button class="nav-item" data-view="archive-groups">归档群</button>
-          <button class="nav-item" data-view="ocr-reviews">人工复核</button>
-          <button class="nav-item" data-view="reminders">提醒</button>
-          <button class="nav-item" data-view="merchant-questions">商家提问</button>
-          <button class="nav-item" data-view="android-device">发送账号</button>
-          <button class="nav-item" data-view="system-alerts">系统告警</button>
-          <button class="nav-item" data-view="events">事件</button>
-          <button class="nav-item" data-view="media">媒体</button>
-          <button class="nav-item" data-view="sync">同步日志</button>
+          <button class="nav-item active" data-section="workbench" data-view="overview">工作台</button>
+          <button class="nav-item" data-section="cases" data-view="cases">案件与群</button>
+          <button class="nav-item" data-section="materials" data-view="ocr-reviews">资料处理</button>
+          <button class="nav-item" data-section="reminders" data-view="reminders">提醒任务</button>
+          <button class="nav-item" data-section="kdocs" data-view="kdocs-browser">金山结果</button>
+          <button class="nav-item" data-section="settings" data-view="recognition-settings">系统配置</button>
         </nav>
       </aside>
 
       <main class="main">
         <header class="topbar">
           <div>
-            <h1 id="view-title">总览</h1>
-            <p id="view-subtitle">系统状态、调度器和部署健康情况</p>
+            <h1 id="view-title">工作台</h1>
+            <p id="view-subtitle">集中处理待办、失败任务和业务异常</p>
           </div>
           <div class="key-panel">
             <input id="api-key-input" type="password" placeholder="X-API-Key" autocomplete="off" />
@@ -44,6 +38,8 @@
             <button id="refresh-btn" class="ghost">刷新</button>
           </div>
         </header>
+
+        <nav id="section-tabs" class="section-tabs" aria-label="当前业务模块"></nav>
 
         <section id="alert" class="alert hidden"></section>
         <section id="content"></section>
@@ -54,6 +50,6 @@
       <div class="empty-state">暂无数据</div>
     </template>
 
-    <script src="/admin/admin.js?v=20260722-10"></script>
+    <script src="/admin/admin.js?v=20260724-18"></script>
   </body>
 </html>

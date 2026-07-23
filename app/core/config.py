@@ -23,43 +23,25 @@ class Settings(BaseSettings):
     tenant_settings_enabled: bool = Field(default=True, alias="TENANT_SETTINGS_ENABLED")
     secret_value_mask: str = Field(default="******", alias="SECRET_VALUE_MASK")
     tenant_secret_encryption_key: str | None = Field(default=None, alias="TENANT_SECRET_ENCRYPTION_KEY")
-    wecom_send_mode: Literal["mock", "webhook", "wecomapi", "wecom_cli", "wecom_bot"] = Field(default="mock", alias="WECOM_SEND_MODE")
-    wecom_webhook_url: str | None = Field(default=None, alias="WECOM_WEBHOOK_URL")
+    wecom_send_mode: Literal["mock", "wecomapi"] = Field(default="wecomapi", alias="WECOM_SEND_MODE")
     wecom_timeout_seconds: int = Field(default=8, gt=0, alias="WECOM_TIMEOUT_SECONDS")
     wecom_max_retry: int = Field(default=3, ge=1, alias="WECOM_MAX_RETRY")
     wecomapi_base_url: str | None = Field(default=None, alias="WECOMAPI_BASE_URL")
     wecomapi_api_path: str = Field(default="/wecom/finder/api", alias="WECOMAPI_API_PATH")
     wecomapi_token: str | None = Field(default=None, alias="WECOMAPI_TOKEN")
+    wecomapi_token_header: str = Field(
+        default="WECOM-TOKEN",
+        pattern=r"^[A-Za-z0-9-]+$",
+        alias="WECOMAPI_TOKEN_HEADER",
+    )
     wecomapi_guid: str | None = Field(default=None, alias="WECOMAPI_GUID")
+    wecomapi_callback_path_secret: str | None = Field(default=None, alias="WECOMAPI_CALLBACK_PATH_SECRET")
+    wecomapi_callback_max_bytes: int = Field(default=1048576, ge=1024, le=10485760, alias="WECOMAPI_CALLBACK_MAX_BYTES")
+    wecomapi_callback_rate_per_minute: int = Field(default=120, ge=1, alias="WECOMAPI_CALLBACK_RATE_PER_MINUTE")
     wecomapi_min_interval_seconds: float = Field(default=3.0, ge=0, alias="WECOMAPI_MIN_INTERVAL_SECONDS")
     wecomapi_daily_limit: int = Field(default=200, ge=1, alias="WECOMAPI_DAILY_LIMIT")
     wecomapi_failure_threshold: int = Field(default=3, ge=1, alias="WECOMAPI_FAILURE_THRESHOLD")
     wecomapi_cooldown_seconds: int = Field(default=300, ge=1, alias="WECOMAPI_COOLDOWN_SECONDS")
-    wecom_account_login_mode: Literal["android", "protocol"] = Field(default="android", alias="WECOM_ACCOUNT_LOGIN_MODE")
-    wecom_protocol_account_base_url: str | None = Field(default=None, alias="WECOM_PROTOCOL_ACCOUNT_BASE_URL")
-    wecom_protocol_account_api_path: str = Field(default="/api/qw/doApi", alias="WECOM_PROTOCOL_ACCOUNT_API_PATH")
-    wecom_protocol_account_token: str | None = Field(default=None, alias="WECOM_PROTOCOL_ACCOUNT_TOKEN")
-    wecom_protocol_account_guid: str | None = Field(default=None, alias="WECOM_PROTOCOL_ACCOUNT_GUID")
-    wecom_android_control_enabled: bool = Field(default=False, alias="WECOM_ANDROID_CONTROL_ENABLED")
-    wecom_android_serial: str = Field(default="127.0.0.1:5555", alias="WECOM_ANDROID_SERIAL")
-    wecom_android_adb_binary: str = Field(default="adb", alias="WECOM_ANDROID_ADB_BINARY")
-    wecom_android_control_timeout_seconds: int = Field(default=10, gt=0, le=30, alias="WECOM_ANDROID_CONTROL_TIMEOUT_SECONDS")
-    wecom_cli_binary: str = Field(default="wecom-cli", alias="WECOM_CLI_BINARY")
-    wecom_cli_config_dir: str = Field(default="~/.config/wecom", alias="WECOM_CLI_CONFIG_DIR")
-    wecom_cli_timeout_seconds: int = Field(default=35, gt=0, alias="WECOM_CLI_TIMEOUT_SECONDS")
-    wecom_cli_min_interval_seconds: float = Field(default=1.0, ge=0, alias="WECOM_CLI_MIN_INTERVAL_SECONDS")
-    wecom_cli_daily_limit: int = Field(default=200, ge=1, alias="WECOM_CLI_DAILY_LIMIT")
-    wecom_cli_group_daily_limit: int = Field(default=10, ge=1, alias="WECOM_CLI_GROUP_DAILY_LIMIT")
-    wecom_cli_failure_threshold: int = Field(default=3, ge=1, alias="WECOM_CLI_FAILURE_THRESHOLD")
-    wecom_cli_cooldown_seconds: int = Field(default=300, ge=1, alias="WECOM_CLI_COOLDOWN_SECONDS")
-    wecom_bot_sidecar_url: str | None = Field(default=None, alias="WECOM_BOT_SIDECAR_URL")
-    wecom_bot_sidecar_token: str | None = Field(default=None, alias="WECOM_BOT_SIDECAR_TOKEN")
-    wecom_bot_timeout_seconds: int = Field(default=10, gt=0, alias="WECOM_BOT_TIMEOUT_SECONDS")
-    wecom_bot_min_interval_seconds: float = Field(default=1.0, ge=0, alias="WECOM_BOT_MIN_INTERVAL_SECONDS")
-    wecom_bot_daily_limit: int = Field(default=200, ge=1, alias="WECOM_BOT_DAILY_LIMIT")
-    wecom_bot_group_daily_limit: int = Field(default=10, ge=1, alias="WECOM_BOT_GROUP_DAILY_LIMIT")
-    wecom_bot_failure_threshold: int = Field(default=3, ge=1, alias="WECOM_BOT_FAILURE_THRESHOLD")
-    wecom_bot_cooldown_seconds: int = Field(default=300, ge=1, alias="WECOM_BOT_COOLDOWN_SECONDS")
     wecom_archive_mode: Literal["mock", "real"] = Field(default="mock", alias="WECOM_ARCHIVE_MODE")
     wecom_corp_id: str | None = Field(default=None, alias="WECOM_CORP_ID")
     wecom_archive_secret: str | None = Field(default=None, alias="WECOM_ARCHIVE_SECRET")
@@ -75,6 +57,9 @@ class Settings(BaseSettings):
     media_public_base_url: str | None = Field(default=None, alias="MEDIA_PUBLIC_BASE_URL")
     media_download_mode: Literal["mock", "real"] = Field(default="mock", alias="MEDIA_DOWNLOAD_MODE")
     media_max_file_size_mb: int = Field(default=50, ge=1, alias="MEDIA_MAX_FILE_SIZE_MB")
+    legal_data_retention_enabled: bool = Field(default=False, alias="LEGAL_DATA_RETENTION_ENABLED")
+    legal_data_retention_days: int = Field(default=3650, ge=30, alias="LEGAL_DATA_RETENTION_DAYS")
+    legal_data_retention_review_statuses: str = Field(default="rejected", alias="LEGAL_DATA_RETENTION_REVIEW_STATUSES")
     tencent_doc_mode: Literal["mock", "real"] = Field(default="mock", alias="TENCENT_DOC_MODE")
     tencent_doc_base_url: str | None = Field(default=None, alias="TENCENT_DOC_BASE_URL")
     tencent_doc_app_id: str | None = Field(default=None, alias="TENCENT_DOC_APP_ID")
@@ -122,6 +107,11 @@ class Settings(BaseSettings):
     ocr_sidecar_url: str | None = Field(default=None, alias="OCR_SIDECAR_URL")
     ocr_enable_reprocess: bool = Field(default=True, alias="OCR_ENABLE_REPROCESS")
     ocr_max_text_length: int = Field(default=20000, ge=1, alias="OCR_MAX_TEXT_LENGTH")
+    tencent_ocr_secret_id: str | None = Field(default=None, alias="TENCENT_OCR_SECRET_ID")
+    tencent_ocr_secret_key: str | None = Field(default=None, alias="TENCENT_OCR_SECRET_KEY")
+    tencent_ocr_region: str = Field(default="ap-guangzhou", alias="TENCENT_OCR_REGION")
+    tencent_ocr_pdf_max_pages: int = Field(default=1, ge=1, le=20, alias="TENCENT_OCR_PDF_MAX_PAGES")
+    tencent_ocr_timeout_seconds: int = Field(default=20, gt=0, alias="TENCENT_OCR_TIMEOUT_SECONDS")
     legal_extraction_mode: Literal["regex", "llm"] = Field(default="regex", alias="LEGAL_EXTRACTION_MODE")
     legal_llm_base_url: str | None = Field(default=None, alias="LEGAL_LLM_BASE_URL")
     legal_llm_api_key: str | None = Field(default=None, alias="LEGAL_LLM_API_KEY")
@@ -138,7 +128,8 @@ class Settings(BaseSettings):
     ops_backup_stale_hours: int = Field(default=26, ge=1, alias="OPS_BACKUP_STALE_HOURS")
     ops_backup_retention_days: int = Field(default=14, ge=1, alias="OPS_BACKUP_RETENTION_DAYS")
     ops_disk_free_min_gb: float = Field(default=2.0, ge=0, alias="OPS_DISK_FREE_MIN_GB")
-    ops_webhook_url: str | None = Field(default=None, alias="OPS_WEBHOOK_URL")
+    ops_alert_group_id: str | None = Field(default=None, alias="OPS_ALERT_GROUP_ID")
+    ops_alert_user_ids: str = Field(default="", alias="OPS_ALERT_USER_IDS")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", populate_by_name=True)
 
@@ -157,6 +148,15 @@ class Settings(BaseSettings):
     @property
     def public_endpoint_list(self) -> list[str]:
         return [path.strip() for path in (self.public_endpoints or "").split(",") if path.strip()]
+
+    @property
+    def legal_data_retention_status_list(self) -> list[str]:
+        allowed = {"rejected", "approved", "corrected", "not_required"}
+        return [
+            status
+            for status in (item.strip() for item in self.legal_data_retention_review_statuses.split(","))
+            if status in allowed
+        ]
 
 
 @lru_cache

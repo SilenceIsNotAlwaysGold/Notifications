@@ -21,6 +21,13 @@ class LegalEvent(Base):
     amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     extracted_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+    attribution_status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    business_status: Mapped[str] = mapped_column(String(32), default="staged", index=True)
+    confidence: Mapped[Decimal | None] = mapped_column(Numeric(5, 4), nullable=True)
+    approved_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(AwareDateTime, nullable=True)
+    rejected_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    applied_at: Mapped[datetime | None] = mapped_column(AwareDateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(AwareDateTime, default=now_tz)
 
     case = relationship("LegalCase", back_populates="events")

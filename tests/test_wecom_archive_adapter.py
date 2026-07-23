@@ -119,7 +119,7 @@ def test_replay_processes_text_message_and_creates_business_records(client, db_s
     assert message.sender_id == "user_001"
     assert message.msg_type == "text"
     assert event.event_type == "payment_notice"
-    assert len(reminders) == 7
+    assert len(reminders) == 0
 
 
 def test_replay_with_ocr_processes_media_text_and_kdocs_logs(client, db_session, monkeypatch):
@@ -160,8 +160,8 @@ def test_replay_with_ocr_processes_media_text_and_kdocs_logs(client, db_session,
     assert data["ocr_results"][0]["requires_review"] is False
 
     sync_types = {log.sync_type for log in db_session.scalars(select(DocumentSyncLog)).all()}
-    assert "legal_document_upload" in sync_types
-    assert "enforcement_progress" in sync_types
+    assert "legal_document_upload" not in sync_types
+    assert "enforcement_progress" not in sync_types
     get_settings.cache_clear()
 
 
@@ -180,9 +180,9 @@ def test_replay_demo_creates_case_and_full_mock_business_loop(client, db_session
     assert data["ocr_failed"] == 0
 
     sync_types = {log.sync_type for log in db_session.scalars(select(DocumentSyncLog)).all()}
-    assert {"legal_document_upload", "enforcement_progress", "court_time", "payment_registration"}.issubset(sync_types)
+    assert sync_types == set()
     reminders = list(db_session.scalars(select(Reminder).where(Reminder.reminder_type == "payment_tracking")).all())
-    assert len(reminders) == 7
+    assert len(reminders) == 0
     get_settings.cache_clear()
 
 

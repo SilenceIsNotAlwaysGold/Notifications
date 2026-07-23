@@ -87,15 +87,13 @@ def test_admin_can_create_or_update_tenant_settings(client, db_session, monkeypa
 def test_auditor_can_read_masked_tenant_settings(client, db_session, monkeypatch):
     _enable_auth(monkeypatch)
     _tenant(db_session)
-    _put_settings(client, {"wecom_webhook_url": "https://example.com/webhook?key=secret", "tencent_doc_access_token": "token-secret"})
+    _put_settings(client, {"tencent_doc_access_token": "token-secret"})
     auditor_key = _create_key(db_session, "auditor")
 
     response = client.get("/api/v1/legal/tenants/tenant_001/settings", headers={"X-API-Key": auditor_key})
 
     assert response.status_code == 200
     data = response.json()["data"]
-    assert data["has_wecom_webhook_url"] is True
-    assert data["wecom_webhook_url"] == "******"
     assert data["has_tencent_doc_access_token"] is True
     assert data["tencent_doc_access_token"] == "******"
     assert "secret" not in response.text

@@ -28,6 +28,8 @@ secrets/
 
 # Local databases and runtime state
 *.db
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
 wecom_archive_seq.txt

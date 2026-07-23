@@ -19,6 +19,7 @@ class Reminder(Base):
     remind_at: Mapped[datetime] = mapped_column(AwareDateTime, index=True)
     content: Mapped[str] = mapped_column(Text)
     target_userid: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    target_contact_id: Mapped[int | None] = mapped_column(ForeignKey("contacts.id"), nullable=True, index=True)
     rule_id: Mapped[int | None] = mapped_column(ForeignKey("reminder_rules.id"), nullable=True, index=True)
     source_event_id: Mapped[int | None] = mapped_column(ForeignKey("legal_events.id"), nullable=True, index=True)
     dedupe_key: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True, index=True)

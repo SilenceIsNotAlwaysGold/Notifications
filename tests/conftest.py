@@ -29,7 +29,7 @@ os.environ["LEGAL_LLM_API_KEY"] = ""
 os.environ["LEGAL_LLM_MODEL"] = ""
 os.environ["OPS_BACKUP_DIR"] = "./test_storage/backups"
 os.environ["OPS_DISK_FREE_MIN_GB"] = "0"
-os.environ["OPS_WEBHOOK_URL"] = ""
+os.environ["OPS_ALERT_GROUP_ID"] = ""
 
 from app.core.config import get_settings
 from app.db.base import Base
@@ -56,12 +56,8 @@ def reset_database():
     os.environ["WECOMAPI_BASE_URL"] = ""
     os.environ["WECOMAPI_TOKEN"] = ""
     os.environ["WECOMAPI_GUID"] = ""
+    os.environ["WECOMAPI_CALLBACK_PATH_SECRET"] = ""
     os.environ["WECOMAPI_MIN_INTERVAL_SECONDS"] = "0"
-    os.environ["WECOM_CLI_BINARY"] = "wecom-cli"
-    os.environ["WECOM_CLI_CONFIG_DIR"] = "~/.config/wecom"
-    os.environ["WECOM_CLI_MIN_INTERVAL_SECONDS"] = "0"
-    os.environ["WECOM_CLI_DAILY_LIMIT"] = "200"
-    os.environ["WECOM_CLI_GROUP_DAILY_LIMIT"] = "10"
     os.environ["WECOM_ARCHIVE_MODE"] = "mock"
     os.environ["WECOM_ARCHIVE_SIDECAR_URL"] = ""
     os.environ["WECOM_ARCHIVE_SEQ_FILE"] = "./test_wecom_archive_seq.txt"
@@ -95,13 +91,11 @@ def reset_database():
     os.environ["LEGAL_LLM_FALLBACK_TO_REGEX"] = "true"
     os.environ["OPS_BACKUP_DIR"] = "./test_storage/backups"
     os.environ["OPS_DISK_FREE_MIN_GB"] = "0"
-    os.environ["OPS_WEBHOOK_URL"] = ""
+    os.environ["OPS_ALERT_GROUP_ID"] = ""
     get_settings.cache_clear()
     from app.adapters.wecomapi import WeComApiAdapter
-    from app.adapters.wecom_cli import WeComCliAdapter
 
     WeComApiAdapter.reset_safety_state()
-    WeComCliAdapter.reset_safety_state()
     if TEST_SEQ_PATH.exists():
         TEST_SEQ_PATH.unlink()
     if TEST_STORAGE_PATH.exists():

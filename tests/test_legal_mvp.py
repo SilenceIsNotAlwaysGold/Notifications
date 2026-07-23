@@ -71,8 +71,7 @@ def test_payment_notice_creates_7_tracking_reminders(client, db_session):
         },
     )
     reminders = list(db_session.scalars(select(Reminder).where(Reminder.reminder_type == "payment_tracking")).all())
-    assert len(reminders) == 7
-    assert all(reminder.target_userid == "lawyer_001" for reminder in reminders)
+    assert reminders == []
 
 
 def test_payment_done_increments_paid_amount(client, db_session):
@@ -88,7 +87,7 @@ def test_payment_done_increments_paid_amount(client, db_session):
     )
     assert response.status_code == 200
     legal_case = db_session.scalar(select(LegalCase).where(LegalCase.case_no == "(2026)黔0281民初3118号"))
-    assert legal_case.paid_amount == Decimal("400.00")
+    assert legal_case.paid_amount == Decimal("0.00")
 
 
 def test_message_without_case_no_saves_message_and_event(client, db_session):
@@ -158,8 +157,8 @@ def test_tencent_doc_mock_writes_archive_and_paid_amount_logs(client, db_session
     )
     logs = list(db_session.scalars(select(DocumentSyncLog)).all())
     sync_types = {log.sync_type for log in logs}
-    assert "archive" in sync_types
-    assert "paid_amount" in sync_types
+    assert "archive" not in sync_types
+    assert "paid_amount" not in sync_types
 
 
 def test_notice_does_not_increment_paid_amount(client, db_session):

@@ -1,7 +1,8 @@
 import json
+import hashlib
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -12,14 +13,20 @@ from sqlalchemy.orm import Session
 from app.adapters.wecom_media import WeComMediaAdapter
 from app.core.config import get_settings
 from app.models.document_sync_log import DocumentSyncLog
+from app.models.ai_call_audit import AICallAudit
 from app.models.group_message import GroupMessage
 from app.models.legal_case import LegalCase
 from app.models.legal_event import LegalEvent
 from app.models.media_file import MediaFile
 from app.models.reminder import Reminder
 from app.services.case_service import CaseService
+from app.services.case_candidate_service import CaseCandidateService
+from app.services.attribution_service import AttributionService
 from app.services.document_sync_service import DocumentSyncService
+from app.services.group_context_service import GroupContextService
 from app.services.ocr_service import OCRService
+from app.services.outbox_service import OutboxService
+from app.services.payment_service import PaymentService
 from app.services.reminder_service import ReminderService
 from app.services.system_run_log_service import SystemRunLogService
 from app.services.tenant_settings_service import TenantSettingsService
@@ -146,7 +153,14 @@ class MediaFileService:
             return summary
 
         try:
-            result = self.ocr_service.extract_from_file(media_file.local_path, media_file.media_type, tenant_id=media_file.tenant_id)
+            context_messages = GroupContextService(self.db).around_message(media_file.group_message_id)
+            result = self.ocr_service.extract_from_file(
+                media_file.local_path,
+                media_file.media_type,
+                tenant_id=media_file.tenant_id,
+                context_messages=context_messages,
+            )
+            self._record_ai_audit(media_file, result, context_messages)
             if not result.get("success"):
                 media_file.extracted_text = ""
                 media_file.metadata_json = json.dumps(result.get("metadata") or {}, ensure_ascii=False)
@@ -185,17 +199,39 @@ class MediaFileService:
                 media_file.case_id = matched_case.id
                 media_file.tenant_id = matched_case.tenant_id or media_file.tenant_id
                 self._backfill_group_message_events(media_file, matched_case.id, media_file.tenant_id)
+            elif result.get("case_no"):
+                CaseCandidateService(self.db).detect(
+                    case_no=result.get("case_no"),
+                    group_id=media_file.group_id,
+                    tenant_id=media_file.tenant_id,
+                    source_type="media_ocr",
+                    source_message_id=media_file.group_message_id,
+                    source_media_file_id=media_file.id,
+                    extracted=result,
+                )
             if extracted_text:
                 event = self._upsert_ocr_event(media_file, result)
                 media_file.review_event_id = event.id
+                if matched_case:
+                    event.attribution_status = "confirmed"
+                else:
+                    event.attribution_status = "pending"
+                    AttributionService(self.db).ensure_media(
+                        media_file,
+                        reason="OCR 与群上下文无法唯一确定案件",
+                        evidence={"case_no": result.get("case_no"), "event_type": result.get("event_type")},
+                    )
                 if result["requires_review"]:
                     media_file.review_status = "pending"
+                    event.business_status = "staged"
                 else:
                     media_file.review_status = "not_required"
                     media_file.review_result_json = media_file.ocr_result_json
-                    applied = self._apply_ocr_business(media_file, event, result, matched_case)
-                    created_reminders = applied["created_reminders"]
-                    cancelled_reminders = applied["cancelled_reminders"]
+                    if matched_case and event.event_type != "unknown":
+                        event.business_status = "approved"
+                        event.approved_by = "system:auto-confidence"
+                        event.approved_at = now_tz()
+                        OutboxService(self.db).enqueue_event(event.id, event.tenant_id)
         except Exception as exc:
             logger.exception("媒体 OCR 处理失败 media_file_id=%s", media_file.id)
             media_file.ocr_status = "failed"
@@ -237,6 +273,40 @@ class MediaFileService:
         start = (page - 1) * page_size
         return len(items), items[start : start + page_size]
 
+    def reanalyze_recent_pending_with_context(
+        self,
+        context_message: GroupMessage,
+        case_no: str | None,
+    ) -> dict[str, Any] | None:
+        if not case_no or context_message.msg_type != "text":
+            return None
+        lower_bound = context_message.received_at - timedelta(hours=24)
+        candidates = self.db.scalars(
+            select(MediaFile)
+            .join(GroupMessage, GroupMessage.id == MediaFile.group_message_id)
+            .where(MediaFile.group_id == context_message.group_id)
+            .where(MediaFile.review_status == "pending")
+            .where(MediaFile.ocr_status == "processed")
+            .where(MediaFile.business_applied_at.is_(None))
+            .where(GroupMessage.received_at >= lower_bound)
+            .where(GroupMessage.received_at <= context_message.received_at)
+            .order_by(GroupMessage.received_at.desc(), MediaFile.id.desc())
+            .limit(5)
+        ).all()
+        for media_file in candidates:
+            previous = self._load_result(media_file.ocr_result_json)
+            if previous.get("case_no"):
+                continue
+            analyzed_ids = {
+                item.get("message_id")
+                for item in previous.get("context_messages") or []
+                if isinstance(item, dict)
+            }
+            if context_message.id in analyzed_ids:
+                continue
+            return self.process_ocr(media_file.id, trigger_type="context_message", operator="system:group-context")
+        return None
+
     def decide_ocr_review(
         self,
         media_file_id: int,
@@ -263,6 +333,11 @@ class MediaFileService:
             media_file.reviewed_at = now_tz()
             media_file.review_note = note
             media_file.review_result_json = self._dump_result(result)
+            if media_file.review_event_id:
+                event = self.db.get(LegalEvent, media_file.review_event_id)
+                if event:
+                    event.business_status = "rejected"
+                    event.rejected_reason = note
             self.db.flush()
             return {
                 "media_file": media_file,
@@ -288,6 +363,16 @@ class MediaFileService:
             media_file.case_id = matched_case.id
             media_file.tenant_id = matched_case.tenant_id or media_file.tenant_id
             self._backfill_group_message_events(media_file, matched_case.id, media_file.tenant_id)
+        elif result.get("case_no"):
+            CaseCandidateService(self.db).detect(
+                case_no=result.get("case_no"),
+                group_id=media_file.group_id,
+                tenant_id=media_file.tenant_id,
+                source_type="media_ocr_review",
+                source_message_id=media_file.group_message_id,
+                source_media_file_id=media_file.id,
+                extracted=result,
+            )
         event = self._upsert_ocr_event(media_file, result)
         media_file.review_event_id = event.id
         media_file.review_status = decision
@@ -295,9 +380,22 @@ class MediaFileService:
         media_file.reviewed_at = now_tz()
         media_file.review_note = note
         media_file.review_result_json = self._dump_result(result)
-        applied = self._apply_ocr_business(media_file, event, result, matched_case)
+        if matched_case:
+            event.attribution_status = "confirmed"
+            event.business_status = "approved"
+            event.approved_by = operator
+            event.approved_at = now_tz()
+            OutboxService(self.db).enqueue_event(event.id, event.tenant_id)
+        else:
+            event.attribution_status = "pending"
+            event.business_status = "staged"
+            AttributionService(self.db).ensure_media(
+                media_file,
+                reason="人工确认识别结果后仍需确认案件归属",
+                evidence={"case_no": result.get("case_no"), "event_type": result.get("event_type")},
+            )
         self.db.flush()
-        return {"media_file": media_file, "already_decided": False, **applied}
+        return {"media_file": media_file, "already_decided": False, "created_reminders": 0, "cancelled_reminders": 0}
 
     def list_media_files(
         self,
@@ -368,6 +466,8 @@ class MediaFileService:
         event.event_type = result.get("event_type") or "unknown"
         event.event_time = result.get("court_time") or result.get("event_time") or event.event_time or now_tz()
         event.amount = result.get("amount")
+        confidence = result.get("extraction_confidence") or result.get("confidence")
+        event.confidence = Decimal(str(confidence)) if confidence is not None else None
         event.extracted_text = result.get("raw_text") or result.get("extracted_text") or media_file.extracted_text
         event.metadata_json = json.dumps(
             {
@@ -396,8 +496,10 @@ class MediaFileService:
         result: dict[str, Any],
         matched_case: LegalCase | None,
     ) -> dict[str, int]:
-        if media_file.business_applied_at is not None:
+        if media_file.business_applied_at is not None or event.business_status == "applied":
             return {"created_reminders": 0, "cancelled_reminders": 0}
+        if not matched_case or event.attribution_status != "confirmed" or event.business_status != "approved":
+            raise ValueError("案件归属和业务审批完成后才能执行外部业务")
         if WeComArchiveGroupService(self.db).feature_enabled(media_file.group_id, "document_sync"):
             self.document_sync.sync_archive_event(event, media_file=media_file)
             self._sync_kdocs_business(event, media_file, result, matched_case)
@@ -407,12 +509,20 @@ class MediaFileService:
             created_reminders = self._create_ocr_payment_tracking_once(matched_case, media_file, event.id)
         if matched_case and result.get("event_type") == "payment_screenshot":
             if result.get("amount") is not None:
-                self.case_service.update_paid_amount(matched_case, result["amount"])
-            cancelled_reminders = self.reminder_service.cancel_pending_payment_tracking(
-                matched_case.id,
-                f"付款完成材料已确认（媒体 {media_file.id}）",
-            )
+                _payment, created = PaymentService(self.db).create(
+                    matched_case,
+                    amount=result["amount"],
+                    source_event=event,
+                    source_media=media_file,
+                    status="approved",
+                    operator=event.approved_by or "system:outbox",
+                    payment_date=event.event_time.date() if event.event_time else None,
+                )
+                if created:
+                    self.document_sync.sync_paid_amount(matched_case)
         media_file.business_applied_at = now_tz()
+        event.business_status = "applied"
+        event.applied_at = now_tz()
         self.db.flush()
         return {"created_reminders": created_reminders, "cancelled_reminders": cancelled_reminders}
 
@@ -591,7 +701,7 @@ class MediaFileService:
                 select(DocumentSyncLog.external_row_key)
                 .where(DocumentSyncLog.sync_type == "legal_document_upload")
                 .where(DocumentSyncLog.external_sheet_name == self.document_sync.settings.kdocs_judgment_folder_id)
-                .where(DocumentSyncLog.status.in_(("processing", "success")))
+                .where(DocumentSyncLog.status.in_(("processing", "applied")))
                 .where(DocumentSyncLog.external_row_key.is_not(None))
             ).all()
         )
@@ -621,6 +731,48 @@ class MediaFileService:
         return bool(effective["feature_flags"].get("enable_payment_tracking", True)) and WeComArchiveGroupService(self.db).feature_enabled(
             group_id,
             "payment_tracking",
+        )
+
+    def _record_ai_audit(
+        self,
+        media_file: MediaFile,
+        result: dict[str, Any],
+        context_messages: list[dict[str, Any]],
+    ) -> None:
+        if get_settings().legal_extraction_mode != "llm":
+            return
+        metadata = result.get("metadata") or {}
+        context_ids = [
+            str(item.get("id") or item.get("message_id") or item.get("msg_id"))
+            for item in context_messages
+            if item.get("id") or item.get("message_id") or item.get("msg_id")
+        ]
+        request_hash = metadata.get("llm_request_hash")
+        if not request_hash:
+            digest_source = json.dumps(
+                {
+                    "text": result.get("raw_text") or result.get("extracted_text") or "",
+                    "context_message_ids": context_ids,
+                    "model": metadata.get("llm_model") or get_settings().legal_llm_model,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            request_hash = hashlib.sha256(digest_source.encode("utf-8")).hexdigest()
+        status = str(metadata.get("llm_status") or "failed")
+        self.db.add(
+            AICallAudit(
+                tenant_id=media_file.tenant_id,
+                media_file_id=media_file.id,
+                model=metadata.get("llm_model") or get_settings().legal_llm_model,
+                request_hash=str(request_hash),
+                context_message_ids_json=json.dumps(context_ids, ensure_ascii=False),
+                status=status,
+                duration_ms=metadata.get("llm_duration_ms"),
+                input_tokens=metadata.get("llm_input_tokens"),
+                output_tokens=metadata.get("llm_output_tokens"),
+                error_type=(str(metadata.get("llm_error"))[:128] if metadata.get("llm_error") else None),
+            )
         )
 
     @staticmethod

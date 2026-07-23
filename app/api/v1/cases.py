@@ -4,10 +4,12 @@ from sqlalchemy.orm import Session
 
 from app.api.deps_auth import get_current_operator
 from app.api.v1.response import ok, raise_fail
-from app.core.resource_permissions import allowed_tenant_ids, filter_cases, has_case_access, has_group_access, has_tenant_access, has_tenant_data_access
+from app.core.resource_permissions import allowed_group_ids, allowed_tenant_ids, filter_by_case_or_group, filter_cases, has_case_access, has_group_access, has_tenant_access, has_tenant_data_access
 from app.db.session import get_db
+from app.models.case_candidate import CaseCandidate
 from app.models.legal_case import LegalCase
-from app.schemas.legal import CaseCreate, CaseLifecycleScanOut, CaseListOut, CaseOut, CaseUpdate, CaseUpdateOut
+from app.schemas.legal import CaseCandidateConfirm, CaseCandidateConfirmOut, CaseCandidateListOut, CaseCandidateOut, CaseCandidateScanOut, CaseCreate, CaseLifecycleScanOut, CaseListOut, CaseOut, CaseUpdate, CaseUpdateOut
+from app.services.case_candidate_service import CaseCandidateService
 from app.services.case_lifecycle_service import CaseLifecycleService
 from app.services.case_service import CaseService
 
@@ -31,6 +33,7 @@ def create_case(
     service = CaseService(db)
     try:
         legal_case = service.create_case(payload)
+        CaseCandidateService(db).resolve_for_existing_case(legal_case, str(operator_info["operator"]))
         db.commit()
     except IntegrityError:
         db.rollback()
@@ -68,6 +71,91 @@ def scan_case_statuses(db: Session = Depends(get_db), operator_info: dict[str, o
     result = CaseLifecycleService(db).scan_cases(trigger_type="api", operator=str(operator_info["operator"]), auth_context=operator_info)
     db.commit()
     return ok("案件状态扫描完成", CaseLifecycleScanOut(**result))
+
+
+@router.get("/candidates")
+def list_case_candidates(
+    status: str | None = "pending",
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=100),
+    db: Session = Depends(get_db),
+    operator_info: dict[str, object] = Depends(get_current_operator),
+):
+    _total, items = CaseCandidateService(db).list_candidates(status=status, page=page, page_size=page_size)
+    items = filter_by_case_or_group(db, items, operator_info)
+    return ok(
+        "待确认案件查询成功",
+        CaseCandidateListOut(total=len(items), items=[CaseCandidateOut.model_validate(item) for item in items]),
+    )
+
+
+@router.post("/candidates/scan")
+def scan_case_candidates(
+    db: Session = Depends(get_db),
+    operator_info: dict[str, object] = Depends(get_current_operator),
+):
+    result = CaseCandidateService(db).scan_existing(
+        group_ids=allowed_group_ids(operator_info) or None,
+        tenant_ids=allowed_tenant_ids(operator_info) or None,
+    )
+    db.commit()
+    return ok("历史资料扫描完成", CaseCandidateScanOut(**result))
+
+
+@router.post("/candidates/{candidate_id}/confirm")
+def confirm_case_candidate(
+    candidate_id: int,
+    payload: CaseCandidateConfirm,
+    db: Session = Depends(get_db),
+    operator_info: dict[str, object] = Depends(get_current_operator),
+):
+    candidate = db.get(CaseCandidate, candidate_id)
+    if not candidate:
+        raise_fail("待确认案件不存在", code=1404, status_code=404)
+    if not has_group_access(operator_info, candidate.group_id, candidate.tenant_id):
+        raise_fail("无权限访问该资源", code=403, status_code=403)
+    if payload.tenant_id and not has_tenant_data_access(db, operator_info, payload.tenant_id):
+        raise_fail("无权限访问该租户", code=403, status_code=403)
+    if not has_group_access(operator_info, payload.group_id, payload.tenant_id):
+        raise_fail("无权限访问该资源", code=403, status_code=403)
+    try:
+        resolved, legal_case, backfill = CaseCandidateService(db).confirm(
+            candidate_id,
+            payload,
+            str(operator_info["operator"]),
+        )
+        db.commit()
+    except (IntegrityError, ValueError) as exc:
+        db.rollback()
+        raise_fail(str(exc) if isinstance(exc, ValueError) else "案件案号已存在", code=1001)
+    return ok(
+        "候选案件已确认建案",
+        CaseCandidateConfirmOut(
+            candidate=CaseCandidateOut.model_validate(resolved),
+            case=CaseOut.model_validate(legal_case),
+            **backfill,
+        ),
+    )
+
+
+@router.post("/candidates/{candidate_id}/dismiss")
+def dismiss_case_candidate(
+    candidate_id: int,
+    db: Session = Depends(get_db),
+    operator_info: dict[str, object] = Depends(get_current_operator),
+):
+    candidate = db.get(CaseCandidate, candidate_id)
+    if not candidate:
+        raise_fail("待确认案件不存在", code=1404, status_code=404)
+    if not has_group_access(operator_info, candidate.group_id, candidate.tenant_id):
+        raise_fail("无权限访问该资源", code=403, status_code=403)
+    try:
+        candidate = CaseCandidateService(db).dismiss(candidate_id, str(operator_info["operator"]))
+        db.commit()
+    except ValueError as exc:
+        db.rollback()
+        raise_fail(str(exc), code=1400)
+    return ok("候选案件已忽略", CaseCandidateOut.model_validate(candidate))
 
 
 @router.get("/{case_id}")

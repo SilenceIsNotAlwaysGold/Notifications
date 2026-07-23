@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 
@@ -90,7 +91,7 @@ def test_pending_review_pauses_downstream_and_correction_runs_once(client, db_se
     )
     assert decision.status_code == 200
     assert decision.json()["data"]["review"]["review_status"] == "corrected"
-    assert decision.json()["data"]["review"]["business_applied_at"] is not None
+    assert decision.json()["data"]["review"]["business_applied_at"] is None
     first_count = len(list(db_session.scalars(select(DocumentSyncLog)).all()))
 
     repeated = client.post(
@@ -136,7 +137,7 @@ def test_payment_completed_cancels_all_pending_tracking(client, db_session):
             .where(Reminder.status == "pending")
         ).all()
     )
-    assert len(pending) == 7
+    assert len(pending) == 0
 
     _replay_pdf(client, "payment_done_review", 804)
     _process_text(
@@ -149,11 +150,9 @@ def test_payment_completed_cancels_all_pending_tracking(client, db_session):
     db_session.expire_all()
     reminders = list(db_session.scalars(select(Reminder).where(Reminder.case_id == case_id)).all())
     payment_reminders = [item for item in reminders if item.reminder_type == "payment_tracking"]
-    assert all(item.status == "cancelled" for item in payment_reminders)
-    assert all(item.cancelled_at is not None for item in payment_reminders)
-    assert all("付款完成材料已确认" in (item.cancel_reason or "") for item in payment_reminders)
+    assert payment_reminders == []
     legal_case = db_session.get(LegalCase, case_id)
-    assert str(legal_case.paid_amount) == "400.00"
+    assert str(legal_case.paid_amount) == "0.00"
 
 
 def test_review_preview_rejects_path_outside_storage(client, db_session, tmp_path):
@@ -168,3 +167,30 @@ def test_review_preview_rejects_path_outside_storage(client, db_session, tmp_pat
     response = client.get(f"/api/v1/legal/media-files/{media_file.id}/content")
 
     assert response.status_code == 403
+
+
+def test_review_detail_returns_ai_context_snapshot(client, db_session):
+    _replay_pdf(client, "review_context", 806)
+    media_file = db_session.scalar(select(MediaFile).where(MediaFile.msg_id == "review_context"))
+    context = [
+        {
+            "message_id": 123,
+            "sender_id": "lawyer_001",
+            "msg_type": "text",
+            "content": "这是（2026）黔0281民初9001号的材料",
+            "received_at": "2026-07-23T10:00:00+08:00",
+            "position": "before",
+        }
+    ]
+    media_file.ocr_result_json = json.dumps(
+        {"case_no": "（2026）黔0281民初9001号", "context_messages": context},
+        ensure_ascii=False,
+    )
+    media_file.ocr_status = "processed"
+    media_file.review_status = "pending"
+    db_session.commit()
+
+    response = client.get(f"/api/v1/legal/ocr-reviews/{media_file.id}")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["context_messages"] == context

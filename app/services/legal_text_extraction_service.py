@@ -47,14 +47,22 @@ class LegalTextExtractionService:
         self.settings = settings or get_settings()
         self.llm_adapter = llm_adapter or LegalLLMAdapter(self.settings)
 
-    def extract(self, text: str | None, keyword_config: dict[str, list[str]] | None = None) -> dict[str, Any]:
+    def extract(
+        self,
+        text: str | None,
+        keyword_config: dict[str, list[str]] | None = None,
+        context_messages: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         regex_result = parse_legal_text(text, keyword_config=keyword_config)
-        if self.settings.legal_extraction_mode != "llm" or not text:
+        if self.settings.legal_extraction_mode != "llm" or (not text and not context_messages):
             return regex_result
 
         try:
-            llm_result = self.llm_adapter.extract(text, regex_result)
-            return self._merge_and_validate(text, regex_result, llm_result)
+            if context_messages:
+                llm_result = self.llm_adapter.extract(text or "", regex_result, context_messages=context_messages)
+            else:
+                llm_result = self.llm_adapter.extract(text or "", regex_result)
+            return self._merge_and_validate(text or "", regex_result, llm_result, context_messages=context_messages)
         except LegalLLMError as exc:
             if not self.settings.legal_llm_fallback_to_regex:
                 raise
@@ -69,6 +77,7 @@ class LegalTextExtractionService:
         text: str,
         regex_result: dict[str, Any],
         llm_result: dict[str, Any],
+        context_messages: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         review_reasons = self._review_reasons(llm_result)
         llm_event_type = self._event_type(llm_result.get("event_type"))
@@ -112,6 +121,10 @@ class LegalTextExtractionService:
         if amount is not None and amount not in amounts:
             amounts.insert(0, amount)
 
+        field_sources = llm_result.get("field_sources")
+        if not isinstance(field_sources, dict):
+            field_sources = {}
+
         return {
             **regex_result,
             "case_no": case_no,
@@ -135,7 +148,18 @@ class LegalTextExtractionService:
                 "llm_status": "success",
                 "llm_model": response_metadata.get("model") or self.settings.legal_llm_model,
                 "llm_finish_reason": response_metadata.get("finish_reason"),
+                "llm_request_hash": response_metadata.get("request_hash"),
+                "llm_duration_ms": response_metadata.get("duration_ms"),
+                "llm_input_tokens": response_metadata.get("input_tokens"),
+                "llm_output_tokens": response_metadata.get("output_tokens"),
                 "llm_input_truncated": bool(response_metadata.get("truncated")),
+                "context_message_count": len(context_messages or []),
+                "context_used": bool(context_messages),
+                "field_sources": {
+                    str(key)[:50]: str(value)[:100]
+                    for key, value in field_sources.items()
+                    if value is not None
+                },
                 "extraction_confidence": confidence,
                 "review_reasons": review_reasons,
             },

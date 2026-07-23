@@ -59,8 +59,6 @@ class TenantSettingsService:
             "tenant_id": tenant_id,
             "source": "tenant",
             "wecom_send_mode": tenant_setting.wecom_send_mode,
-            "has_wecom_webhook_url": bool(tenant_setting.wecom_webhook_url_encrypted),
-            "wecom_webhook_url": self.settings.secret_value_mask if tenant_setting.wecom_webhook_url_encrypted else None,
             "wecom_timeout_seconds": tenant_setting.wecom_timeout_seconds,
             "wecom_max_retry": tenant_setting.wecom_max_retry,
             "tencent_doc_mode": tenant_setting.tencent_doc_mode,
@@ -93,8 +91,6 @@ class TenantSettingsService:
         for field in self._plain_fields():
             if field in data:
                 setattr(tenant_setting, field, data[field])
-        if "wecom_webhook_url" in data:
-            tenant_setting.wecom_webhook_url_encrypted = self._encrypt_secret(data["wecom_webhook_url"])
         if "tencent_doc_access_token" in data:
             tenant_setting.tencent_doc_access_token_encrypted = self._encrypt_secret(data["tencent_doc_access_token"])
         if "keyword_config" in data:
@@ -122,33 +118,17 @@ class TenantSettingsService:
             "source": "global",
             "wecom": {
                 "send_mode": self.settings.wecom_send_mode,
-                "webhook_url": self.settings.wecom_webhook_url,
                 "timeout_seconds": self.settings.wecom_timeout_seconds,
                 "max_retry": self.settings.wecom_max_retry,
                 "wecomapi_base_url": self.settings.wecomapi_base_url,
                 "wecomapi_api_path": self.settings.wecomapi_api_path,
                 "wecomapi_token": self.settings.wecomapi_token,
+                "wecomapi_token_header": self.settings.wecomapi_token_header,
                 "wecomapi_guid": self.settings.wecomapi_guid,
                 "wecomapi_min_interval_seconds": self.settings.wecomapi_min_interval_seconds,
                 "wecomapi_daily_limit": self.settings.wecomapi_daily_limit,
                 "wecomapi_failure_threshold": self.settings.wecomapi_failure_threshold,
                 "wecomapi_cooldown_seconds": self.settings.wecomapi_cooldown_seconds,
-                "wecom_cli_binary": self.settings.wecom_cli_binary,
-                "wecom_cli_config_dir": self.settings.wecom_cli_config_dir,
-                "wecom_cli_timeout_seconds": self.settings.wecom_cli_timeout_seconds,
-                "wecom_cli_min_interval_seconds": self.settings.wecom_cli_min_interval_seconds,
-                "wecom_cli_daily_limit": self.settings.wecom_cli_daily_limit,
-                "wecom_cli_group_daily_limit": self.settings.wecom_cli_group_daily_limit,
-                "wecom_cli_failure_threshold": self.settings.wecom_cli_failure_threshold,
-                "wecom_cli_cooldown_seconds": self.settings.wecom_cli_cooldown_seconds,
-                "wecom_bot_sidecar_url": self.settings.wecom_bot_sidecar_url,
-                "wecom_bot_sidecar_token": self.settings.wecom_bot_sidecar_token,
-                "wecom_bot_timeout_seconds": self.settings.wecom_bot_timeout_seconds,
-                "wecom_bot_min_interval_seconds": self.settings.wecom_bot_min_interval_seconds,
-                "wecom_bot_daily_limit": self.settings.wecom_bot_daily_limit,
-                "wecom_bot_group_daily_limit": self.settings.wecom_bot_group_daily_limit,
-                "wecom_bot_failure_threshold": self.settings.wecom_bot_failure_threshold,
-                "wecom_bot_cooldown_seconds": self.settings.wecom_bot_cooldown_seconds,
             },
             "tencent_doc": {
                 "mode": self.settings.tencent_doc_mode,
@@ -179,8 +159,8 @@ class TenantSettingsService:
     def _merge_settings(self, global_values: dict[str, Any], tenant_setting: TenantSetting) -> dict[str, Any]:
         result = json.loads(json.dumps(global_values, ensure_ascii=False, default=str))
         result["source"] = "tenant" if self._has_any_override(tenant_setting) else "global"
-        self._set_if_not_none(result["wecom"], "send_mode", tenant_setting.wecom_send_mode)
-        self._set_if_not_none(result["wecom"], "webhook_url", self._decrypt_secret(tenant_setting.wecom_webhook_url_encrypted))
+        if tenant_setting.wecom_send_mode in {"mock", "wecomapi"}:
+            result["wecom"]["send_mode"] = tenant_setting.wecom_send_mode
         self._set_if_not_none(result["wecom"], "timeout_seconds", tenant_setting.wecom_timeout_seconds)
         self._set_if_not_none(result["wecom"], "max_retry", tenant_setting.wecom_max_retry)
 
@@ -209,16 +189,10 @@ class TenantSettingsService:
 
     def _mask_effective(self, effective: dict[str, Any]) -> dict[str, Any]:
         masked = json.loads(json.dumps(effective, ensure_ascii=False, default=str))
-        webhook_url = masked["wecom"].get("webhook_url")
         wecomapi_token = masked["wecom"].get("wecomapi_token")
-        wecom_bot_token = masked["wecom"].get("wecom_bot_sidecar_token")
         access_token = masked["tencent_doc"].get("access_token")
-        masked["wecom"]["has_webhook_url"] = bool(webhook_url)
-        masked["wecom"]["webhook_url"] = self.settings.secret_value_mask if webhook_url else None
         masked["wecom"]["has_wecomapi_token"] = bool(wecomapi_token)
         masked["wecom"]["wecomapi_token"] = self.settings.secret_value_mask if wecomapi_token else None
-        masked["wecom"]["has_wecom_bot_sidecar_token"] = bool(wecom_bot_token)
-        masked["wecom"]["wecom_bot_sidecar_token"] = self.settings.secret_value_mask if wecom_bot_token else None
         masked["tencent_doc"]["has_access_token"] = bool(access_token)
         masked["tencent_doc"]["access_token"] = self.settings.secret_value_mask if access_token else None
         return masked
@@ -280,7 +254,6 @@ class TenantSettingsService:
     def _has_any_override(tenant_setting: TenantSetting) -> bool:
         values = [
             tenant_setting.wecom_send_mode,
-            tenant_setting.wecom_webhook_url_encrypted,
             tenant_setting.wecom_timeout_seconds,
             tenant_setting.wecom_max_retry,
             tenant_setting.tencent_doc_mode,

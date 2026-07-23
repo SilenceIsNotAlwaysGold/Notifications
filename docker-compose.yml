@@ -19,8 +19,7 @@ x-app-environment: &app-environment
   WECOM_ARCHIVE_PRIVATE_KEY_PATH: /run/secrets/archive_private_key.pem
   OCR_SIDECAR_URL: http://ocr-sidecar:8011
   WECOM_ARCHIVE_SIDECAR_URL: http://archive-sidecar:8012/wecom-archive
-  WECOM_BOT_SIDECAR_URL: http://wecom-bot:8788
-  WECOMAPI_BASE_URL: ${WECOMAPI_BASE_URL:-http://wecom-sender:8092}
+  WECOMAPI_BASE_URL: ${WECOMAPI_BASE_URL:-https://manager.wecomapi.com}
 
 x-app-volumes: &app-volumes
   - legal-data:/app/data
@@ -83,121 +82,6 @@ services:
       retries: 5
       start_period: 15s
 
-  wecom-bot:
-    build:
-      context: ./wecom_bot_sidecar
-      dockerfile: Dockerfile
-    image: legal-wecom-bot-sidecar:local
-    profiles: ["robot"]
-    env_file:
-      - .env
-    environment:
-      WECOM_BOT_CONFIG_DIR: /app/config
-      WECOM_BOT_LISTEN_HOST: 0.0.0.0
-      WECOM_BOT_LISTEN_PORT: 8788
-    volumes:
-      - ${WECOM_BOT_CONFIG_HOST_DIR:-./storage/wecom-bot}:/app/config:ro
-    networks:
-      - legal-internal
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8788/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
-
-  wecom-sender:
-    <<: *python-service
-    profiles: ["android-sender"]
-    environment:
-      WECOM_SENDER_BACKEND: ${WECOM_SENDER_BACKEND:-android}
-    command:
-      [
-        "uvicorn",
-        "wecom_sender_sidecar.main:app",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        "8092",
-        "--no-access-log",
-      ]
-    restart: unless-stopped
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "python",
-          "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8092/wecom/finder/health', timeout=3)",
-        ]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-
-  wecom-android:
-    image: ${WECOM_ANDROID_IMAGE:-redroid/redroid:12.0.0-latest}
-    profiles: ["android-emulator"]
-    privileged: true
-    volumes:
-      - android-data:/data
-    networks:
-      - legal-internal
-    command:
-      - androidboot.redroid_width=${WECOM_ANDROID_WIDTH:-1080}
-      - androidboot.redroid_height=${WECOM_ANDROID_HEIGHT:-1920}
-      - androidboot.redroid_dpi=${WECOM_ANDROID_DPI:-420}
-      - androidboot.redroid_gpu_mode=guest
-      - androidboot.use_memfd=true
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "test \"$(getprop sys.boot_completed)\" = \"1\""]
-      interval: 15s
-      timeout: 5s
-      retries: 20
-      start_period: 60s
-
-  wecom-protocol-gateway:
-    build:
-      context: .
-      dockerfile: Dockerfile.protocol-gateway
-    image: legal-wecom-protocol-gateway:local
-    profiles: ["protocol-gateway"]
-    env_file:
-      - .env
-    environment:
-      WECOM_PROTOCOL_STATE_DB: /app/data/wecom-protocol-gateway.db
-      WECOM_PROTOCOL_OFFICIAL_CLI_BINARY: /usr/local/bin/wecom-cli
-      WECOM_PROTOCOL_OFFICIAL_CLI_CONFIG_DIR: /app/wecom-cli-config
-    volumes:
-      - legal-data:/app/data
-      - ${WECOM_PROTOCOL_OFFICIAL_CLI_CONFIG_HOST_DIR:-./storage/wecom-bot}:/app/wecom-cli-config:ro
-    networks:
-      - legal-internal
-    command:
-      [
-        "uvicorn",
-        "wecom_protocol_gateway.main:app",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        "8092",
-      ]
-    restart: unless-stopped
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "python",
-          "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8092/health', timeout=3)",
-        ]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-
   backup:
     <<: *python-service
     environment: *app-environment
@@ -214,4 +98,3 @@ volumes:
   legal-data:
   media-data:
   backup-data:
-  android-data:

@@ -3,7 +3,7 @@ import logging
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 class DocumentSyncService:
+    MAPPING_VERSION = "v2"
     def __init__(self, db: Session, adapter: Any | None = None) -> None:
         self.db = db
         self.settings = get_settings()
@@ -259,7 +260,7 @@ class DocumentSyncService:
         self._apply_result(log, result, operation=operation, fallback_payload=payload)
         self.db.flush()
         summary = {"sync_log_id": sync_log_id, "final_status": log.status, **({"operator": operator} if operator else {})}
-        if log.status == "success":
+        if log.status == "applied":
             run_service.finish_success(run_log, summary=summary, total_count=1, success_count=1, failed_count=0)
         else:
             run_service.finish_partial(run_log, summary=summary, total_count=1, success_count=0, failed_count=1)
@@ -283,9 +284,9 @@ class DocumentSyncService:
             query = query.where(DocumentSyncLog.case_id == case_id)
         if sync_target:
             query = query.where(DocumentSyncLog.sync_target == sync_target)
-        items = list(self.db.scalars(query.order_by(DocumentSyncLog.id.desc())).all())
-        start = (page - 1) * page_size
-        return len(items), items[start : start + page_size]
+        total = int(self.db.scalar(select(func.count()).select_from(query.subquery())) or 0)
+        items = list(self.db.scalars(query.order_by(DocumentSyncLog.id.desc()).offset((page - 1) * page_size).limit(page_size)).all())
+        return total, items
 
     def _retry_operation(self, operation: str | None, payload: dict[str, Any], log: DocumentSyncLog) -> dict[str, Any]:
         if operation == "update_case_status":
@@ -347,8 +348,10 @@ class DocumentSyncService:
         external_row_key: str | None,
         idempotency_key: str,
     ) -> DocumentSyncLog:
+        transport_mode = f"{self.settings.kdocs_mode}:{self.settings.kdocs_transport}"
+        versioned_key = f"{idempotency_key}:{transport_mode}:{self.MAPPING_VERSION}"
         existing = self.db.scalar(
-            select(DocumentSyncLog).where(DocumentSyncLog.idempotency_key == idempotency_key)
+            select(DocumentSyncLog).where(DocumentSyncLog.idempotency_key == versioned_key)
         )
         if existing:
             return existing
@@ -361,7 +364,10 @@ class DocumentSyncService:
             external_doc_id=initial_payload.get("sheet_id") or initial_payload.get("folder_id") or self.settings.kdocs_space_id,
             external_sheet_name=external_sheet_name,
             external_row_key=external_row_key,
-            idempotency_key=idempotency_key,
+            idempotency_key=versioned_key,
+            transport_mode=transport_mode,
+            mapping_version=self.MAPPING_VERSION,
+            outcome="processing",
             request_payload_json=json.dumps(
                 {"operation": operation, "payload": initial_payload},
                 ensure_ascii=False,
@@ -379,7 +385,7 @@ class DocumentSyncService:
                 self.db.flush()
         except IntegrityError:
             existing = self.db.scalar(
-                select(DocumentSyncLog).where(DocumentSyncLog.idempotency_key == idempotency_key)
+                select(DocumentSyncLog).where(DocumentSyncLog.idempotency_key == versioned_key)
             )
             if existing:
                 return existing
@@ -417,7 +423,16 @@ class DocumentSyncService:
             default=str,
         )
         log.response_payload_json = json.dumps(response, ensure_ascii=False, default=str)
-        log.status = "success" if result.get("success") else "failed"
+        skipped = isinstance(response, dict) and response.get("skipped") is True
+        outcome = "skipped" if result.get("success") and skipped else ("applied" if result.get("success") else "failed")
+        log.outcome = outcome
+        log.status = outcome
+        log.transport_mode = f"{result.get('mode') or self.settings.kdocs_mode}:{result.get('transport') or self.settings.kdocs_transport}"
+        if isinstance(response, dict):
+            row_index = response.get("row_index")
+            log.external_row_index = int(row_index) if row_index is not None else log.external_row_index
+            if response.get("readback") is not None:
+                log.readback_payload_json = json.dumps(response["readback"], ensure_ascii=False, default=str)
         log.error_message = result.get("error")
         log.last_attempt_at = now_tz()
 

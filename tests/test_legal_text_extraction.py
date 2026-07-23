@@ -14,9 +14,10 @@ class StubLLMAdapter:
         self.result = result or {}
         self.error = error
 
-    def extract(self, text, regex_hints):
+    def extract(self, text, regex_hints, context_messages=None):
         if self.error:
             raise self.error
+        self.context_messages = context_messages or []
         return self.result
 
 
@@ -84,6 +85,45 @@ def test_llm_low_confidence_marks_result_for_review():
     assert str(result["amount"]) == "400.00"
     assert result["requires_review"] is True
     assert "结构化抽取置信度低" in result["review_reasons"]
+
+
+def test_llm_uses_group_context_to_fill_case_number_missing_from_ocr():
+    adapter = StubLLMAdapter(
+        {
+            "event_type": "payment_notice",
+            "document_type": None,
+            "case_no": "（2026）黔0281民初9001号",
+            "plaintiff": None,
+            "defendant": "张三",
+            "court_time": None,
+            "amount": 400,
+            "confidence": 0.92,
+            "requires_review": False,
+            "review_reasons": [],
+            "field_sources": {"case_no": "群聊上文", "amount": "OCR原文"},
+        }
+    )
+    context = [
+        {
+            "message_id": 10,
+            "sender_id": "lawyer_001",
+            "msg_type": "text",
+            "content": "这是（2026）黔0281民初9001号的缴费材料",
+            "received_at": "2026-07-23T10:00:00+08:00",
+            "position": "before",
+        }
+    ]
+
+    result = LegalTextExtractionService(llm_settings(), adapter).extract(
+        "诉讼费 400 元，请于七日内缴纳",
+        context_messages=context,
+    )
+
+    assert result["case_no"] == "（2026）黔0281民初9001号"
+    assert adapter.context_messages == context
+    assert result["metadata"]["context_used"] is True
+    assert result["metadata"]["context_message_count"] == 1
+    assert result["metadata"]["field_sources"]["case_no"] == "群聊上文"
 
 
 def test_llm_failure_falls_back_to_regex_and_requires_review():

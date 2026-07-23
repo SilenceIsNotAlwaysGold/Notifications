@@ -24,11 +24,6 @@ SENSITIVE_KEYWORDS = (
     "identity_number",
 )
 
-AUDIT_EXCLUDED_ENDPOINTS = {
-    ("GET", "/api/v1/legal/android-device/screenshot"),
-}
-
-
 class OperationAuditMiddleware:
     def __init__(self, app) -> None:
         self.app = app
@@ -39,7 +34,6 @@ class OperationAuditMiddleware:
         if (
             scope.get("type") != "http"
             or not path.startswith("/api/v1/legal")
-            or (method, path) in AUDIT_EXCLUDED_ENDPOINTS
         ):
             await self.app(scope, receive, send)
             return

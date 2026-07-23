@@ -69,12 +69,3 @@ systemctl daemon-reload
 systemctl enable --now legal-wecom-backup.timer
 systemctl list-timers legal-wecom-backup.timer
 ```
-
-## 可选机器人容器
-
-启用 `robot` profile 前，将专用机器人账号生成的 `bot.enc` 和 `mcp_config.enc` 放入 `WECOM_BOT_CONFIG_HOST_DIR`（默认 `./storage/wecom-bot`）。该目录以只读方式挂载，凭证不会写入镜像或 Git。
-
-```bash
-mkdir -p storage/wecom-bot
-docker compose --profile robot up -d wecom-bot api
-```

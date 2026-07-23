@@ -23,6 +23,7 @@ def _parse_json(raw: str | None) -> dict:
 
 
 def _review_out(media_file: MediaFile) -> OCRReviewOut:
+    ocr_result = _parse_json(media_file.ocr_result_json)
     return OCRReviewOut(
         media_file_id=media_file.id,
         tenant_id=media_file.tenant_id,
@@ -36,7 +37,8 @@ def _review_out(media_file: MediaFile) -> OCRReviewOut:
         review_status=media_file.review_status,
         event_id=media_file.review_event_id,
         extracted_text=media_file.extracted_text,
-        ocr_result=_parse_json(media_file.ocr_result_json),
+        context_messages=ocr_result.get("context_messages") or [],
+        ocr_result=ocr_result,
         final_result=_parse_json(media_file.review_result_json) if media_file.review_result_json else None,
         preview_url=f"/api/v1/legal/media-files/{media_file.id}/content" if media_file.local_path else None,
         reviewed_by=media_file.reviewed_by,

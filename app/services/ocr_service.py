@@ -1,3 +1,4 @@
+import time
 from typing import Any
 
 from app.adapters.ocr_providers import AliyunOCRProvider, LocalTextOCRProvider, MockOCRProvider, TencentOCRProvider
@@ -40,7 +41,13 @@ class OCRService:
             "metadata": {"parser": "mock", "mock": True, "file_url": file_url},
         }
 
-    def extract_from_file(self, local_path: str, media_type: str, tenant_id: str | None = None) -> dict[str, Any]:
+    def extract_from_file(
+        self,
+        local_path: str,
+        media_type: str,
+        tenant_id: str | None = None,
+        context_messages: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         effective = self._effective_settings(tenant_id)
         if not effective["feature_flags"].get("enable_ocr", True):
             return {
@@ -84,7 +91,13 @@ class OCRService:
                 "error": str(exc),
             }
         raw_text = provider_result.get("raw_text") or ""
-        parsed = self.legal_text_extractor.extract(raw_text, keyword_config=effective["keyword_config"])
+        extraction_started = time.monotonic()
+        parsed = self.legal_text_extractor.extract(
+            raw_text,
+            keyword_config=effective["keyword_config"],
+            context_messages=context_messages,
+        )
+        extraction_duration_ms = int((time.monotonic() - extraction_started) * 1000)
         metadata = provider_result.get("metadata") or {}
         return {
             "success": bool(provider_result.get("success")),
@@ -104,6 +117,7 @@ class OCRService:
             "confidence": provider_result.get("confidence", 0),
             "provider": provider_result.get("provider") or provider_name,
             "extracted_text": raw_text,
+            "context_messages": context_messages or [],
             "metadata": {
                 **metadata,
                 "provider": provider_result.get("provider") or provider_name,
@@ -114,6 +128,13 @@ class OCRService:
                 "llm_status": parsed.get("metadata", {}).get("llm_status"),
                 "llm_model": parsed.get("metadata", {}).get("llm_model"),
                 "llm_error": parsed.get("metadata", {}).get("llm_error"),
+                "llm_request_hash": parsed.get("metadata", {}).get("llm_request_hash"),
+                "llm_duration_ms": parsed.get("metadata", {}).get("llm_duration_ms", extraction_duration_ms),
+                "llm_input_tokens": parsed.get("metadata", {}).get("llm_input_tokens"),
+                "llm_output_tokens": parsed.get("metadata", {}).get("llm_output_tokens"),
+                "context_message_count": parsed.get("metadata", {}).get("context_message_count", 0),
+                "context_used": bool(parsed.get("metadata", {}).get("context_used")),
+                "field_sources": parsed.get("metadata", {}).get("field_sources") or {},
                 "extraction_confidence": parsed.get("extraction_confidence"),
                 "review_reasons": parsed.get("review_reasons") or [],
                 "tenant_settings_source": effective["source"],

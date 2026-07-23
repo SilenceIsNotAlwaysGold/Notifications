@@ -9,6 +9,9 @@ from app.services.case_lifecycle_service import CaseLifecycleService
 from app.services.merchant_question_service import MerchantQuestionService
 from app.services.reminder_service import ReminderService
 from app.services.system_alert_service import SystemAlertService
+from app.services.outbox_service import OutboxService
+from app.services.kdocs_reconciliation_service import KDocsReconciliationService
+from app.services.data_retention_service import DataRetentionService
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +78,42 @@ def scan_system_alerts() -> None:
         db.close()
 
 
+def process_business_outbox() -> None:
+    db = SessionLocal()
+    try:
+        OutboxService(db).process_pending()
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("业务 outbox 处理失败")
+    finally:
+        db.close()
+
+
+def reconcile_kdocs() -> None:
+    db = SessionLocal()
+    try:
+        KDocsReconciliationService(db).reconcile()
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("金山文档每日对账失败")
+    finally:
+        db.close()
+
+
+def apply_data_retention() -> None:
+    db = SessionLocal()
+    try:
+        DataRetentionService(db).run()
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("法律资料留存任务失败")
+    finally:
+        db.close()
+
+
 def start_scheduler() -> None:
     settings = get_settings()
     if not settings.scheduler_enabled:
@@ -82,6 +121,12 @@ def start_scheduler() -> None:
         return
     if not scheduler.get_job("send_due_reminders"):
         scheduler.add_job(scan_due_reminders, "interval", minutes=1, id="send_due_reminders")
+    if not scheduler.get_job("process_business_outbox"):
+        scheduler.add_job(process_business_outbox, "interval", seconds=10, id="process_business_outbox", max_instances=1)
+    if settings.kdocs_mode == "real" and not scheduler.get_job("reconcile_kdocs"):
+        scheduler.add_job(reconcile_kdocs, "cron", hour=3, minute=15, id="reconcile_kdocs", max_instances=1)
+    if settings.legal_data_retention_enabled and not scheduler.get_job("apply_data_retention"):
+        scheduler.add_job(apply_data_retention, "cron", hour=4, minute=10, id="apply_data_retention", max_instances=1)
     if not scheduler.get_job("scan_merchant_questions"):
         scheduler.add_job(scan_merchant_questions, "interval", minutes=1, id="scan_merchant_questions")
     if settings.ops_alerts_enabled and not scheduler.get_job("scan_system_alerts"):

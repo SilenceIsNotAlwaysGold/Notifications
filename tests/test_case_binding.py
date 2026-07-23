@@ -83,10 +83,10 @@ def test_case_patch_updates_binding_pending_reminders_and_unlinked_history(clien
     data = response.json()["data"]
     assert data["case"]["group_id"] == "wr_real_001"
     assert data["updated_pending_reminders"] == 1
-    assert data["linked_media_files"] == 1
-    assert data["linked_events"] == 1
-    assert data["updated_group_messages"] == 1
-    assert data["backfill_skipped_reason"] is None
+    assert data["linked_media_files"] == 0
+    assert data["linked_events"] == 0
+    assert data["updated_group_messages"] == 0
+    assert data["backfill_skipped_reason"] == "历史材料已进入待归属队列，需人工批量确认"
 
     db_session.expire_all()
     stored_case = db_session.get(LegalCase, legal_case.id)
@@ -98,9 +98,9 @@ def test_case_patch_updates_binding_pending_reminders_and_unlinked_history(clien
     assert stored_case.lawyer_wecom_userid == "lawyer_new"
     assert stored_reminder.group_id == "wr_real_001"
     assert stored_reminder.target_userid == "lawyer_new"
-    assert stored_event.case_id == legal_case.id
-    assert stored_media.case_id == legal_case.id
-    assert stored_message.tenant_id == "tenant_001"
+    assert stored_event.case_id is None
+    assert stored_media.case_id is None
+    assert stored_message.tenant_id is None
 
 
 def test_case_patch_skips_history_backfill_when_group_has_multiple_cases(client, db_session):
@@ -127,7 +127,7 @@ def test_case_patch_skips_history_backfill_when_group_has_multiple_cases(client,
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["linked_events"] == 0
-    assert "多个案件" in data["backfill_skipped_reason"]
+    assert "待归属队列" in data["backfill_skipped_reason"]
     db_session.expire_all()
     assert db_session.get(LegalEvent, event.id).case_id is None
 

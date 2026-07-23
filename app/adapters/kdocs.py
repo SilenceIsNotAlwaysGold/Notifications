@@ -209,6 +209,22 @@ class KDocsAdapter:
             )
         return self._execute("append_payment_registration_row", payload)
 
+    def read_row(self, *, target: str, file_id: str, worksheet_id: int, row_index: int) -> dict[str, Any]:
+        if not self._use_real_mcp() or self.mcp is None:
+            raise ValueError("金山 MCP 真实读取未启用")
+        return self._mcp_readback(file_id, worksheet_id, row_index, target)
+
+    def expected_row_values(self, target: str, payload: dict[str, Any]) -> list[Any]:
+        """Build the mapped row used by the writer for reconciliation."""
+        row = payload.get("row") or payload.get("fields") or payload
+        if target == "enforcement":
+            return self._enforcement_values(row)
+        if target == "court":
+            return self._court_time_values(row)
+        if target == "payment":
+            return self._payment_values(row)
+        raise ValueError(f"不支持的金山对账目标：{target}")
+
     def _mcp_upsert_enforcement(self, row: dict[str, Any]) -> dict[str, Any]:
         assert self.mcp is not None
         file_id = self.settings.kdocs_enforcement_file_id or ""
@@ -371,6 +387,13 @@ class KDocsAdapter:
             return self._missing_result(operation, payload, missing)
         try:
             response = callback()
+            if target and isinstance(response, dict) and response.get("file_id") and response.get("row_index") is not None:
+                response["readback"] = self._mcp_readback(
+                    str(response["file_id"]),
+                    int(response.get("worksheet_id", 0)),
+                    int(response["row_index"]),
+                    target,
+                )
             return {
                 "success": True,
                 "mode": "real",
@@ -384,6 +407,24 @@ class KDocsAdapter:
         except Exception as exc:
             logger.exception("金山 MCP 同步失败 operation=%s", operation)
             return self._exception_result(operation, payload, exc)
+
+    def _mcp_readback(self, file_id: str, worksheet_id: int, row_index: int, target: str) -> dict[str, Any]:
+        assert self.mcp is not None
+        col_to = {"enforcement": 24, "court": 17, "payment": 15}.get(target, 24)
+        cells = self.mcp.get_range_data(
+            file_id,
+            worksheet_id,
+            row_from=row_index,
+            row_to=row_index,
+            col_from=0,
+            col_to=col_to,
+        )
+        values: dict[str, Any] = {}
+        for cell in cells:
+            column = int(cell.get("colFrom", cell.get("originCol", -1)))
+            value = cell.get("cellText") or cell.get("originalCellValue") or cell.get("formula")
+            values[str(column)] = value
+        return {"verified": bool(values), "row_index": row_index, "values": values}
 
     def _execute(self, operation: str, payload: dict[str, Any]) -> dict[str, Any]:
         if self.mode == "mock":

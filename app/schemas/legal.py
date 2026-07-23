@@ -20,6 +20,14 @@ class CaseCreate(BaseModel):
     lawyer_wecom_userid: str | None = None
     due_date: date
     total_amount: Decimal = Field(default=Decimal("0.00"), ge=0)
+    plaintiff_name: str | None = Field(default=None, max_length=255)
+    court_name: str | None = Field(default=None, max_length=255)
+    document_type: str | None = Field(default=None, max_length=64)
+    filing_date: date | None = None
+    enforcement_case_no: str | None = Field(default=None, max_length=128)
+    responsible_contact_id: int | None = None
+    lifecycle_stage: str = Field(default="active", max_length=32)
+    source: str = Field(default="manual", max_length=32)
 
 
 class CaseUpdate(BaseModel):
@@ -30,6 +38,13 @@ class CaseUpdate(BaseModel):
     lawyer_wecom_userid: str | None = Field(default=None, max_length=128)
     due_date: date | None = None
     total_amount: Decimal | None = Field(default=None, ge=0)
+    plaintiff_name: str | None = Field(default=None, max_length=255)
+    court_name: str | None = Field(default=None, max_length=255)
+    document_type: str | None = Field(default=None, max_length=64)
+    filing_date: date | None = None
+    enforcement_case_no: str | None = Field(default=None, max_length=128)
+    responsible_contact_id: int | None = None
+    lifecycle_stage: str | None = Field(default=None, max_length=32)
 
     @model_validator(mode="after")
     def require_update_field(self):
@@ -50,6 +65,15 @@ class CaseOut(BaseModel):
     status: str
     total_amount: Decimal
     paid_amount: Decimal
+    plaintiff_name: str | None
+    court_name: str | None
+    document_type: str | None
+    filing_date: date | None
+    enforcement_case_no: str | None
+    responsible_contact_id: int | None
+    lifecycle_stage: str
+    source: str
+    extra_identifiers_json: str
     overdue_at: datetime | None
     defaulted_at: datetime | None
     paid_at: datetime | None
@@ -65,6 +89,60 @@ class CaseOut(BaseModel):
 class CaseListOut(BaseModel):
     total: int
     items: list[CaseOut]
+
+
+class CaseCandidateOut(BaseModel):
+    id: int
+    case_no: str
+    tenant_id: str | None
+    group_id: str
+    debtor_name: str | None
+    due_date: date | None
+    total_amount: Decimal | None
+    document_type: str | None
+    confidence: Decimal | None
+    source_type: str
+    source_message_id: int | None
+    source_media_file_id: int | None
+    status: str
+    occurrence_count: int
+    confirmed_case_id: int | None
+    first_detected_at: datetime
+    last_detected_at: datetime
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CaseCandidateListOut(BaseModel):
+    total: int
+    items: list[CaseCandidateOut]
+
+
+class CaseCandidateScanOut(BaseModel):
+    scanned_media: int
+    scanned_messages: int
+    created_candidates: int
+
+
+class CaseCandidateConfirm(BaseModel):
+    debtor_name: str = Field(min_length=1, max_length=128)
+    tenant_id: str | None = Field(default=None, max_length=128)
+    group_id: str = Field(min_length=1, max_length=128)
+    debtor_wecom_userid: str | None = Field(default=None, max_length=128)
+    lawyer_wecom_userid: str | None = Field(default=None, max_length=128)
+    due_date: date
+    total_amount: Decimal = Field(default=Decimal("0.00"), ge=0)
+
+
+class CaseCandidateConfirmOut(BaseModel):
+    candidate: CaseCandidateOut
+    case: CaseOut
+    linked_media_files: int = 0
+    linked_events: int = 0
+    updated_group_messages: int = 0
+    backfill_skipped_reason: str | None = None
 
 
 class CaseUpdateOut(BaseModel):
@@ -143,6 +221,7 @@ class ReminderOut(BaseModel):
     remind_at: datetime
     content: str
     target_userid: str | None
+    target_contact_id: int | None
     rule_id: int | None
     source_event_id: int | None
     dedupe_key: str | None
@@ -232,6 +311,13 @@ class EventOut(BaseModel):
     amount: Decimal | None
     extracted_text: str | None
     metadata_json: str
+    attribution_status: str
+    business_status: str
+    confidence: Decimal | None
+    approved_by: str | None
+    approved_at: datetime | None
+    rejected_reason: str | None
+    applied_at: datetime | None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -251,6 +337,11 @@ class DocumentSyncLogOut(BaseModel):
     external_doc_id: str | None
     external_sheet_name: str | None
     external_row_key: str | None
+    external_row_index: int | None
+    transport_mode: str | None
+    mapping_version: str
+    outcome: str
+    readback_payload_json: str | None
     idempotency_key: str | None
     request_payload_json: str
     response_payload_json: str
@@ -502,6 +593,7 @@ class OCRReviewOut(BaseModel):
     review_status: str
     event_id: int | None
     extracted_text: str | None
+    context_messages: list[dict[str, Any]] = Field(default_factory=list)
     ocr_result: dict[str, Any]
     final_result: dict[str, Any] | None
     preview_url: str | None
@@ -717,8 +809,7 @@ class TenantListOut(BaseModel):
 
 
 class TenantSettingsIn(BaseModel):
-    wecom_send_mode: Literal["mock", "webhook", "wecomapi", "wecom_cli", "wecom_bot"] | None = None
-    wecom_webhook_url: str | None = None
+    wecom_send_mode: Literal["mock", "wecomapi"] | None = None
     wecom_timeout_seconds: int | None = None
     wecom_max_retry: int | None = None
     tencent_doc_mode: str | None = None
@@ -745,8 +836,6 @@ class TenantSettingsOut(BaseModel):
     tenant_id: str
     source: str
     wecom_send_mode: str | None
-    has_wecom_webhook_url: bool
-    wecom_webhook_url: str | None
     wecom_timeout_seconds: int | None
     wecom_max_retry: int | None
     tencent_doc_mode: str | None
@@ -779,21 +868,6 @@ class EffectiveTenantSettingsOut(BaseModel):
     reminder: dict[str, Any]
     feature_flags: dict[str, bool]
     keyword_config: dict[str, list[str]]
-
-
-class WeComPocSendTestIn(BaseModel):
-    webhook_url: str | None = None
-    content: str = "企业微信机器人发送测试"
-    mentioned_userids: list[str] = Field(default_factory=list)
-    mentioned_mobiles: list[str] = Field(default_factory=list)
-
-
-class WeComPocSendTestOut(BaseModel):
-    success: bool
-    errcode: int | None = None
-    errmsg: str | None = None
-    status_code: int | None = None
-    error: str | None = None
 
 
 class WeComArchiveCheckIn(BaseModel):

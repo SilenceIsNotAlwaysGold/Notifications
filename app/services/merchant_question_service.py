@@ -1,6 +1,7 @@
+import json
 from datetime import datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.group_message import GroupMessage
@@ -27,7 +28,7 @@ class MerchantQuestionService:
 
         internal_userids = set(self.group_service.internal_userids(group))
         if message.sender_id in internal_userids:
-            closed = self._close_previous_questions(message)
+            closed = self._close_relevant_question(message)
             return {"created": 0, "closed": closed}
 
         existing = self.db.scalar(
@@ -99,8 +100,15 @@ class MerchantQuestionService:
             query = query.where(MerchantQuestion.status == status)
         if group_id:
             query = query.where(MerchantQuestion.group_id == group_id)
-        items = list(self.db.scalars(query.order_by(MerchantQuestion.asked_at.desc(), MerchantQuestion.id.desc())).all())
-        return len(items), items[offset : offset + limit]
+        total = int(self.db.scalar(select(func.count()).select_from(query.subquery())) or 0)
+        items = list(
+            self.db.scalars(
+                query.order_by(MerchantQuestion.asked_at.desc(), MerchantQuestion.id.desc())
+                .offset(offset)
+                .limit(limit)
+            ).all()
+        )
+        return total, items
 
     def close_question(self, question_id: int, operator: str, reason: str) -> MerchantQuestion:
         question = self.db.get(MerchantQuestion, question_id)
@@ -119,24 +127,51 @@ class MerchantQuestionService:
         self.db.flush()
         return question
 
-    def _close_previous_questions(self, reply: GroupMessage) -> int:
+    def _close_relevant_question(self, reply: GroupMessage) -> int:
         questions = list(
             self.db.scalars(
                 select(MerchantQuestion)
                 .where(MerchantQuestion.group_id == reply.group_id)
                 .where(MerchantQuestion.status.in_(["open", "timed_out"]))
                 .where(MerchantQuestion.asked_at <= ensure_aware(reply.received_at))
-                .order_by(MerchantQuestion.asked_at.asc())
+                .order_by(MerchantQuestion.asked_at.desc(), MerchantQuestion.id.desc())
             ).all()
         )
-        for question in questions:
-            question.status = "replied"
-            question.reply_message_id = reply.id
-            question.replied_at = ensure_aware(reply.received_at)
-            question.updated_at = now_tz()
-            if question.reminder_id:
-                reminder = self.db.get(Reminder, question.reminder_id)
-                if reminder and reminder.status == "pending":
-                    ReminderService(self.db).cancel_reminder(reminder, "内部人员已回复商家提问", reply.sender_id)
+        if not questions:
+            return 0
+        referenced_ids = self._referenced_message_ids(reply.raw_payload_json)
+        question = next((item for item in questions if item.group_message_id in referenced_ids), questions[0])
+        question.status = "replied"
+        question.reply_message_id = reply.id
+        question.replied_at = ensure_aware(reply.received_at)
+        question.updated_at = now_tz()
+        if question.reminder_id:
+            reminder = self.db.get(Reminder, question.reminder_id)
+            if reminder and reminder.status == "pending":
+                ReminderService(self.db).cancel_reminder(reminder, "内部人员已回复商家提问", reply.sender_id)
         self.db.flush()
-        return len(questions)
+        return 1
+
+    @staticmethod
+    def _referenced_message_ids(raw_payload_json: str) -> set[int]:
+        try:
+            payload = json.loads(raw_payload_json or "{}")
+        except (TypeError, ValueError):
+            return set()
+        found: set[int] = set()
+
+        def walk(value, key: str = "") -> None:
+            if isinstance(value, dict):
+                for child_key, child in value.items():
+                    walk(child, str(child_key).lower())
+            elif isinstance(value, list):
+                for child in value:
+                    walk(child, key)
+            elif key in {"reply_to_message_id", "referenced_message_id", "quoted_message_id", "source_message_id"}:
+                try:
+                    found.add(int(value))
+                except (TypeError, ValueError):
+                    pass
+
+        walk(payload)
+        return found

@@ -2,33 +2,34 @@ from fastapi import APIRouter, Depends
 
 from app.api.deps_auth import get_current_operator
 from app.api.v1 import (
-    android_device,
     cases,
     api_keys,
     document_sync_logs,
     events,
     health,
+    kdocs_browser,
     media_files,
     merchant_questions,
     messages,
     observability,
     ocr_reviews,
     operation_audit_logs,
+    recognition_settings,
     reminders,
     reminder_rules,
-    sender_account,
     system_alerts,
     tenants,
     tenant_settings,
     wecom_archive,
-    wecom_poc,
+    wecomapi_settings,
+    wecomapi_callback,
+    workflow,
 )
 
 api_router = APIRouter()
 api_router.include_router(health.router)
+api_router.include_router(wecomapi_callback.router)
 legal_dependencies = [Depends(get_current_operator)]
-api_router.include_router(android_device.router, dependencies=legal_dependencies)
-api_router.include_router(sender_account.router, dependencies=legal_dependencies)
 api_router.include_router(cases.router, dependencies=legal_dependencies)
 api_router.include_router(messages.router, dependencies=legal_dependencies)
 api_router.include_router(reminders.router, dependencies=legal_dependencies)
@@ -40,9 +41,12 @@ api_router.include_router(wecom_archive.router, dependencies=legal_dependencies)
 api_router.include_router(media_files.router, dependencies=legal_dependencies)
 api_router.include_router(ocr_reviews.router, dependencies=legal_dependencies)
 api_router.include_router(document_sync_logs.router, dependencies=legal_dependencies)
+api_router.include_router(kdocs_browser.router, dependencies=legal_dependencies)
 api_router.include_router(observability.router, dependencies=legal_dependencies)
 api_router.include_router(operation_audit_logs.router, dependencies=legal_dependencies)
 api_router.include_router(api_keys.router, dependencies=legal_dependencies)
 api_router.include_router(tenants.router, dependencies=legal_dependencies)
 api_router.include_router(tenant_settings.router, dependencies=legal_dependencies)
-api_router.include_router(wecom_poc.router, dependencies=legal_dependencies)
+api_router.include_router(recognition_settings.router, dependencies=legal_dependencies)
+api_router.include_router(wecomapi_settings.router, dependencies=legal_dependencies)
+api_router.include_router(workflow.router, dependencies=legal_dependencies)

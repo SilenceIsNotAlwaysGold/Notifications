@@ -13,6 +13,7 @@ from app.models.media_file import MediaFile
 from app.models.reminder import Reminder
 from app.schemas.legal import CaseCreate, CaseUpdate
 from app.services.document_sync_service import DocumentSyncService
+from app.services.case_group_service import CaseGroupService
 from app.utils.datetime_utils import now_tz
 
 
@@ -27,6 +28,7 @@ class CaseService:
         legal_case = LegalCase(**values, status="normal", paid_amount=Decimal("0.00"))
         self.db.add(legal_case)
         self.db.flush()
+        CaseGroupService(self.db).bind(legal_case, legal_case.group_id, "system:create-case", primary=True, source="case_create")
         return legal_case
 
     def list_cases(
@@ -71,11 +73,7 @@ class CaseService:
         legal_case = self.find_case_by_case_no(case_no)
         if legal_case or not group_id:
             return legal_case
-        query = select(LegalCase).where(LegalCase.group_id == group_id)
-        if tenant_id:
-            query = query.where((LegalCase.tenant_id == tenant_id) | (LegalCase.tenant_id.is_(None)))
-        matches = list(self.db.scalars(query.order_by(LegalCase.id.asc()).limit(2)).all())
-        return matches[0] if len(matches) == 1 else None
+        return CaseGroupService(self.db).unique_case_for_group(group_id, tenant_id)
 
     def update_case(self, legal_case: LegalCase, data: CaseUpdate) -> dict[str, object]:
         fields = data.model_fields_set
@@ -104,6 +102,9 @@ class CaseService:
             **backfill,
         }
 
+    def backfill_group_data(self, legal_case: LegalCase) -> dict[str, object]:
+        return self._backfill_group_data(legal_case)
+
     def _update_pending_reminders(self, legal_case: LegalCase) -> int:
         reminders = list(
             self.db.scalars(
@@ -124,50 +125,9 @@ class CaseService:
         return len(reminders)
 
     def _backfill_group_data(self, legal_case: LegalCase) -> dict[str, object]:
-        other_case_count = self.db.scalar(
-            select(func.count(LegalCase.id))
-            .where(LegalCase.group_id == legal_case.group_id)
-            .where(LegalCase.id != legal_case.id)
-        ) or 0
-        if other_case_count:
-            return {
-                **self._empty_backfill(),
-                "backfill_skipped_reason": "目标群已绑定多个案件，未自动关联历史材料",
-            }
-
-        group_message_ids = select(GroupMessage.id).where(GroupMessage.group_id == legal_case.group_id)
-        updated_group_messages = 0
-        if legal_case.tenant_id:
-            group_message_result = self.db.execute(
-                update(GroupMessage)
-                .where(GroupMessage.group_id == legal_case.group_id)
-                .where(GroupMessage.tenant_id.is_(None))
-                .values(tenant_id=legal_case.tenant_id)
-            )
-            updated_group_messages = group_message_result.rowcount or 0
-
-        media_values: dict[str, object] = {"case_id": legal_case.id}
-        event_values: dict[str, object] = {"case_id": legal_case.id}
-        if legal_case.tenant_id:
-            media_values["tenant_id"] = legal_case.tenant_id
-            event_values["tenant_id"] = legal_case.tenant_id
-        media_result = self.db.execute(
-            update(MediaFile)
-            .where(MediaFile.group_id == legal_case.group_id)
-            .where(MediaFile.case_id.is_(None))
-            .values(**media_values)
-        )
-        event_result = self.db.execute(
-            update(LegalEvent)
-            .where(LegalEvent.group_message_id.in_(group_message_ids))
-            .where(LegalEvent.case_id.is_(None))
-            .values(**event_values)
-        )
         return {
-            "linked_media_files": media_result.rowcount or 0,
-            "linked_events": event_result.rowcount or 0,
-            "updated_group_messages": updated_group_messages,
-            "backfill_skipped_reason": None,
+            **self._empty_backfill(),
+            "backfill_skipped_reason": "历史材料已进入待归属队列，需人工批量确认",
         }
 
     @staticmethod
@@ -180,12 +140,9 @@ class CaseService:
         }
 
     def update_paid_amount(self, legal_case: LegalCase, amount: Decimal) -> LegalCase:
-        legal_case.paid_amount = (legal_case.paid_amount or Decimal("0.00")) + amount
-        if legal_case.paid_amount >= legal_case.total_amount:
-            legal_case.paid_at = now_tz()
-            self.update_status(legal_case, "paid", reason="fully_paid")
-        self.document_sync.sync_paid_amount(legal_case)
-        self.db.flush()
+        from app.services.payment_service import PaymentService
+
+        PaymentService(self.db).create(legal_case, amount=amount, status="approved", operator="legacy:update-paid-amount")
         return legal_case
 
     def mark_overdue(self, legal_case: LegalCase) -> LegalCase:

@@ -4,13 +4,11 @@ import shutil
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin
-
-import httpx
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.adapters.wecom_sender_status import WeComSenderStatusClient
+from app.adapters.wecom_message import WeComMessageAdapter
+from app.adapters.wecomapi import WeComApiAdapter
 from app.core.config import get_settings
 from app.models.document_sync_log import DocumentSyncLog
 from app.models.media_file import MediaFile
@@ -42,13 +40,12 @@ class SystemAlertService:
             query = query.where(SystemAlert.alert_type == alert_type)
         if severity:
             query = query.where(SystemAlert.severity == severity)
-        items = list(
-            self.db.scalars(
-                query.order_by(SystemAlert.last_detected_at.desc(), SystemAlert.id.desc())
-            ).all()
-        )
-        start = (page - 1) * page_size
-        return len(items), items[start : start + page_size]
+        total = int(self.db.scalar(select(func.count()).select_from(query.subquery())) or 0)
+        items = list(self.db.scalars(
+            query.order_by(SystemAlert.last_detected_at.desc(), SystemAlert.id.desc())
+            .offset((page - 1) * page_size).limit(page_size)
+        ).all())
+        return total, items
 
     def acknowledge(self, alert_id: int, operator: str) -> SystemAlert:
         alert = self.db.get(SystemAlert, alert_id)
@@ -68,7 +65,6 @@ class SystemAlertService:
             self._ocr_condition(),
             self._llm_condition(),
             self._kdocs_condition(),
-            self._robot_condition(),
             self._sender_condition(),
             self._backup_condition(),
             self._disk_condition(),
@@ -80,7 +76,7 @@ class SystemAlertService:
                 summary["active"] += 1
             if transition == "opened":
                 summary["opened"] += 1
-                self._send_webhook(alert)
+                self._send_alert(alert)
             elif transition == "resolved":
                 summary["resolved"] += 1
         self.db.flush()
@@ -241,68 +237,36 @@ class SystemAlertService:
             {"threshold": threshold, "sync_log_ids": [item.id for item in latest]},
         )
 
-    def _robot_condition(self) -> dict[str, Any]:
-        enabled = self.settings.wecom_send_mode == "wecom_bot"
-        active = False
-        message = "企业微信机器人未启用"
-        details: dict[str, Any] = {"enabled": enabled}
-        if enabled:
-            if not self.settings.wecom_bot_sidecar_url:
-                active = True
-                message = "企业微信机器人 sidecar 地址未配置"
-            else:
-                try:
-                    response = httpx.get(
-                        urljoin(self.settings.wecom_bot_sidecar_url.rstrip("/") + "/", "health"),
-                        timeout=min(self.settings.wecom_bot_timeout_seconds, 5),
-                    )
-                    payload = response.json()
-                    active = response.status_code >= 400 or payload.get("ready") is False or payload.get("status") == "degraded"
-                    message = "企业微信机器人未连接" if active else "企业微信机器人在线"
-                    details.update({"status_code": response.status_code, "ready": payload.get("ready"), "status": payload.get("status")})
-                except Exception as exc:
-                    active = True
-                    message = f"企业微信机器人健康检查失败：{exc}"
-                    details["error_type"] = type(exc).__name__
-        return self._condition("wecom_robot_offline", active, "critical", "wecom_bot", "企业微信机器人离线", message, details)
-
     def _sender_condition(self) -> dict[str, Any]:
         enabled = self.settings.wecom_send_mode == "wecomapi"
-        result: dict[str, Any] = {
-            "status": "disabled",
-            "message": "Android 发送端未启用",
-        }
+        result: dict[str, Any] = {"success": True, "error": None, "rooms": []}
         if enabled:
-            result = WeComSenderStatusClient(
+            result = WeComApiAdapter(
                 base_url=self.settings.wecomapi_base_url,
+                api_path=self.settings.wecomapi_api_path,
+                token=self.settings.wecomapi_token,
+                token_header=self.settings.wecomapi_token_header,
+                guid=self.settings.wecomapi_guid,
                 timeout_seconds=self.settings.wecom_timeout_seconds,
-            ).check()
-        active = enabled and result["status"] != "ok"
+                min_interval_seconds=self.settings.wecomapi_min_interval_seconds,
+                daily_limit=self.settings.wecomapi_daily_limit,
+                failure_threshold=self.settings.wecomapi_failure_threshold,
+                cooldown_seconds=self.settings.wecomapi_cooldown_seconds,
+            ).list_rooms(max_pages=1)
+        active = enabled and not result.get("success")
         details = {
             "enabled": enabled,
-            **{
-                key: result.get(key)
-                for key in (
-                    "status",
-                    "backend",
-                    "configured",
-                    "online",
-                    "connected_at",
-                    "pending_commands",
-                    "target_count",
-                    "status_code",
-                    "error_type",
-                )
-                if key in result
-            },
+            "status_code": result.get("status_code"),
+            "room_count": len(result.get("rooms") or []),
+            "error": result.get("error"),
         }
         return self._condition(
             "wecom_sender_offline",
             active,
-            "critical" if result["status"] == "error" else "warning",
-            "wecom_android_sender",
-            "企业微信 Android 发送端不可用",
-            result["message"] if active else "企业微信 Android 发送端在线",
+            "critical",
+            "wecomapi",
+            "企业微信发送通道不可用",
+            str(result.get("error") or "wecomapi 群列表接口不可用") if active else "企业微信发送通道正常",
             details,
         )
 
@@ -365,22 +329,15 @@ class SystemAlertService:
             "details": details,
         }
 
-    def _send_webhook(self, alert: SystemAlert | None) -> None:
-        if not alert or not self.settings.ops_webhook_url:
+    def _send_alert(self, alert: SystemAlert | None) -> None:
+        if not alert or not self.settings.ops_alert_group_id or alert.alert_type == "wecom_sender_offline":
             return
-        try:
-            httpx.post(
-                self.settings.ops_webhook_url,
-                json={
-                    "event": "system_alert",
-                    "id": alert.id,
-                    "severity": alert.severity,
-                    "type": alert.alert_type,
-                    "title": alert.title,
-                    "message": alert.message,
-                    "detected_at": alert.last_detected_at.isoformat(),
-                },
-                timeout=5,
-            )
-        except Exception:
-            logger.exception("系统告警 Webhook 发送失败 alert_id=%s", alert.id)
+        user_ids = [value.strip() for value in self.settings.ops_alert_user_ids.split(",") if value.strip()]
+        result = WeComMessageAdapter().send_text(
+            self.settings.ops_alert_group_id,
+            f"[系统告警/{alert.severity}] {alert.title}\n{alert.message}",
+            mentioned_userids=user_ids,
+            tenant_id=alert.tenant_id,
+        )
+        if not result.get("success"):
+            logger.error("系统告警主动发送失败 alert_id=%s error=%s", alert.id, result.get("error"))
