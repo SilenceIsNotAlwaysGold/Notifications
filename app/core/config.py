@@ -124,6 +124,7 @@ class Settings(BaseSettings):
     ops_scan_interval_minutes: int = Field(default=5, ge=1, alias="OPS_SCAN_INTERVAL_MINUTES")
     ops_failure_threshold: int = Field(default=3, ge=1, alias="OPS_FAILURE_THRESHOLD")
     ops_archive_stale_minutes: int = Field(default=10, ge=1, alias="OPS_ARCHIVE_STALE_MINUTES")
+    ops_callback_stale_minutes: int = Field(default=1440, ge=1, alias="OPS_CALLBACK_STALE_MINUTES")
     ops_backup_dir: str = Field(default="./storage/backups", alias="OPS_BACKUP_DIR")
     ops_backup_stale_hours: int = Field(default=26, ge=1, alias="OPS_BACKUP_STALE_HOURS")
     ops_backup_retention_days: int = Field(default=14, ge=1, alias="OPS_BACKUP_RETENTION_DAYS")

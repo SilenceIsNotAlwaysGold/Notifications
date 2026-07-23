@@ -14,6 +14,7 @@ from app.models.document_sync_log import DocumentSyncLog
 from app.models.media_file import MediaFile
 from app.models.system_alert import SystemAlert
 from app.models.system_run_log import SystemRunLog
+from app.models.wecomapi_room_cache import WeComApiRoomCache
 from app.utils.datetime_utils import ensure_aware, now_tz
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,7 @@ class SystemAlertService:
     def scan(self) -> dict[str, int]:
         checks = [
             self._archive_condition(),
+            self._callback_condition(),
             self._ocr_condition(),
             self._llm_condition(),
             self._kdocs_condition(),
@@ -151,6 +153,10 @@ class SystemAlertService:
             .where(SystemRunLog.run_type == "wecom_archive_pull")
             .order_by(SystemRunLog.id.desc())
         )
+        cached_callback_at = self.db.scalar(
+            select(func.max(WeComApiRoomCache.last_seen_at))
+            .where(WeComApiRoomCache.source == "callback")
+        )
         stale_minutes = self.settings.ops_archive_stale_minutes
         active = False
         message = "企业微信归档拉取正常"
@@ -170,6 +176,46 @@ class SystemAlertService:
                 )
                 details.update({"last_run_id": latest.id, "last_status": latest.status, "age_minutes": round(age_minutes, 1)})
         return self._condition("archive_stalled", active, "critical", "wecom_archive", "企业微信归档停滞", message, details)
+
+    def _callback_condition(self) -> dict[str, Any]:
+        enabled = bool(self.settings.wecomapi_callback_path_secret and self.settings.wecomapi_guid)
+        latest = self.db.scalar(
+            select(SystemRunLog)
+            .where(SystemRunLog.run_type == "wecomapi_callback")
+            .order_by(SystemRunLog.id.desc())
+        )
+        stale_minutes = self.settings.ops_callback_stale_minutes
+        active = False
+        message = "wecomapi 回调心跳正常"
+        details: dict[str, Any] = {"enabled": enabled, "stale_minutes": stale_minutes}
+        if enabled:
+            if latest is None and cached_callback_at is None:
+                active = True
+                message = "wecomapi 回调已配置，但尚未收到有效事件"
+            else:
+                observed_at = (latest.finished_at or latest.started_at) if latest is not None else cached_callback_at
+                age_minutes = (now_tz() - ensure_aware(observed_at)).total_seconds() / 60
+                latest_status = latest.status if latest is not None else "cached_callback"
+                active = latest_status == "failed" or age_minutes > stale_minutes
+                message = (
+                    f"最近回调状态为 {latest_status}，距今 {age_minutes:.1f} 分钟"
+                    if active
+                    else "wecomapi 回调心跳正常"
+                )
+                details.update({
+                    "last_run_id": latest.id if latest is not None else None,
+                    "last_status": latest_status,
+                    "age_minutes": round(age_minutes, 1),
+                })
+        return self._condition(
+            "wecomapi_callback_stalled",
+            active,
+            "critical",
+            "wecomapi_callback",
+            "wecomapi 回调心跳异常",
+            message,
+            details,
+        )
 
     def _ocr_condition(self) -> dict[str, Any]:
         threshold = self.settings.ops_failure_threshold

@@ -2,6 +2,7 @@ from app.core.config import get_settings
 from app.api.v1.wecomapi_callback import _callback_events
 from app.models.wecomapi_room_cache import WeComApiRoomCache
 from app.models.wecomapi_room_member_cache import WeComApiRoomMemberCache
+from app.models.system_run_log import SystemRunLog
 from sqlalchemy import select
 
 
@@ -99,3 +100,11 @@ def test_wecomapi_callback_caches_group_room(client, db_session, monkeypatch):
     )
     assert member is not None
     assert member.display_name == "张律师"
+    heartbeat = db_session.scalar(
+        select(SystemRunLog)
+        .where(SystemRunLog.run_type == "wecomapi_callback")
+        .order_by(SystemRunLog.id.desc())
+    )
+    assert heartbeat is not None
+    assert heartbeat.status == "success"
+    assert heartbeat.total_count == 1

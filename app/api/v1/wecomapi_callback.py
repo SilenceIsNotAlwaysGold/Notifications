@@ -12,6 +12,7 @@ from app.api.v1.response import raise_fail
 from app.core.config import get_settings
 from app.db.session import get_db
 from app.services.wecomapi_room_cache_service import WeComApiRoomCacheService
+from app.services.system_run_log_service import SystemRunLogService
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,8 @@ async def _receive(request: Request, db: Session, path_secret: str | None) -> di
     if events and settings.wecomapi_guid and any(str(event.get("guid") or "") != settings.wecomapi_guid for event in events):
         raise_fail("回调 GUID 不匹配", code=403, status_code=403)
     cache_service = WeComApiRoomCacheService(db)
+    run_service = SystemRunLogService(db)
+    run_log = run_service.start_run("wecomapi_callback", "callback", {"event_count": len(events)}) if events else None
     for event in events:
         logger.info(
             "wecomapi 回调已接收 guid=%s cmd=%s msg_type=%s request_id=%s "
@@ -54,6 +57,13 @@ async def _receive(request: Request, db: Session, path_secret: str | None) -> di
             event.get("fromRoomId") or event.get("from_room_id"),
         )
         cache_service.record_event(event)
+    if run_log is not None:
+        run_service.finish_success(
+            run_log,
+            summary={"event_count": len(events)},
+            total_count=len(events),
+            success_count=len(events),
+        )
     try:
         db.commit()
     except Exception:
