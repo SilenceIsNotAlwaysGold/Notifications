@@ -56,6 +56,11 @@ def test_release_and_recovery_artifacts_exist():
     ):
         assert (ROOT / relative).exists()
 
+    backup_service = (ROOT / "deploy/legal-wecom-backup.service").read_text(encoding="utf-8")
+    assert "EnvironmentFile=/opt/legal-wecom-automation/.env" in backup_service
+    assert ".venv/bin/python /opt/legal-wecom-automation/scripts/backup.py" in backup_service
+    assert "docker compose" not in backup_service
+
 
 def test_legacy_sender_implementations_are_removed():
     for relative in (

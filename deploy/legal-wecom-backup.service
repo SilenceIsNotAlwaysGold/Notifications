@@ -1,9 +1,11 @@
 [Unit]
 Description=Legal WeCom Automation consistent backup
-Requires=docker.service
-After=docker.service
+After=local-fs.target
 
 [Service]
 Type=oneshot
+User=ubuntu
+Group=ubuntu
 WorkingDirectory=/opt/legal-wecom-automation
-ExecStart=/usr/bin/docker compose --profile operations run --rm backup
+EnvironmentFile=/opt/legal-wecom-automation/.env
+ExecStart=/opt/legal-wecom-automation/.venv/bin/python /opt/legal-wecom-automation/scripts/backup.py
