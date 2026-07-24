@@ -21,7 +21,7 @@ class DocumentSyncLog(Base):
     external_row_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     external_row_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     transport_mode: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
-    mapping_version: Mapped[str] = mapped_column(String(32), default="v2", index=True)
+    mapping_version: Mapped[str] = mapped_column(String(32), default="v3", index=True)
     outcome: Mapped[str] = mapped_column(String(32), default="failed", index=True)
     readback_payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     idempotency_key: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True, index=True)

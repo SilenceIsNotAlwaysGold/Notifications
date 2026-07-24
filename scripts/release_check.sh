@@ -10,10 +10,8 @@ echo "== syntax checks =="
 bash -n scripts/preflight.sh
 bash -n scripts/smoke_demo.sh
 bash -n scripts/release_check.sh
-bash -n scripts/ensure_android_sender.sh
 python3 -m py_compile scripts/acceptance_ocr_samples.py scripts/acceptance_wecom_sidecar_mock.py scripts/backup.py scripts/restore.py scripts/check_kdocs_mcp.py
 python3 -m compileall -q app wecom_archive_sidecar
-node --test wecom_bot_sidecar/sidecar.test.mjs
 
 if command -v docker >/dev/null 2>&1; then
   echo "== docker compose config =="

@@ -606,6 +606,10 @@ async function renderRecognitionSettings(initialStatus = null) {
                 <label>OCR Sidecar 地址</label>
                 <input name="ocr_sidecar_url" maxlength="255" value="${escapeHtml(settings.ocr_sidecar_url || "")}" placeholder="http://127.0.0.1:9002" />
               </div>
+              <div class="field">
+                <label>PDF 最大识别页数</label>
+                <input name="tencent_pdf_max_pages" type="number" min="1" max="20" value="${escapeHtml(settings.tencent_pdf_max_pages || 20)}" />
+              </div>
               <div class="field wide service-managed-note">
                 OCR SecretId、SecretKey、区域和 PDF 页数保留在独立服务的受保护配置中，网页只读取可用状态。
               </div>
@@ -696,6 +700,7 @@ async function renderRecognitionSettings(initialStatus = null) {
     const payload = {
       ocr_provider: formData.get("ocr_provider"),
       ocr_sidecar_url: formData.get("ocr_sidecar_url"),
+      tencent_pdf_max_pages: Number(formData.get("tencent_pdf_max_pages")),
       extraction_mode: formData.get("extraction_mode"),
       llm_base_url: formData.get("llm_base_url"),
       llm_model: formData.get("llm_model"),
@@ -1081,6 +1086,14 @@ function archiveGroupTypeOptions(selected) {
     .join("");
 }
 
+function archiveGroupPolicyOptions(selected) {
+  return [
+    ["auto", "按群名自动"],
+    ["whitelist", "白名单强制启用"],
+    ["blacklist", "黑名单强制停用"],
+  ].map(([value, label]) => `<option value="${value}" ${selected === value ? "selected" : ""}>${label}</option>`).join("");
+}
+
 function groupFeatureInputs(features = {}) {
   const options = [
     ["ocr", "OCR"],
@@ -1135,6 +1148,7 @@ async function renderArchiveGroups() {
           <div class="field"><label>所属客户 ID</label><input name="tenant_id" maxlength="128" /></div>
           <div class="field"><label>状态</label><select name="status">${archiveGroupStatusOptions("enabled")}</select></div>
           <div class="field"><label>群类型</label><select name="group_type">${archiveGroupTypeOptions("other")}</select></div>
+          <div class="field"><label>接入策略</label><select name="access_policy">${archiveGroupPolicyOptions("auto")}</select></div>
           <div class="field"><label>内部人员 ID</label><input name="internal_userids" placeholder="多个 ID 用逗号分隔" /></div>
           <div class="field"><label>告警人员 ID</label><input name="alert_userids" placeholder="多个 ID 用逗号分隔" /></div>
           <div class="field"><label>提问超时（分钟）</label><input name="question_timeout_minutes" type="number" min="1" max="1440" value="5" /></div>
@@ -1192,6 +1206,10 @@ async function renderArchiveGroups() {
             {
               label: "群类型",
               render: (row) => `<select class="compact-input" data-field="group_type">${archiveGroupTypeOptions(row.group_type)}</select>`,
+            },
+            {
+              label: "接入策略",
+              render: (row) => `<select class="compact-input" data-field="access_policy">${archiveGroupPolicyOptions(row.access_policy || "auto")}</select>`,
             },
             {
               label: "内部/告警人员",
@@ -1343,6 +1361,7 @@ function reviewDetail(review) {
   const contextIsSnapshot = analyzedContextCount > 0;
   const eventTypes = [
     ["judgment", "判决/调解/裁定"],
+    ["repayment_agreement", "还款/调解协议"],
     ["court_notice", "开庭传票"],
     ["payment_notice", "缴费通知"],
     ["payment_screenshot", "付款完成"],
@@ -1532,7 +1551,7 @@ async function renderReminders() {
       }
       ${panel(
         "新增提醒规则",
-        `<form id="reminder-rule-form" class="form-grid"><div class="field"><label>规则名称</label><input name="name" required /></div><div class="field"><label>规则类型</label><select name="rule_type"><option value="repayment">还款</option><option value="default_upgrade">违约</option><option value="payment_tracking">缴费</option></select></div><div class="field"><label>偏移天数</label><input name="offset_days" type="number" min="0" max="365" value="0" required /></div><div class="field"><label>发送时间</label><input name="send_time" type="time" value="09:00" required /></div><div class="field"><label>目标角色</label><select name="target_role"><option value="debtor">债务人</option><option value="lawyer">法务</option><option value="both">双方</option></select></div><div class="field"><label>客户 ID（留空为全局）</label><input name="tenant_id" /></div><div class="field wide"><label>话术模板</label><textarea name="template" required>案件 {case_no} 请及时跟进。</textarea></div><div class="field"><button type="submit">新增规则</button></div></form>`,
+        `<form id="reminder-rule-form" class="form-grid"><div class="field"><label>规则名称</label><input name="name" required /></div><div class="field"><label>规则类型</label><select name="rule_type"><option value="repayment">还款</option><option value="default_upgrade">违约</option><option value="payment_tracking">缴费</option><option value="court_mode_confirmation">开庭方式确认</option><option value="court_reminder">开庭提醒</option></select></div><div class="field"><label>偏移天数</label><input name="offset_days" type="number" min="0" max="365" value="0" required /></div><div class="field"><label>发送时间</label><input name="send_time" type="time" value="09:00" required /></div><div class="field"><label>目标角色</label><select name="target_role"><option value="debtor">债务人</option><option value="lawyer">法务</option><option value="both">双方</option></select></div><div class="field"><label>客户 ID（留空为全局）</label><input name="tenant_id" /></div><div class="field wide"><label>话术模板</label><textarea name="template" required>案件 {case_no} 请及时跟进。</textarea></div><div class="field"><button type="submit">新增规则</button></div></form>`,
       )}
       ${panel(
         "提醒规则",
@@ -1992,6 +2011,21 @@ function workspaceTable(title, rows, columns) {
   return panel(title, table(columns, rows || []), `<span class="panel-meta">${(rows || []).length} 条</span>`);
 }
 
+function recognizedFactsPanel(rows) {
+  const labels = {court_name:"法院",court_room:"法庭",hearing_mode:"开庭方式",judge_phone:"法官电话",identity_number:"身份证",document_date:"文书签发日",repayment_due_date:"应还款日",enforcement_case_no:"执行案号",order_no:"订单号",repayment_plan:"分期计划"};
+  const facts = (rows || []).flatMap((row) => Object.entries(row.fields || {}).map(([key, value]) => ({
+    label: labels[key] || key,
+    value: typeof value === "object" ? JSON.stringify(value) : value,
+    source: (row.field_sources || {})[key] || `事件 #${row.event_id}`,
+    confidence: row.confidence,
+    status: row.review_status,
+  })));
+  return workspaceTable("已识别业务事实", facts, [
+    {label:"字段",key:"label"},{label:"识别值",key:"value"},{label:"来源",key:"source"},
+    {label:"置信度",key:"confidence"},{label:"复核",render:(row)=>badge(row.status)},
+  ]);
+}
+
 async function renderCaseWorkspace() {
   if (!state.selectedCaseId) {
     const casesData = await api("/api/v1/legal/cases?limit=100");
@@ -2015,6 +2049,7 @@ async function renderCaseWorkspace() {
       </div>
       <div class="workspace-columns">
         <div class="workspace-main">
+          ${recognizedFactsPanel(data.recognized_facts)}
           ${workspaceTable("付款流水", data.payments, [
             { label: "类型", key: "record_type" }, { label: "金额", key: "amount" }, { label: "日期", key: "payment_date" },
             { label: "付款人", key: "payer_name" }, { label: "状态", render: (row) => badge(row.status) },

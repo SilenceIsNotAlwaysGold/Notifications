@@ -344,3 +344,54 @@ def test_real_mcp_payment_target_is_required_only_for_payment(monkeypatch):
 
     assert result["success"] is False
     assert "KDOCS_PAYMENT_FILE_ID" in result["error"]
+
+
+def test_real_mcp_payment_receipt_updates_original_case_row(monkeypatch):
+    reset_kdocs_mcp(monkeypatch)
+    monkeypatch.setenv("KDOCS_PAYMENT_FILE_ID", "payment-file")
+    monkeypatch.setenv("KDOCS_PAYMENT_WORKSHEET_ID", "1")
+    get_settings.cache_clear()
+
+    class FakeMcp:
+        writes = []
+
+        def get_sheet_info(self, file_id, worksheet_id):
+            return {"rowTo": 9}
+
+        def get_range_data(self, file_id, worksheet_id, *, row_from, row_to, col_from, col_to):
+            if col_from == col_to == 3:
+                return [{"rowFrom": 4, "colFrom": 3, "cellText": "(2026)黔0281民初3118号"}]
+            values = ["2026-07-24", "甲公司", "张三", "(2026)黔0281民初3118号", "400.00", "待支付", "待首次催促", "+7天", "notice.jpg"]
+            return [
+                {"rowFrom": 4, "colFrom": index, "cellText": value}
+                for index, value in enumerate(values)
+            ]
+
+        def write_row(self, file_id, worksheet_id, row_index, values):
+            self.writes.append((row_index, values))
+            return {"ok": True}
+
+    adapter = KDocsAdapter()
+    adapter.mcp = FakeMcp()
+
+    result = adapter.append_payment_registration_row(
+        {
+            "日期": "2026-07-25",
+            "案号": "(2026)黔0281民初3118号",
+            "支付情况": "已支付",
+            "跟踪情况": "已识别付款凭证",
+            "剩余缴费时间": "已缴费",
+            "缴费截图上传": "receipt.jpg",
+            "事件类型": "payment_screenshot",
+        }
+    )
+
+    assert result["success"] is True
+    assert result["response"]["created"] is False
+    assert result["response"]["row_index"] == 4
+    row_index, values = adapter.mcp.writes[0]
+    assert row_index == 4
+    assert values == [
+        "2026-07-25", "甲公司", "张三", "(2026)黔0281民初3118号", "400.00",
+        "已支付", "已识别付款凭证", "已缴费", "receipt.jpg",
+    ]

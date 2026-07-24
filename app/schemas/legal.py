@@ -253,7 +253,7 @@ class RunDueOut(BaseModel):
 class ReminderRuleCreate(BaseModel):
     tenant_id: str | None = Field(default=None, max_length=128)
     name: str = Field(min_length=1, max_length=128)
-    rule_type: Literal["repayment", "default_upgrade", "payment_tracking"]
+    rule_type: Literal["repayment", "default_upgrade", "payment_tracking", "court_mode_confirmation", "court_reminder"]
     offset_days: int = Field(ge=0, le=365)
     send_time: str = Field(default="09:00", pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
     target_role: Literal["debtor", "lawyer", "both"] = "lawyer"
@@ -264,7 +264,7 @@ class ReminderRuleCreate(BaseModel):
 
 class ReminderRuleUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=128)
-    rule_type: Literal["repayment", "default_upgrade", "payment_tracking"] | None = None
+    rule_type: Literal["repayment", "default_upgrade", "payment_tracking", "court_mode_confirmation", "court_reminder"] | None = None
     offset_days: int | None = Field(default=None, ge=0, le=365)
     send_time: str | None = Field(default=None, pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
     target_role: Literal["debtor", "lawyer", "both"] | None = None
@@ -385,6 +385,7 @@ class WeComArchiveGroupCreate(BaseModel):
     tenant_id: str | None = Field(default=None, max_length=128)
     status: Literal["discovered", "enabled", "disabled"] = "enabled"
     group_type: Literal["merchant", "debtor", "internal", "other"] = "other"
+    access_policy: Literal["auto", "whitelist", "blacklist"] = "auto"
     features: dict[str, bool] = Field(default_factory=dict)
     internal_userids: list[str] = Field(default_factory=list)
     alert_userids: list[str] = Field(default_factory=list)
@@ -397,6 +398,7 @@ class WeComArchiveGroupUpdate(BaseModel):
     tenant_id: str | None = Field(default=None, max_length=128)
     status: Literal["discovered", "enabled", "disabled"] | None = None
     group_type: Literal["merchant", "debtor", "internal", "other"] | None = None
+    access_policy: Literal["auto", "whitelist", "blacklist"] | None = None
     features: dict[str, bool] | None = None
     internal_userids: list[str] | None = None
     alert_userids: list[str] | None = None
@@ -411,6 +413,7 @@ class WeComArchiveGroupOut(BaseModel):
     tenant_id: str | None
     status: str
     group_type: str
+    access_policy: str
     features: dict[str, bool] = Field(default_factory=dict)
     internal_userids: list[str] = Field(default_factory=list)
     alert_userids: list[str] = Field(default_factory=list)
@@ -550,6 +553,7 @@ class OCRReviewDecision(BaseModel):
     case_no: str | None = Field(default=None, max_length=128)
     event_type: Literal[
         "judgment",
+        "repayment_agreement",
         "court_notice",
         "payment_notice",
         "payment_screenshot",

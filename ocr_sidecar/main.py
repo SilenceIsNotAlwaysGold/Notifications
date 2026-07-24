@@ -3,10 +3,12 @@ import hashlib
 import hmac
 import json
 import time
+from io import BytesIO
 from typing import Any
 
 import httpx
 from fastapi import FastAPI
+from PIL import Image, ImageEnhance, ImageOps
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -19,7 +21,7 @@ class Settings(BaseSettings):
     tencent_region: str = Field(default="ap-guangzhou", alias="TENCENT_OCR_REGION")
     tencent_endpoint: str = Field(default="ocr.tencentcloudapi.com", alias="TENCENT_OCR_ENDPOINT")
     tencent_language_type: str = Field(default="zh", alias="TENCENT_OCR_LANGUAGE_TYPE")
-    pdf_max_pages: int = Field(default=1, ge=1, le=20, alias="TENCENT_OCR_PDF_MAX_PAGES")
+    pdf_max_pages: int = Field(default=20, ge=1, le=20, alias="TENCENT_OCR_PDF_MAX_PAGES")
     timeout_seconds: int = Field(default=20, ge=1, alias="TENCENT_OCR_TIMEOUT_SECONDS")
 
 
@@ -47,11 +49,31 @@ class TencentOCRClient:
         return self._extract_image(content_base64)
 
     def _extract_image(self, content_base64: str) -> dict[str, Any]:
-        data = self._call_api(
+        prepared = _prepare_image(content_base64)
+        result = self._recognize_image(prepared)
+        selected_rotation = 0
+        if result["confidence"] < 0.75:
+            candidates = [(0, prepared, result)]
+            for angle in (90, 180, 270):
+                rotated = _rotate_image(prepared, angle)
+                candidates.append((angle, rotated, self._recognize_image(rotated)))
+            selected_rotation, _content, result = max(
+                candidates,
+                key=lambda item: (item[2]["confidence"], len(item[2]["raw_text"])),
+            )
+        result["metadata"].update(
             {
-                "ImageBase64": content_base64,
-                "LanguageType": self.settings.tencent_language_type,
+                "preprocessed": True,
+                "auto_contrast": True,
+                "sharpness_factor": 1.5,
+                "selected_rotation": selected_rotation,
             }
+        )
+        return result
+
+    def _recognize_image(self, content_base64: str) -> dict[str, Any]:
+        data = self._call_api(
+            {"ImageBase64": content_base64, "LanguageType": self.settings.tencent_language_type}
         )
         return _format_response([data], provider="tencent")
 
@@ -142,6 +164,25 @@ class TencentOCRClient:
 
 def _sign(key: bytes, msg: str) -> bytes:
     return hmac.new(key, msg.encode("utf-8"), hashlib.sha256).digest()
+
+
+def _prepare_image(content_base64: str) -> str:
+    image = Image.open(BytesIO(base64.b64decode(content_base64)))
+    image = ImageOps.exif_transpose(image).convert("RGB")
+    image = ImageOps.autocontrast(image)
+    image = ImageEnhance.Sharpness(image).enhance(1.5)
+    return _encode_png(image)
+
+
+def _rotate_image(content_base64: str, angle: int) -> str:
+    image = Image.open(BytesIO(base64.b64decode(content_base64))).convert("RGB")
+    return _encode_png(image.rotate(angle, expand=True))
+
+
+def _encode_png(image: Image.Image) -> str:
+    output = BytesIO()
+    image.save(output, format="PNG", optimize=True)
+    return base64.b64encode(output.getvalue()).decode("ascii")
 
 
 def _is_pdf(filename: str, media_type: str, content_base64: str) -> bool:

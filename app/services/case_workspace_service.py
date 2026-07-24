@@ -39,6 +39,26 @@ class CaseWorkspaceService:
             key=lambda item: item["at"],
             reverse=True,
         )[:200]
+        recognized_facts = []
+        for event in events:
+            try:
+                metadata = json.loads(event.metadata_json or "{}")
+            except (TypeError, json.JSONDecodeError):
+                metadata = {}
+            fields = metadata.get("structured_fields")
+            if not isinstance(fields, dict) or not fields:
+                continue
+            recognized_facts.append(
+                {
+                    "event_id": event.id,
+                    "event_type": event.event_type,
+                    "fields": fields,
+                    "field_sources": metadata.get("field_sources") or {},
+                    "confidence": str(event.confidence) if event.confidence is not None else None,
+                    "review_status": event.business_status,
+                    "created_at": event.created_at.isoformat(),
+                }
+            )
         return {
             "case": self._case(legal_case),
             "groups": [self._attrs(item, ("id", "group_id", "is_primary", "status", "source", "confirmed_at")) for item in groups],
@@ -49,6 +69,7 @@ class CaseWorkspaceService:
             "reminders": [self._attrs(item, ("id", "reminder_type", "remind_at", "content", "target_userid", "status")) for item in reminders],
             "sync_logs": [self._attrs(item, ("id", "sync_type", "outcome", "external_doc_id", "external_row_index", "created_at")) for item in sync_logs],
             "audit_timeline": timeline,
+            "recognized_facts": recognized_facts,
             "counts": {"groups": len(groups), "messages": len(messages), "media": len(media), "events": len(events), "payments": len(payments), "reminders": len(reminders), "sync_logs": len(sync_logs)},
         }
 

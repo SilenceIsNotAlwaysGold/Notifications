@@ -126,6 +126,44 @@ def test_llm_uses_group_context_to_fill_case_number_missing_from_ocr():
     assert result["metadata"]["field_sources"]["case_no"] == "群聊上文"
 
 
+def test_llm_keeps_court_enforcement_and_installment_fields_for_review():
+    adapter = StubLLMAdapter(
+        {
+            "event_type": "repayment_agreement",
+            "document_type": "调解书",
+            "case_no": "（2026）黔0281民初9001号",
+            "plaintiff": "甲公司",
+            "defendant": "张三",
+            "amount": 12000,
+            "court_name": "盘州市人民法院",
+            "judge_phone": "0858-1234567",
+            "identity_number": "520000199001010011",
+            "document_date": "2026-07-20",
+            "repayment_due_date": "2026-08-01",
+            "repayment_plan": {
+                "installment_count": 2,
+                "total_debt": 12000,
+                "installments": [
+                    {"sequence": 1, "due_date": "2026-08-01", "amount": 6000},
+                    {"sequence": 2, "due_date": "2026-09-01", "amount": 6000},
+                ],
+            },
+            "field_sources": {"judge_phone": "OCR 第2页", "repayment_plan": "协议第三条"},
+            "confidence": 0.94,
+            "requires_review": False,
+            "review_reasons": [],
+        }
+    )
+
+    result = LegalTextExtractionService(llm_settings(), adapter).extract("还款协议")
+
+    fields = result["metadata"]["structured_fields"]
+    assert result["event_type"] == "repayment_agreement"
+    assert fields["court_name"] == "盘州市人民法院"
+    assert fields["identity_number"] == "520000199001010011"
+    assert fields["repayment_plan"]["installments"][1]["amount"] == 6000
+
+
 def test_llm_failure_falls_back_to_regex_and_requires_review():
     adapter = StubLLMAdapter(error=LegalLLMError("gateway timeout"))
     result = LegalTextExtractionService(llm_settings(), adapter).extract(

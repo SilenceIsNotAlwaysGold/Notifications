@@ -114,7 +114,7 @@ class Settings(BaseSettings):
     tencent_ocr_secret_id: str | None = Field(default=None, alias="TENCENT_OCR_SECRET_ID")
     tencent_ocr_secret_key: str | None = Field(default=None, alias="TENCENT_OCR_SECRET_KEY")
     tencent_ocr_region: str = Field(default="ap-guangzhou", alias="TENCENT_OCR_REGION")
-    tencent_ocr_pdf_max_pages: int = Field(default=1, ge=1, le=20, alias="TENCENT_OCR_PDF_MAX_PAGES")
+    tencent_ocr_pdf_max_pages: int = Field(default=20, ge=1, le=20, alias="TENCENT_OCR_PDF_MAX_PAGES")
     tencent_ocr_timeout_seconds: int = Field(default=20, gt=0, alias="TENCENT_OCR_TIMEOUT_SECONDS")
     legal_extraction_mode: Literal["regex", "llm"] = Field(default="regex", alias="LEGAL_EXTRACTION_MODE")
     legal_llm_base_url: str | None = Field(default=None, alias="LEGAL_LLM_BASE_URL")

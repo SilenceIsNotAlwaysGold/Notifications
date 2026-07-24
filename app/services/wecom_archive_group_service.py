@@ -12,6 +12,7 @@ from app.utils.datetime_utils import ensure_aware, now_tz
 
 ARCHIVE_GROUP_STATUSES = {"discovered", "enabled", "disabled"}
 ARCHIVE_GROUP_TYPES = {"merchant", "debtor", "internal", "other"}
+ARCHIVE_ACCESS_POLICIES = {"auto", "whitelist", "blacklist"}
 GROUP_FEATURE_DEFAULTS = {
     "ocr": True,
     "document_sync": True,
@@ -55,6 +56,7 @@ class WeComArchiveGroupService:
             raise ValueError("该群聊 roomid 已存在")
         self._validate_status(payload.status)
         self._validate_group_type(payload.group_type)
+        self._validate_access_policy(payload.access_policy)
         self._validate_tenant(payload.tenant_id)
         group = WeComArchiveGroup(
             room_id=room_id,
@@ -63,11 +65,13 @@ class WeComArchiveGroupService:
             tenant_id=self._clean_optional(payload.tenant_id),
             status=payload.status,
             group_type=payload.group_type,
+            access_policy=payload.access_policy,
             features_json=json.dumps(self._normalize_features(payload.features), ensure_ascii=False),
             internal_userids_json=json.dumps(self._normalize_userids(payload.internal_userids), ensure_ascii=False),
             alert_userids_json=json.dumps(self._normalize_userids(payload.alert_userids), ensure_ascii=False),
             question_timeout_minutes=payload.question_timeout_minutes,
         )
+        self._apply_name_classification(group)
         self.db.add(group)
         self.db.flush()
         return group
@@ -81,6 +85,8 @@ class WeComArchiveGroupService:
             self._validate_status(values["status"])
         if "group_type" in values:
             self._validate_group_type(values["group_type"])
+        if "access_policy" in values:
+            self._validate_access_policy(values["access_policy"])
         if "tenant_id" in values:
             self._validate_tenant(values["tenant_id"])
         for field in ("wecomapi_room_id", "display_name", "tenant_id"):
@@ -94,6 +100,7 @@ class WeComArchiveGroupService:
             values["alert_userids_json"] = json.dumps(self._normalize_userids(values.pop("alert_userids")), ensure_ascii=False)
         for field, value in values.items():
             setattr(group, field, value)
+        self._apply_name_classification(group)
         group.updated_at = now_tz()
         self.db.flush()
         return group
@@ -107,6 +114,7 @@ class WeComArchiveGroupService:
                 room_id=room_id,
                 status="discovered",
                 group_type="other",
+                access_policy="auto",
                 features_json=json.dumps(GROUP_FEATURE_DEFAULTS, ensure_ascii=False),
                 seen_message_count=1,
                 first_seen_at=observed_at,
@@ -127,9 +135,35 @@ class WeComArchiveGroupService:
         if not cleaned:
             return False
         group.display_name = cleaned
+        self._apply_name_classification(group)
         group.updated_at = now_tz()
         self.db.flush()
         return True
+
+    def classify_group_name(self, group: WeComArchiveGroup) -> bool:
+        before = (group.status, group.group_type)
+        self._apply_name_classification(group)
+        changed = before != (group.status, group.group_type)
+        if changed:
+            group.updated_at = now_tz()
+            self.db.flush()
+        return changed
+
+    @staticmethod
+    def _apply_name_classification(group: WeComArchiveGroup) -> None:
+        if group.access_policy == "blacklist":
+            group.status = "disabled"
+            return
+        if group.access_policy == "whitelist":
+            group.status = "enabled"
+            return
+        name = group.display_name or ""
+        if "法务起诉沟通群" in name:
+            group.status = "enabled"
+            group.group_type = "merchant"
+        elif "还款对接群" in name:
+            group.status = "enabled"
+            group.group_type = "debtor"
 
     def feature_enabled(self, room_id: str, feature: str) -> bool:
         if feature not in GROUP_FEATURE_DEFAULTS:
@@ -170,6 +204,11 @@ class WeComArchiveGroupService:
     def _validate_group_type(group_type: str) -> None:
         if group_type not in ARCHIVE_GROUP_TYPES:
             raise ValueError("群类型必须是 merchant、debtor、internal 或 other")
+
+    @staticmethod
+    def _validate_access_policy(access_policy: str) -> None:
+        if access_policy not in ARCHIVE_ACCESS_POLICIES:
+            raise ValueError("群接入策略必须是 auto、whitelist 或 blacklist")
 
     @staticmethod
     def _normalize_features(features: dict[str, bool] | None) -> dict[str, bool]:

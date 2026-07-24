@@ -204,7 +204,7 @@ class KDocsAdapter:
             return self._mcp_execute(
                 "append_payment_registration_row",
                 payload,
-                lambda: self._mcp_append_payment(row),
+                lambda: self._mcp_upsert_payment(row),
                 target="payment",
             )
         return self._execute("append_payment_registration_row", payload)
@@ -289,20 +289,64 @@ class KDocsAdapter:
             "sort": sort_result,
         }
 
-    def _mcp_append_payment(self, row: dict[str, Any]) -> dict[str, Any]:
+    def _mcp_upsert_payment(self, row: dict[str, Any]) -> dict[str, Any]:
         assert self.mcp is not None
         file_id = self.settings.kdocs_payment_file_id or ""
         worksheet_id = self.settings.kdocs_payment_worksheet_id
+        case_no = self._pick(row, "案号", "case_no")
         with _MCP_WRITE_LOCK:
             sheet = self.mcp.get_sheet_info(file_id, worksheet_id)
-            target_row = int(sheet.get("rowTo", 0)) + 1
-            write_result = self.mcp.write_row(file_id, worksheet_id, target_row, self._payment_values(row))
+            last_row = int(sheet.get("rowTo", 0))
+            target_row = self._mcp_find_row(file_id, worksheet_id, str(case_no), last_row, 3) if case_no else None
+            created = target_row is None
+            if target_row is None:
+                target_row = last_row + 1
+                values = self._payment_values(row)
+            else:
+                existing = self._mcp_row_values(file_id, worksheet_id, target_row, 8)
+                incoming = self._payment_values(row)
+                values = [new if new not in (None, "") else old for old, new in zip(existing, incoming)]
+            write_result = self.mcp.write_row(file_id, worksheet_id, target_row, values)
         return {
             "file_id": file_id,
             "worksheet_id": worksheet_id,
             "row_index": target_row,
+            "created": created,
             "write": write_result,
         }
+
+    def _mcp_find_row(
+        self,
+        file_id: str,
+        worksheet_id: int,
+        expected: str,
+        last_row: int,
+        column: int,
+    ) -> int | None:
+        assert self.mcp is not None
+        if last_row < 1:
+            return None
+        cells = self.mcp.get_range_data(
+            file_id, worksheet_id, row_from=1, row_to=last_row, col_from=column, col_to=column
+        )
+        normalized = expected.strip()
+        for cell in cells:
+            value = cell.get("cellText") or cell.get("originalCellValue") or cell.get("formula")
+            if str(value or "").strip() == normalized:
+                return int(cell.get("rowFrom", cell.get("originRow", -1)))
+        return None
+
+    def _mcp_row_values(self, file_id: str, worksheet_id: int, row_index: int, col_to: int) -> list[Any]:
+        assert self.mcp is not None
+        values: list[Any] = [None] * (col_to + 1)
+        cells = self.mcp.get_range_data(
+            file_id, worksheet_id, row_from=row_index, row_to=row_index, col_from=0, col_to=col_to
+        )
+        for cell in cells:
+            column = int(cell.get("colFrom", cell.get("originCol", -1)))
+            if 0 <= column <= col_to:
+                values[column] = cell.get("cellText") or cell.get("originalCellValue") or cell.get("formula")
+        return values
 
     def _mcp_upload_legal_document(
         self,
@@ -410,7 +454,7 @@ class KDocsAdapter:
 
     def _mcp_readback(self, file_id: str, worksheet_id: int, row_index: int, target: str) -> dict[str, Any]:
         assert self.mcp is not None
-        col_to = {"enforcement": 24, "court": 17, "payment": 15}.get(target, 24)
+        col_to = {"enforcement": 24, "court": 17, "payment": 8}.get(target, 24)
         cells = self.mcp.get_range_data(
             file_id,
             worksheet_id,
@@ -568,15 +612,18 @@ class KDocsAdapter:
         return values
 
     def _payment_values(self, row: dict[str, Any]) -> list[Any]:
+        event_type = self._pick(row, "事件类型", "event_type")
+        is_paid = event_type == "payment_screenshot" or self._pick(row, "支付情况") in {"已支付", "paid"}
         return [
-            self._pick(row, "案号", "case_no"),
+            self._pick(row, "日期", "notice_date", "payment_date"),
+            self._pick(row, "原告", "plaintiff"),
             self._pick(row, "被告", "defendant", "debtor_name"),
-            self._pick(row, "缴费类型"),
-            self._pick(row, "金额", "amount"),
-            self._pick(row, "文件链接", "file_url"),
-            self._pick(row, "识别摘要"),
-            self._pick(row, "需人工复核"),
-            self._pick(row, "消息ID", "msg_id"),
+            self._pick(row, "案号", "case_no"),
+            self._pick(row, "缴费信息", "金额", "amount"),
+            self._pick(row, "支付情况") or ("已支付" if is_paid else "待支付"),
+            self._pick(row, "跟踪情况") or ("已识别付款凭证" if is_paid else "待首次催促"),
+            self._pick(row, "剩余缴费时间") or ("已缴费" if is_paid else "+7天"),
+            self._pick(row, "缴费截图上传", "文件链接", "file_url"),
         ]
 
     @staticmethod

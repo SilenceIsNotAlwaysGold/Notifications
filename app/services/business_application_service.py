@@ -43,6 +43,7 @@ class BusinessApplicationService:
         self.db.flush()
 
     def _apply_text_event(self, event: LegalEvent, legal_case: LegalCase) -> None:
+        metadata = json.loads(event.metadata_json or "{}")
         message = self.db.get(GroupMessage, event.group_message_id) if event.group_message_id else None
         group_id = message.group_id if message else legal_case.group_id
         if WeComArchiveGroupService(self.db).feature_enabled(group_id, "document_sync"):
@@ -69,11 +70,21 @@ class BusinessApplicationService:
                     source_event_id=event.id,
                     payment_amount=event.amount,
                 )
+        elif event.event_type == "repayment_agreement":
+            plan = metadata.get("structured_fields", {}).get("repayment_plan") or {}
+            ReminderService(self.db).create_installment_reminders(
+                legal_case.id,
+                plan.get("installments") or [],
+                source_event_id=event.id,
+            )
         elif event.event_type == "keyword":
             text = event.extracted_text or ""
             from app.services.case_service import CaseService
 
-            if "强制执行" in text or "仲裁" in text:
+            if any(keyword in text for keyword in ("已结清", "全部还清", "履行完毕", "双方就此再无纠纷")):
+                CaseService(self.db).update_status(legal_case, "closed", reason="settlement_confirmed")
+                ReminderService(self.db).cancel_pending_case_reminders(legal_case.id, "案件已确认结清")
+            elif "强制执行" in text or "仲裁" in text:
                 CaseService(self.db).mark_defaulted(legal_case)
             elif "逾期" in text:
                 CaseService(self.db).mark_overdue(legal_case)

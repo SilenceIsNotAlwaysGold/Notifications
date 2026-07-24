@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 class DocumentSyncService:
-    MAPPING_VERSION = "v2"
+    MAPPING_VERSION = "v3"
     def __init__(self, db: Session, adapter: Any | None = None) -> None:
         self.db = db
         self.settings = get_settings()

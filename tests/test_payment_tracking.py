@@ -7,6 +7,7 @@ from app.models.media_file import MediaFile
 from app.models.payment_record import PaymentRecord
 from app.models.reminder import Reminder
 from app.services.payment_tracking_service import PaymentTrackingService
+from app.services.media_file_service import MediaFileService
 from app.utils.datetime_utils import now_tz
 
 
@@ -128,3 +129,28 @@ def test_payment_tracking_marks_unpaid_notice_overdue(db_session):
     assert rows[0]["payment_status"] == "overdue"
     assert rows[0]["remaining_payment_time"] == "逾期 2 天"
     assert rows[0]["tracking_status"] == "催促失败 1 次"
+
+
+def test_partial_payment_screenshot_preserves_notice_fields(db_session):
+    legal_case = _case(db_session)
+    legal_case.paid_amount = Decimal("100.00")
+    media = MediaFile(
+        case_id=legal_case.id,
+        group_id=legal_case.group_id,
+        media_type="image",
+        local_path="payment/partial.jpg",
+        source="test",
+    )
+    db_session.add(media)
+    db_session.flush()
+
+    row = MediaFileService(db_session)._payment_registration_row(
+        {"event_type": "payment_screenshot", "amount": Decimal("200.00")},
+        legal_case,
+        media,
+    )
+
+    assert row["日期"] is None
+    assert row["缴费信息"] is None
+    assert row["支付情况"] == "部分支付"
+    assert row["剩余缴费时间"] is None

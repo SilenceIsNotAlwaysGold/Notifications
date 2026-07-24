@@ -100,6 +100,7 @@ def _ensure_archive_group_feature_columns(engine: Engine, inspector) -> None:
     column_names = {column["name"] for column in inspector.get_columns("wecom_archive_groups")}
     columns = {
         "group_type": "VARCHAR(32) DEFAULT 'other'",
+        "access_policy": "VARCHAR(32) DEFAULT 'auto'",
         "features_json": "TEXT DEFAULT '{}'",
         "internal_userids_json": "TEXT DEFAULT '[]'",
         "alert_userids_json": "TEXT DEFAULT '[]'",

@@ -507,6 +507,23 @@ class MediaFileService:
         cancelled_reminders = 0
         if matched_case and result.get("event_type") == "payment_notice" and self._payment_tracking_enabled(matched_case.tenant_id, media_file.group_id):
             created_reminders = self._create_ocr_payment_tracking_once(matched_case, media_file, event.id)
+        if matched_case and result.get("event_type") == "court_notice":
+            created_reminders += len(
+                self.reminder_service.create_court_reminders(
+                    matched_case.id,
+                    result.get("court_time") or result.get("event_time"),
+                    source_event_id=event.id,
+                )
+            )
+        if matched_case and result.get("event_type") == "repayment_agreement":
+            plan = (result.get("metadata") or {}).get("structured_fields", {}).get("repayment_plan") or {}
+            created_reminders += len(
+                self.reminder_service.create_installment_reminders(
+                    matched_case.id,
+                    plan.get("installments") or [],
+                    source_event_id=event.id,
+                )
+            )
         if matched_case and result.get("event_type") == "payment_screenshot":
             if result.get("amount") is not None:
                 _payment, created = PaymentService(self.db).create(
@@ -598,7 +615,7 @@ class MediaFileService:
         legal_case: LegalCase | None,
     ) -> None:
         event_type = result.get("event_type")
-        if event_type == "judgment":
+        if event_type in {"judgment", "repayment_agreement"}:
             upload_url = None
             target_filename = self._target_legal_document_filename(media_file, result)
             if media_file.local_path:
@@ -648,17 +665,24 @@ class MediaFileService:
         target_filename: str,
         upload_url: str | None,
     ) -> dict[str, Any]:
+        structured = (result.get("metadata") or {}).get("structured_fields") or {}
         return {
             "案号": self._case_no(result, legal_case),
             "原告": result.get("plaintiff"),
             "被告": result.get("defendant") or (legal_case.debtor_name if legal_case else None),
             "文书类型": result.get("document_type"),
+            "身份证": structured.get("identity_number"),
+            "文书签发时间": structured.get("document_date"),
             "文件名": target_filename,
             "文件链接": upload_url or media_file.public_url or media_file.local_path,
-            "应还款时间": legal_case.due_date.isoformat() if legal_case else None,
+            "应还款时间": structured.get("repayment_due_date") or (legal_case.due_date.isoformat() if legal_case else None),
+            "所提交的法院": structured.get("court_name"),
+            "执行案号": structured.get("enforcement_case_no") or (legal_case.enforcement_case_no if legal_case else None),
             "总金额": str(legal_case.total_amount) if legal_case else None,
             "已还欠款": str(legal_case.paid_amount) if legal_case else None,
             "案件状态": legal_case.status if legal_case else None,
+            "法官电话": structured.get("judge_phone"),
+            "订单号": structured.get("order_no"),
             "识别摘要": (result.get("raw_text") or result.get("extracted_text") or "")[:500],
             "需人工复核": bool(result.get("requires_review")),
             "消息ID": media_file.msg_id,
@@ -666,28 +690,43 @@ class MediaFileService:
 
     def _court_time_row(self, result: dict[str, Any], legal_case: LegalCase | None, media_file: MediaFile) -> dict[str, Any]:
         court_time = result.get("court_time") or result.get("event_time")
+        structured = (result.get("metadata") or {}).get("structured_fields") or {}
         return {
+            "法院": " ".join(value for value in (structured.get("court_name"), structured.get("court_room")) if value),
             "案号": self._case_no(result, legal_case),
             "原告": result.get("plaintiff"),
             "被告": legal_case.debtor_name if legal_case else result.get("defendant"),
             "开庭时间": court_time.isoformat() if hasattr(court_time, "isoformat") else court_time,
+            "开庭方式": structured.get("hearing_mode") or "确认线上还是现场开庭",
             "金额": str(legal_case.total_amount) if legal_case else None,
             "文件链接": media_file.public_url or media_file.local_path,
+            "承办法官电话": structured.get("judge_phone"),
             "识别摘要": (result.get("raw_text") or result.get("extracted_text") or "")[:500],
             "需人工复核": bool(result.get("requires_review")),
             "消息ID": media_file.msg_id,
         }
 
     def _payment_registration_row(self, result: dict[str, Any], legal_case: LegalCase | None, media_file: MediaFile) -> dict[str, Any]:
+        event_time = result.get("event_time") or result.get("court_time") or now_tz()
+        is_paid = result.get("event_type") == "payment_screenshot"
+        payment_amount = Decimal(str(result.get("amount") or 0))
+        fully_paid = bool(
+            is_paid
+            and legal_case
+            and legal_case.total_amount > 0
+            and legal_case.paid_amount + payment_amount >= legal_case.total_amount
+        )
         return {
+            "日期": None if is_paid else (event_time.date().isoformat() if hasattr(event_time, "date") else str(event_time)[:10]),
+            "原告": legal_case.plaintiff_name if legal_case else result.get("plaintiff"),
             "案号": self._case_no(result, legal_case),
             "被告": legal_case.debtor_name if legal_case else result.get("defendant"),
-            "缴费类型": "付款完成" if result.get("event_type") == "payment_screenshot" else "缴费通知",
-            "金额": str(result.get("amount")) if result.get("amount") is not None else None,
-            "文件链接": media_file.public_url or media_file.local_path,
-            "识别摘要": (result.get("raw_text") or result.get("extracted_text") or "")[:500],
-            "需人工复核": bool(result.get("requires_review")),
-            "消息ID": media_file.msg_id,
+            "缴费信息": None if is_paid else (str(result.get("amount")) if result.get("amount") is not None else None),
+            "支付情况": ("已支付" if fully_paid else "部分支付") if is_paid else "待支付",
+            "跟踪情况": "已识别付款凭证，待核对是否足额" if is_paid and not fully_paid else ("已识别付款凭证" if is_paid else "待首次催促"),
+            "剩余缴费时间": "已缴费" if fully_paid else (None if is_paid else "+7天"),
+            "缴费截图上传": media_file.public_url or media_file.local_path,
+            "事件类型": result.get("event_type"),
         }
 
     def _target_legal_document_filename(self, media_file: MediaFile, result: dict[str, Any]) -> str:

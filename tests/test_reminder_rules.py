@@ -34,10 +34,12 @@ def test_default_rules_have_all_standard_tiers(client):
 
     assert response.status_code == 200
     items = response.json()["data"]["items"]
-    assert len(items) == 14
+    assert len(items) == 13
     assert {item["offset_days"] for item in items if item["rule_type"] == "repayment"} == {0, 1, 3, 7}
     assert {item["offset_days"] for item in items if item["rule_type"] == "default_upgrade"} == {1, 3, 7}
-    assert {item["offset_days"] for item in items if item["rule_type"] == "payment_tracking"} == set(range(7))
+    assert {item["offset_days"] for item in items if item["rule_type"] == "payment_tracking"} == {3, 5, 7}
+    assert {item["offset_days"] for item in items if item["rule_type"] == "court_mode_confirmation"} == {5}
+    assert {item["offset_days"] for item in items if item["rule_type"] == "court_reminder"} == {1, 3}
     assert all(item["send_time"] == "09:00" for item in items)
 
 
@@ -76,6 +78,53 @@ def test_invalid_template_variable_is_rejected(client):
 
     assert response.status_code == 400
     assert "不支持的变量" in response.json()["message"]
+
+
+def test_court_notice_creates_confirmation_and_hearing_reminders(db_session):
+    legal_case = _case(db_session)
+    event = LegalEvent(
+        case_id=legal_case.id,
+        event_type="court_notice",
+        event_time=datetime(2026, 8, 30, 9, 30, tzinfo=app_timezone()),
+        attribution_status="confirmed",
+        business_status="approved",
+    )
+    db_session.add(event)
+    db_session.flush()
+
+    created = ReminderService(db_session).create_court_reminders(
+        legal_case.id, event.event_time, source_event_id=event.id
+    )
+
+    assert len(created) == 3
+    assert {item.remind_at.date() for item in created} == {
+        date(2026, 8, 25), date(2026, 8, 27), date(2026, 8, 29)
+    }
+    assert {item.reminder_type for item in created} == {"court_mode_confirmation", "court_reminder"}
+
+
+def test_installment_plan_creates_idempotent_reminders(db_session):
+    legal_case = _case(db_session)
+    event = LegalEvent(
+        case_id=legal_case.id,
+        event_type="repayment_agreement",
+        attribution_status="confirmed",
+        business_status="approved",
+    )
+    db_session.add(event)
+    db_session.flush()
+    installments = [
+        {"sequence": 1, "due_date": "2026-09-01", "amount": 500},
+        {"sequence": 2, "due_date": "2026-10-01", "amount": 500},
+    ]
+    service = ReminderService(db_session)
+
+    first = service.create_installment_reminders(legal_case.id, installments, source_event_id=event.id)
+    second = service.create_installment_reminders(legal_case.id, installments, source_event_id=event.id)
+
+    assert len(first) == 6
+    assert second == []
+    assert {item.reminder_type for item in first} == {"installment_repayment"}
 
 
 def test_rule_change_rebuilds_pending_and_disable_cancels(db_session, client):

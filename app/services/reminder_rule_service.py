@@ -22,6 +22,7 @@ ALLOWED_TEMPLATE_VARIABLES = {
     "total_amount",
     "days_overdue",
     "payment_amount",
+    "court_name",
 }
 
 DEFAULT_RULES = [
@@ -50,10 +51,27 @@ DEFAULT_RULES = [
             "name": f"缴费 D+{offset}",
             "rule_type": "payment_tracking",
             "offset_days": offset,
-            "target_role": "lawyer",
+            "target_role": "lawyer" if offset in (3, 5) else "both",
             "template": "缴费跟踪：案件 {case_no} 待缴金额 {payment_amount}，请确认是否已完成缴费。",
         }
-        for offset in range(7)
+        for offset in (3, 5, 7)
+    ],
+    {
+        "name": "开庭方式确认 D-5",
+        "rule_type": "court_mode_confirmation",
+        "offset_days": 5,
+        "target_role": "lawyer",
+        "template": "开庭方式确认：案件 {case_no} 即将开庭，请确认线上或现场并补充安排。",
+    },
+    *[
+        {
+            "name": f"开庭提醒 D-{offset}",
+            "rule_type": "court_reminder",
+            "offset_days": offset,
+            "target_role": "lawyer",
+            "template": "开庭提醒：案件 {case_no} 即将开庭，请核对法院、时间、代理人和材料。",
+        }
+        for offset in (3, 1)
     ],
 ]
 
@@ -70,9 +88,10 @@ class ReminderRuleService:
                 .order_by(ReminderRule.sort_order.asc(), ReminderRule.id.asc())
             ).all()
         )
-        if existing:
-            return existing
+        existing_names = {rule.name for rule in existing}
         for index, definition in enumerate(DEFAULT_RULES):
+            if definition["name"] in existing_names:
+                continue
             self.db.add(
                 ReminderRule(
                     tenant_id=None,
@@ -243,6 +262,16 @@ class ReminderRuleService:
         self.db.flush()
         return reminders
 
+    def create_rule_reminders(
+        self,
+        rule: ReminderRule,
+        legal_case: LegalCase,
+        target_date: date,
+        source_event: LegalEvent | None = None,
+        payment_amount: Any = None,
+    ) -> list[Reminder]:
+        return self._create_for_rule(rule, legal_case, target_date, source_event, payment_amount)
+
     @staticmethod
     def validate_template(template: str) -> None:
         try:
@@ -266,6 +295,7 @@ class ReminderRuleService:
             "total_amount": str(total),
             "days_overdue": days_overdue,
             "payment_amount": str(payment_amount) if payment_amount is not None else "待确认",
+            "court_name": legal_case.court_name or "待确认法院",
         }
         return template.format_map(values)
 

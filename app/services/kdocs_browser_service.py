@@ -53,7 +53,7 @@ TARGETS: dict[KDocsTarget, TargetDefinition] = {
         name="缴费登记",
         file_id_setting="kdocs_payment_file_id",
         worksheet_id_setting="kdocs_payment_worksheet_id",
-        headers=("案号", "被告", "缴费类型", "金额", "文件链接", "识别摘要", "需人工复核", "消息ID"),
+        headers=("日期", "原告", "被告", "案号", "缴费信息", "支付情况", "跟踪情况", "剩余缴费时间", "缴费截图上传"),
     ),
 }
 

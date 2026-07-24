@@ -10,6 +10,7 @@ from app.utils.regex_parser import extract_event_time, parse_legal_text
 
 ALLOWED_EVENT_TYPES = {
     "judgment",
+    "repayment_agreement",
     "court_notice",
     "payment_notice",
     "payment_screenshot",
@@ -35,6 +36,21 @@ EVENT_TYPE_ALIASES = {
     "缴费通知": "payment_notice",
     "付款截图": "payment_screenshot",
     "支付凭证": "payment_screenshot",
+    "还款协议": "repayment_agreement",
+    "调解协议": "repayment_agreement",
+}
+
+STRUCTURED_FIELDS = {
+    "court_name",
+    "court_room",
+    "hearing_mode",
+    "judge_phone",
+    "identity_number",
+    "document_date",
+    "repayment_due_date",
+    "enforcement_case_no",
+    "order_no",
+    "repayment_plan",
 }
 
 
@@ -95,6 +111,7 @@ class LegalTextExtractionService:
         if amount is None:
             amount = regex_result.get("amount")
         confidence = self._confidence(llm_result.get("confidence"))
+        structured_fields = self._structured_fields(llm_result)
 
         if self._has_classification_conflict(llm_event_type, regex_event_type):
             review_reasons.append("LLM 与规则的材料类型判断不一致")
@@ -110,6 +127,12 @@ class LegalTextExtractionService:
                 amount=amount,
             )
         )
+        if event_type == "repayment_agreement" and not (
+            structured_fields.get("repayment_plan", {}).get("installments")
+            if isinstance(structured_fields.get("repayment_plan"), dict)
+            else False
+        ):
+            review_reasons.append("还款协议缺少可执行的分期计划")
         if confidence < self.settings.legal_llm_min_confidence:
             review_reasons.append("结构化抽取置信度低")
 
@@ -124,7 +147,6 @@ class LegalTextExtractionService:
         field_sources = llm_result.get("field_sources")
         if not isinstance(field_sources, dict):
             field_sources = {}
-
         return {
             **regex_result,
             "case_no": case_no,
@@ -160,10 +182,40 @@ class LegalTextExtractionService:
                     for key, value in field_sources.items()
                     if value is not None
                 },
+                "structured_fields": structured_fields,
                 "extraction_confidence": confidence,
                 "review_reasons": review_reasons,
             },
         }
+
+    @staticmethod
+    def _structured_fields(llm_result: dict[str, Any]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key in STRUCTURED_FIELDS:
+            value = llm_result.get(key)
+            if value in (None, "", [], {}):
+                continue
+            if key == "repayment_plan":
+                if not isinstance(value, dict):
+                    continue
+                installments = value.get("installments")
+                if isinstance(installments, list):
+                    value = {
+                        **{str(k)[:50]: v for k, v in value.items() if k != "installments" and isinstance(v, (str, int, float, type(None)))},
+                        "installments": [
+                            {
+                                "due_date": str(item.get("due_date") or "")[:10],
+                                "amount": item.get("amount"),
+                                "sequence": item.get("sequence"),
+                            }
+                            for item in installments[:120]
+                            if isinstance(item, dict) and item.get("due_date")
+                        ],
+                    }
+            elif not isinstance(value, (str, int, float, bool)):
+                continue
+            result[key] = value
+        return result
 
     @staticmethod
     def _fallback_result(regex_result: dict[str, Any], reason: str) -> dict[str, Any]:

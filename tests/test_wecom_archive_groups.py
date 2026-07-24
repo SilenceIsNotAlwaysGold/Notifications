@@ -6,7 +6,7 @@ from app.adapters.wecom_archive import WeComArchiveAdapter
 from app.models.group_message import GroupMessage
 from app.models.media_file import MediaFile
 from app.models.wecom_archive_group import WeComArchiveGroup
-from app.schemas.legal import WeComArchiveGroupCreate
+from app.schemas.legal import WeComArchiveGroupCreate, WeComArchiveGroupUpdate
 from app.services.wecom_archive_group_service import WeComArchiveGroupService
 from app.utils.seq_store import SeqStore
 
@@ -197,3 +197,30 @@ def test_archive_group_api_can_update_discovered_group(client, db_session):
     list_response = client.get("/api/v1/legal/wecom-archive/groups")
     assert list_response.status_code == 200
     assert list_response.json()["data"]["total"] == 1
+
+
+def test_matching_group_names_auto_onboard_with_policy_overrides(db_session):
+    service = WeComArchiveGroupService(db_session)
+    merchant = service.create_group(
+        WeComArchiveGroupCreate(room_id="wr_merchant", display_name="一号法务起诉沟通群", status="discovered")
+    )
+    debtor = service.create_group(
+        WeComArchiveGroupCreate(room_id="wr_debtor", display_name="张三还款对接群", status="discovered")
+    )
+    blocked = service.create_group(
+        WeComArchiveGroupCreate(
+            room_id="wr_blocked",
+            display_name="二号法务起诉沟通群",
+            access_policy="blacklist",
+        )
+    )
+
+    assert (merchant.status, merchant.group_type) == ("enabled", "merchant")
+    assert (debtor.status, debtor.group_type) == ("enabled", "debtor")
+    assert blocked.status == "disabled"
+
+    service.update_group(
+        "wr_blocked",
+        WeComArchiveGroupUpdate(access_policy="whitelist"),
+    )
+    assert blocked.status == "enabled"

@@ -28,6 +28,7 @@ class RecognitionSettingsOut(BaseModel):
 class RecognitionSettingsUpdate(BaseModel):
     ocr_provider: Literal["mock", "local_text", "tencent", "aliyun"] | None = None
     ocr_sidecar_url: str | None = Field(default=None, max_length=255)
+    tencent_pdf_max_pages: int | None = Field(default=None, ge=1, le=20)
     extraction_mode: Literal["regex", "llm"] | None = None
     llm_base_url: str | None = Field(default=None, max_length=255)
     llm_api_key: str | None = Field(default=None, max_length=512)

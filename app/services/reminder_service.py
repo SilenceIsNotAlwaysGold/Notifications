@@ -157,6 +157,90 @@ class ReminderService:
             payment_amount=payment_amount,
         )
 
+    def create_court_reminders(
+        self,
+        case_id: int,
+        court_time: datetime | str | None,
+        source_event_id: int | None = None,
+    ) -> list[Reminder]:
+        legal_case = self.db.get(LegalCase, case_id)
+        if not legal_case or not court_time:
+            return []
+        if isinstance(court_time, str):
+            try:
+                court_time = datetime.fromisoformat(court_time)
+            except ValueError:
+                return []
+        source_event = self.db.get(LegalEvent, source_event_id) if source_event_id else None
+        service = ReminderRuleService(self.db)
+        created: list[Reminder] = []
+        for rule_type in ("court_mode_confirmation", "court_reminder"):
+            for rule in service.effective_rules(legal_case.tenant_id, rule_type):
+                target_date = court_time.date() - timedelta(days=rule.offset_days)
+                created.extend(service.create_rule_reminders(rule, legal_case, target_date, source_event))
+        return created
+
+    def create_installment_reminders(
+        self,
+        case_id: int,
+        installments: list[dict[str, object]],
+        source_event_id: int | None = None,
+    ) -> list[Reminder]:
+        legal_case = self.db.get(LegalCase, case_id)
+        if not legal_case:
+            return []
+        created: list[Reminder] = []
+        for index, installment in enumerate(installments[:120], start=1):
+            try:
+                due_date = date.fromisoformat(str(installment.get("due_date") or "")[:10])
+            except ValueError:
+                continue
+            sequence = installment.get("sequence") or index
+            amount = installment.get("amount") or "待确认"
+            for label, delta_days, target_userid in (
+                ("d-7", -7, legal_case.debtor_wecom_userid or legal_case.lawyer_wecom_userid),
+                ("d0", 0, legal_case.debtor_wecom_userid or legal_case.lawyer_wecom_userid),
+                ("d+3", 3, legal_case.lawyer_wecom_userid),
+            ):
+                target_date = due_date + timedelta(days=delta_days)
+                dedupe_key = f"installment:{source_event_id or 0}:{case_id}:{sequence}:{label}"
+                if self.db.scalar(select(Reminder.id).where(Reminder.dedupe_key == dedupe_key)):
+                    continue
+                created.append(
+                    self._create(
+                        case_id=case_id,
+                        tenant_id=legal_case.tenant_id,
+                        group_id=legal_case.group_id,
+                        reminder_type="installment_repayment",
+                        remind_at=datetime.combine(target_date, datetime.min.time(), tzinfo=app_timezone()).replace(hour=9),
+                        content=f"第 {sequence} 期还款提醒：案件 {legal_case.case_no} 应于 {due_date.isoformat()} 还款 {amount} 元。",
+                        target_userid=target_userid,
+                        source_event_id=source_event_id,
+                        dedupe_key=dedupe_key,
+                    )
+                )
+        return created
+
+    def cancel_pending_case_reminders(self, case_id: int, reason: str) -> int:
+        reminders = list(
+            self.db.scalars(
+                select(Reminder)
+                .where(Reminder.case_id == case_id)
+                .where(Reminder.status == "pending")
+                .where(
+                    Reminder.reminder_type.in_(
+                        ("repayment_before_due", "installment_repayment", "default_upgrade")
+                    )
+                )
+            ).all()
+        )
+        for reminder in reminders:
+            reminder.status = "cancelled"
+            reminder.cancelled_at = now_tz()
+            reminder.cancel_reason = reason
+        self.db.flush()
+        return len(reminders)
+
     def create_repayment_rules_for_date(self, case_id: int, scan_date: date) -> list[Reminder]:
         legal_case = self.db.get(LegalCase, case_id)
         if not legal_case:

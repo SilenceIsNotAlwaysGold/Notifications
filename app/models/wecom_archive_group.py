@@ -18,6 +18,7 @@ class WeComArchiveGroup(Base):
     tenant_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(32), default="discovered", index=True)
     group_type: Mapped[str] = mapped_column(String(32), default="other", index=True)
+    access_policy: Mapped[str] = mapped_column(String(32), default="auto", index=True)
     features_json: Mapped[str] = mapped_column(Text, default="{}")
     internal_userids_json: Mapped[str] = mapped_column(Text, default="[]")
     alert_userids_json: Mapped[str] = mapped_column(Text, default="[]")

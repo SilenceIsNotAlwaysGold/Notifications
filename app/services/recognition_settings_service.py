@@ -150,6 +150,7 @@ class RecognitionSettingsService:
         mapping = {
             "ocr_provider": "OCR_PROVIDER",
             "ocr_sidecar_url": "OCR_SIDECAR_URL",
+            "tencent_pdf_max_pages": "TENCENT_OCR_PDF_MAX_PAGES",
             "extraction_mode": "LEGAL_EXTRACTION_MODE",
             "llm_base_url": "LEGAL_LLM_BASE_URL",
             "llm_api_key": "LEGAL_LLM_API_KEY",

@@ -1,3 +1,4 @@
+import json
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -7,6 +8,8 @@ from app.models.business_outbox import BusinessOutbox
 from app.models.document_sync_log import DocumentSyncLog
 from app.models.legal_event import LegalEvent
 from app.models.payment_record import PaymentRecord
+from app.models.reminder import Reminder
+from app.services.business_application_service import BusinessApplicationService
 from app.services.outbox_service import OutboxService
 
 
@@ -98,3 +101,40 @@ def test_outbox_process_is_idempotent(client, db_session):
     assert second["processed"] == 0
     assert db_session.get(LegalEvent, event_id).business_status == "applied"
     assert len(list(db_session.scalars(select(DocumentSyncLog).where(DocumentSyncLog.case_id == case_id)).all())) >= 1
+
+
+def test_approved_text_repayment_plan_creates_installment_schedule(client, db_session):
+    case_id = _case(client, case_no="（2026）黔0281民初9004号")
+    event = LegalEvent(
+        case_id=case_id,
+        event_type="repayment_agreement",
+        attribution_status="confirmed",
+        business_status="approved",
+        metadata_json=json.dumps(
+            {
+                "structured_fields": {
+                    "repayment_plan": {
+                        "installments": [
+                            {"sequence": 1, "due_date": "2026-09-01", "amount": 500},
+                            {"sequence": 2, "due_date": "2026-10-01", "amount": 500},
+                        ]
+                    }
+                }
+            }
+        ),
+    )
+    db_session.add(event)
+    db_session.flush()
+
+    BusinessApplicationService(db_session).apply_event(event.id)
+
+    reminders = list(
+        db_session.scalars(
+            select(Reminder).where(
+                Reminder.case_id == case_id,
+                Reminder.reminder_type == "installment_repayment",
+            )
+        ).all()
+    )
+    assert len(reminders) == 6
+    assert event.business_status == "applied"

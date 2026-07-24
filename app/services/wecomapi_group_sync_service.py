@@ -8,6 +8,7 @@ from app.core.config import Settings, get_settings
 from app.models.wecom_archive_group import WeComArchiveGroup
 from app.models.wecomapi_room_cache import WeComApiRoomCache
 from app.models.wecomapi_room_member_cache import WeComApiRoomMemberCache
+from app.services.wecom_archive_group_service import WeComArchiveGroupService
 from app.utils.datetime_utils import now_tz
 
 
@@ -74,6 +75,7 @@ class WeComApiGroupSyncService:
             room = room_by_id[group.wecomapi_room_id]
             if room["room_name"] and group.display_name != room["room_name"]:
                 group.display_name = room["room_name"]
+                WeComArchiveGroupService(self.db).classify_group_name(group)
                 group.updated_at = now_tz()
                 updated += 1
         self.db.flush()

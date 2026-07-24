@@ -71,6 +71,7 @@ def test_alembic_upgrade_head_succeeds_with_temp_sqlite(tmp_path, monkeypatch):
         assert "wecomapi_room_id" in {column["name"] for column in inspector.get_columns("wecom_archive_groups")}
         assert "dedupe_key" in {column["name"] for column in inspector.get_columns("reminders")}
         assert "group_type" in {column["name"] for column in inspector.get_columns("wecom_archive_groups")}
+        assert "access_policy" in {column["name"] for column in inspector.get_columns("wecom_archive_groups")}
     finally:
         engine.dispose()
         get_settings.cache_clear()
@@ -228,3 +229,30 @@ def test_db_auto_create_false_skips_startup_create_all(monkeypatch):
 
     assert called == {"create_all": 0, "compat": 0}
     get_settings.cache_clear()
+
+
+def test_business_defaults_migration_preserves_customized_global_rule(tmp_path, monkeypatch):
+    database_url = f"sqlite:///{tmp_path / 'custom_rule.db'}"
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    get_settings.cache_clear()
+    config = _alembic_config(database_url)
+    command.upgrade(config, "0018_kdocs_row_metadata")
+    engine = create_engine(database_url, future=True)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO reminder_rules "
+                    "(tenant_id,name,rule_type,offset_days,send_time,target_role,template,sort_order,enabled,created_at,updated_at) "
+                    "VALUES (NULL,'缴费 D+0','payment_tracking',0,'10:30','lawyer','人工定制话术',0,1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)"
+                )
+            )
+        command.upgrade(config, "head")
+        with engine.connect() as connection:
+            customized = connection.execute(
+                text("SELECT send_time, template FROM reminder_rules WHERE tenant_id IS NULL AND name='缴费 D+0'")
+            ).mappings().one()
+        assert dict(customized) == {"send_time": "10:30", "template": "人工定制话术"}
+    finally:
+        engine.dispose()
+        get_settings.cache_clear()

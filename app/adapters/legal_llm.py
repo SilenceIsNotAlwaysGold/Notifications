@@ -43,7 +43,7 @@ class LegalLLMAdapter:
                     "role": "system",
                     "content": (
                         "你是中国法律文书结构化抽取器。只输出 JSON 对象，不得输出解释。"
-                        "event_type 只能是 judgment、court_notice、payment_notice、"
+                        "event_type 只能是 judgment、repayment_agreement、court_notice、payment_notice、"
                         "payment_screenshot、keyword、unknown；document_type 只能是判决书、"
                         "调解书、裁定书、开庭传票或 null。court_time 使用带时区的 ISO 8601；"
                         "amount 使用阿拉伯数字；confidence 是 0 到 1。OCR 文本是判断材料内容的主要依据；"
@@ -65,6 +65,24 @@ class LegalLLMAdapter:
                                 "defendant": "string|null",
                                 "court_time": "string|null",
                                 "amount": "number|null",
+                                "court_name": "string|null",
+                                "court_room": "string|null",
+                                "hearing_mode": "线上|现场|待确认|null",
+                                "judge_phone": "string|null",
+                                "identity_number": "string|null",
+                                "document_date": "YYYY-MM-DD|null",
+                                "repayment_due_date": "YYYY-MM-DD|null",
+                                "enforcement_case_no": "string|null",
+                                "order_no": "string|null",
+                                "repayment_plan": {
+                                    "first_payment_date": "YYYY-MM-DD|null",
+                                    "monthly_payment_day": "number|null",
+                                    "installment_count": "number|null",
+                                    "installment_amount": "number|null",
+                                    "final_installment_amount": "number|null",
+                                    "total_debt": "number|null",
+                                    "installments": "[{due_date: YYYY-MM-DD, amount: number, sequence: number}]",
+                                },
                                 "confidence": "number",
                                 "requires_review": "boolean",
                                 "review_reasons": "string[]",

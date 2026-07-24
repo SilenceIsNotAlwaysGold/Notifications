@@ -15,3 +15,11 @@ AI 结构化会发送 OCR 原文及相关窗口内的群聊上下文。业务已
 法律资料默认永久保留，`LEGAL_DATA_RETENTION_ENABLED=false`。只有管理员明确设置为 `true` 后，每日任务才会按 `LEGAL_DATA_RETENTION_DAYS` 和 `LEGAL_DATA_RETENTION_REVIEW_STATUSES` 删除本地文件字节；数据库记录、哈希和审计不会删除。启用前必须确认备份、合规期限和允许清理的复核状态。
 
 商家问题超时只在 `MERCHANT_WORKDAYS` 与 `MERCHANT_WORKDAY_START/END` 定义的工作时间内计时。群的第一个告警人员是负责人；超过 `MERCHANT_QUESTION_ESCALATION_MINUTES` 仍未回复时，升级给第二个告警人员（未配置第二人时仍通知负责人）。
+
+## 0019 发布检查
+
+- 维护窗口前使用 SQLite backup API 创建一致性副本，并在副本上从 `0018_kdocs_row_metadata` 升级到 `0019_business_spec_defaults`。
+- 迁移仅替换内容、角色、时间和偏移均未修改的旧全局缴费规则；租户规则和人工定制规则保持不变。
+- 历史停用群迁移为黑名单，避免群名同步后被自动启用；其他群可在后台选择自动、白名单或黑名单。
+- 金山映射版本提升为 `v3`，旧日志不阻止新的 9 列缴费视图写入和读回。
+- 待归属资料和事件在迁移中不确认、不重放，也不产生付款、提醒或金山副作用。
