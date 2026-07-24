@@ -23,3 +23,9 @@ def test_query_validation_names_invalid_parameter(client):
 
     assert response.status_code == 422
     assert "limit" in response.json()["message"]
+
+
+def test_case_list_keeps_legacy_limit_compatible(client):
+    response = client.get("/api/v1/legal/cases?limit=200")
+
+    assert response.status_code == 200

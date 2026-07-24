@@ -48,7 +48,8 @@ def list_cases(
     group_id: str | None = None,
     tenant_id: str | None = None,
     offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=20, ge=1, le=100),
+    # Keep the read API compatible with admin pages opened before pagination was introduced.
+    limit: int = Query(default=20, ge=1, le=200),
     db: Session = Depends(get_db),
     operator_info: dict[str, object] = Depends(get_current_operator),
 ):
