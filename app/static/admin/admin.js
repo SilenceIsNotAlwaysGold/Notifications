@@ -1994,7 +1994,7 @@ function workspaceTable(title, rows, columns) {
 
 async function renderCaseWorkspace() {
   if (!state.selectedCaseId) {
-    const casesData = await api("/api/v1/legal/cases?limit=200");
+    const casesData = await api("/api/v1/legal/cases?limit=100");
     const cases = casesData.items || [];
     if (cases.length) state.selectedCaseId = cases[0].id;
     else {
@@ -2056,7 +2056,7 @@ async function renderCaseWorkspace() {
 async function renderAttributionQueue() {
   const [queueData, casesData] = await Promise.all([
     api("/api/v1/legal/attribution-queue?status=pending&limit=200"),
-    api("/api/v1/legal/cases?limit=200"),
+    api("/api/v1/legal/cases?limit=100"),
   ]);
   const items = queueData.items || [];
   const cases = casesData.items || [];

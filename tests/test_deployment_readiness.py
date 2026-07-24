@@ -33,6 +33,13 @@ def test_health_and_admin_are_available(client):
     assert client.get("/admin/admin.js").status_code == 200
 
 
+def test_admin_queries_cases_within_api_page_limit():
+    content = (ROOT / "app/static/admin/admin.js").read_text(encoding="utf-8")
+
+    assert '/api/v1/legal/cases?limit=200' not in content
+    assert '/api/v1/legal/cases?limit=100' in content
+
+
 def test_compose_contains_only_current_runtime_services():
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     for service in ("api:", "ocr-sidecar:", "archive-sidecar:", "migrate:", "backup:"):
