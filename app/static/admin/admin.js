@@ -15,6 +15,8 @@ const state = {
   kdocsDocumentTokenStack: [],
   wecomPlatformGroups: [],
   selectedCaseId: null,
+  attributionPage: 1,
+  attributionPageSize: 100,
 };
 
 const titles = {
@@ -2089,23 +2091,38 @@ async function renderCaseWorkspace() {
 }
 
 async function renderAttributionQueue() {
+  const offset = (state.attributionPage - 1) * state.attributionPageSize;
   const [queueData, casesData] = await Promise.all([
-    api("/api/v1/legal/attribution-queue?status=pending&limit=200"),
+    api(`/api/v1/legal/attribution-queue?status=pending&offset=${offset}&limit=${state.attributionPageSize}`),
     api("/api/v1/legal/cases?limit=100"),
   ]);
   const items = queueData.items || [];
   const cases = casesData.items || [];
+  const total = Number(queueData.total || 0);
+  const totalPages = Math.max(1, Math.ceil(total / state.attributionPageSize));
+  if (state.attributionPage > totalPages) {
+    state.attributionPage = totalPages;
+    return renderAttributionQueue();
+  }
   $("#content").innerHTML = `
     <section class="attribution-view">
-      <header class="case-section-header"><div><h2>案件归属复核</h2><p>按群、上下文和 AI 候选批量确认；确认前不会产生付款、提醒或金山写入。</p></div><span class="case-candidate-count">${queueData.total || 0}</span></header>
+      <header class="case-section-header"><div><h2>案件归属复核</h2><p>按群、上下文和 AI 候选批量确认；确认前不会产生付款、提醒或金山写入。</p></div><span class="case-candidate-count">${total}</span></header>
       ${panel("批量操作", `<form id="attribution-form" class="form-grid"><div class="field wide"><label>目标案件</label><select name="case_id"><option value="">选择案件</option>${cases.map((row)=>`<option value="${row.id}">${escapeHtml(row.case_no)} · ${escapeHtml(row.debtor_name)}</option>`).join("")}</select></div><div class="field wide"><label>驳回原因</label><input name="reason" placeholder="仅驳回时填写" /></div><div class="field form-actions"><button type="submit" data-attribution-action="confirm">确认归属</button><button type="submit" class="danger" data-attribution-action="reject">明确驳回</button></div></form>`)}
       ${panel("隔离队列", table([
         {label:"选择",render:(row)=>`<input type="checkbox" data-attribution-id="${row.id}" />`},
         {label:"群 ID",key:"group_id"},{label:"对象",render:(row)=>`${escapeHtml(row.subject_type)} #${row.subject_id}`},
         {label:"候选案件",render:(row)=>fmt(row.suggested_case_id)},{label:"置信度",render:(row)=>fmt(row.confidence)},
         {label:"原因",key:"reason"},{label:"进入时间",key:"created_at"},
-      ], items))}
+      ], items) + `<div class="kdocs-pagination"><span class="attribution-page-summary">第 ${state.attributionPage} / ${totalPages} 页，本页 ${items.length} 条，共 ${total} 条</span><button type="button" class="ghost small" id="attribution-prev" ${state.attributionPage <= 1 ? "disabled" : ""}>上一页</button><button type="button" class="ghost small" id="attribution-next" ${state.attributionPage >= totalPages ? "disabled" : ""}>下一页</button></div>`)}
     </section>`;
+  $("#attribution-prev").addEventListener("click", async () => {
+    state.attributionPage = Math.max(1, state.attributionPage - 1);
+    await renderAttributionQueue();
+  });
+  $("#attribution-next").addEventListener("click", async () => {
+    state.attributionPage = Math.min(totalPages, state.attributionPage + 1);
+    await renderAttributionQueue();
+  });
   $("#attribution-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const submitter = event.submitter;
@@ -2113,7 +2130,11 @@ async function renderAttributionQueue() {
     if (!itemIds.length) return showAlert("请至少选择一条待归属记录", "error");
     const form = new FormData(event.currentTarget);
     const decision = submitter.dataset.attributionAction;
-    const payload = {item_ids:itemIds, decision, case_id: decision === "confirm" ? Number(form.get("case_id")) || null : null, reason:String(form.get("reason")||"") || null};
+    const caseId = Number(form.get("case_id")) || null;
+    const reason = String(form.get("reason") || "").trim();
+    if (decision === "confirm" && !caseId) return showAlert("确认归属前必须选择目标案件", "error");
+    if (decision === "reject" && !reason) return showAlert("明确驳回时必须填写驳回原因", "error");
+    const payload = {item_ids:itemIds, decision, case_id: decision === "confirm" ? caseId : null, reason:reason || null};
     await api("/api/v1/legal/attribution-queue/batch-confirm", {method:"POST", body:JSON.stringify(payload)});
     showAlert("批量归属已处理");
     await renderAttributionQueue();

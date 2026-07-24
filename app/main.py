@@ -58,7 +58,14 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
-    return JSONResponse(status_code=422, content={"code": 422, "message": "请求参数错误", "data": None})
+    errors = []
+    for error in exc.errors()[:3]:
+        location = ".".join(str(part) for part in error.get("loc", ()) if part not in {"body", "query", "path"})
+        message = str(error.get("msg") or "参数格式不正确").removeprefix("Value error, ")
+        errors.append(f"{location}：{message}" if location else message)
+    detail = "；".join(errors)
+    message = f"请求参数错误：{detail}" if detail else "请求参数错误"
+    return JSONResponse(status_code=422, content={"code": 422, "message": message, "data": None})
 
 
 @app.exception_handler(Exception)

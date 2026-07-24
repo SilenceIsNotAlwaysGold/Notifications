@@ -1219,11 +1219,18 @@ button.danger-button {
 
 .kdocs-pagination {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
   gap: 8px;
   padding: 12px 18px;
   border-top: 1px solid var(--line);
   background: #f8fafc;
+}
+
+.attribution-page-summary {
+  margin-right: auto;
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .kdocs-pagination button:disabled {
