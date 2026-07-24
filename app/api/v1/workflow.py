@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps_auth import get_current_operator
@@ -23,6 +24,8 @@ from app.schemas.workflow import (
     PaymentCreate,
     PaymentListOut,
     PaymentOut,
+    PaymentTrackingListOut,
+    PaymentTrackingOut,
     PaymentUpdate,
 )
 from app.services.attribution_service import AttributionService
@@ -32,6 +35,7 @@ from app.services.contact_service import ContactService
 from app.services.kdocs_reconciliation_service import KDocsReconciliationService
 from app.services.outbox_service import OutboxService
 from app.services.payment_service import PaymentService
+from app.services.payment_tracking_service import PaymentTrackingService
 from app.utils.datetime_utils import now_tz
 
 router = APIRouter(prefix="/legal", tags=["legal-workflow"])
@@ -112,6 +116,33 @@ def list_payments(case_id: int, offset: int = Query(0, ge=0), limit: int = Query
         raise_fail("无权限访问该案件", code=403, status_code=403)
     total, items = PaymentService(db).list_for_case(case_id, offset=offset, limit=limit)
     return ok("付款流水查询成功", PaymentListOut(total=total, items=[PaymentOut.model_validate(item) for item in items]))
+
+
+@router.get("/payment-trackings")
+def list_payment_trackings(
+    status: str | None = Query(default=None, pattern="^(pending|partial|paid|overdue)$"),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=200),
+    db: Session = Depends(get_db),
+    operator_info: dict[str, object] = Depends(get_current_operator),
+):
+    from app.models.legal_case import LegalCase
+
+    accessible_case_ids = [
+        case_id
+        for case_id in db.scalars(select(LegalCase.id)).all()
+        if has_case_access(db, operator_info, case_id)
+    ]
+    total, items = PaymentTrackingService(db).list_rows(
+        case_ids=accessible_case_ids,
+        status=status,
+        offset=offset,
+        limit=limit,
+    )
+    return ok(
+        "缴费信息跟踪查询成功",
+        PaymentTrackingListOut(total=total, items=[PaymentTrackingOut(**item) for item in items]),
+    )
 
 
 @router.post("/cases/{case_id}/payments")

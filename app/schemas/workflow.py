@@ -113,6 +113,27 @@ class PaymentListOut(BaseModel):
     items: list[PaymentOut]
 
 
+class PaymentTrackingOut(BaseModel):
+    event_id: int
+    case_id: int
+    notice_date: date
+    plaintiff: str | None
+    defendant: str
+    case_no: str
+    payment_info: str | None
+    payment_status: str
+    tracking_status: str
+    payment_deadline: date | None
+    remaining_payment_time: str
+    screenshot_media_file_id: int | None
+    screenshot_url: str | None
+
+
+class PaymentTrackingListOut(BaseModel):
+    total: int
+    items: list[PaymentTrackingOut]
+
+
 class EventDecision(BaseModel):
     reason: str | None = Field(default=None, max_length=1000)
 

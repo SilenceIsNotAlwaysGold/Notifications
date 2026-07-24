@@ -9,6 +9,7 @@ from app.core.resource_permissions import filter_by_case_or_group, has_media_acc
 from app.db.session import get_db
 from app.models.media_file import MediaFile
 from app.schemas.legal import OCRReviewDecision, OCRReviewDecisionOut, OCRReviewListOut, OCRReviewOut
+from app.services.group_context_service import GroupContextService
 from app.services.media_file_service import MediaFileService
 
 router = APIRouter(prefix="/legal/ocr-reviews", tags=["legal-ocr-reviews"])
@@ -22,7 +23,11 @@ def _parse_json(raw: str | None) -> dict:
         return {}
 
 
-def _review_out(media_file: MediaFile) -> OCRReviewOut:
+def _review_out(
+    media_file: MediaFile,
+    *,
+    available_context_messages: list[dict] | None = None,
+) -> OCRReviewOut:
     ocr_result = _parse_json(media_file.ocr_result_json)
     return OCRReviewOut(
         media_file_id=media_file.id,
@@ -38,6 +43,7 @@ def _review_out(media_file: MediaFile) -> OCRReviewOut:
         event_id=media_file.review_event_id,
         extracted_text=media_file.extracted_text,
         context_messages=ocr_result.get("context_messages") or [],
+        available_context_messages=available_context_messages or [],
         ocr_result=ocr_result,
         final_result=_parse_json(media_file.review_result_json) if media_file.review_result_json else None,
         preview_url=f"/api/v1/legal/media-files/{media_file.id}/content" if media_file.local_path else None,
@@ -85,7 +91,11 @@ def get_ocr_review(
         raise_fail("OCR 复核记录不存在", code=1404, status_code=404)
     if not has_media_access(db, operator_info, media_file):
         raise_fail("无权限访问该资源", code=403, status_code=403)
-    return ok("OCR 复核详情查询成功", _review_out(media_file))
+    available_context = GroupContextService(db).around_message(media_file.group_message_id)
+    return ok(
+        "OCR 复核详情查询成功",
+        _review_out(media_file, available_context_messages=available_context),
+    )
 
 
 @router.post("/{media_file_id}/decision")

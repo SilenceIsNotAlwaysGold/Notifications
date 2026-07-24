@@ -27,6 +27,7 @@ const titles = {
   "ocr-reviews": ["人工复核", "核对识别结果并控制业务同步"],
   "recognition-settings": ["识别与 AI", "配置腾讯 OCR 和法律文书结构化模型"],
   reminders: ["提醒任务", "查看、编辑和执行企业微信提醒"],
+  "payment-trackings": ["缴费信息跟踪", "按缴费通知汇总支付状态、催促进度和凭证"],
   "merchant-questions": ["商家待回复", "跟踪外部消息回复时效"],
   "send-platform": ["发送通道", "配置 wecomapi token、guid 和公网回调地址"],
   "system-alerts": ["系统异常", "处理归档、识别、写入、发送和运行异常"],
@@ -66,6 +67,7 @@ const sections = {
     label: "提醒任务",
     defaultView: "reminders",
     views: [
+      { view: "payment-trackings", label: "缴费跟踪" },
       { view: "reminders", label: "提醒任务" },
       { view: "merchant-questions", label: "商家待回复" },
     ],
@@ -1316,8 +1318,10 @@ function reviewFieldValue(result, key) {
 }
 
 function reviewContextTimeline(review) {
-  const messages = review.context_messages || [];
-  if (!messages.length) return '<div class="context-empty">当次分析未找到相邻群聊文本</div>';
+  const analyzedMessages = review.context_messages || [];
+  const availableMessages = review.available_context_messages || [];
+  const messages = analyzedMessages.length ? analyzedMessages : availableMessages;
+  if (!messages.length) return '<div class="context-empty">当前没有可用的相邻群聊文字或附件 OCR 摘要</div>';
   return `<div class="context-timeline">${messages
     .map(
       (message) => `
@@ -1334,6 +1338,9 @@ function reviewDetail(review) {
   const editable = review.review_status === "pending";
   const metadata = result.metadata || {};
   const fieldSources = metadata.field_sources || {};
+  const analyzedContextCount = (review.context_messages || []).length;
+  const availableContextCount = (review.available_context_messages || []).length;
+  const contextIsSnapshot = analyzedContextCount > 0;
   const eventTypes = [
     ["judgment", "判决/调解/裁定"],
     ["court_notice", "开庭传票"],
@@ -1372,7 +1379,7 @@ function reviewDetail(review) {
           }
         </form>
         <div class="review-context-block">
-          <div class="context-heading"><div><div class="field-label">AI 分析使用的群聊上下文</div><span>${review.context_messages.length} 条相邻消息</span></div>${metadata.context_used ? '<span class="context-used">已参与识别</span>' : ""}</div>
+          <div class="context-heading"><div><div class="field-label">${contextIsSnapshot ? "AI 分析使用的群聊上下文" : "当前可用于重新分析的群聊上下文"}</div><span>${contextIsSnapshot ? analyzedContextCount : availableContextCount} 条相邻消息</span></div>${contextIsSnapshot ? '<span class="context-used">已参与识别</span>' : availableContextCount ? '<span class="context-available">尚未参与当次识别</span>' : ""}</div>
           ${reviewContextTimeline(review)}
         </div>
         <div class="ocr-text-block"><div class="field-label">OCR 原文</div><pre>${escapeHtml(review.extracted_text || "无识别文本")}</pre></div>
@@ -1444,7 +1451,10 @@ async function renderOCRReviews() {
   if (!items.some((item) => item.media_file_id === state.selectedReviewId)) {
     state.selectedReviewId = items[0] ? items[0].media_file_id : null;
   }
-  const selected = items.find((item) => item.media_file_id === state.selectedReviewId);
+  const selectedSummary = items.find((item) => item.media_file_id === state.selectedReviewId);
+  const selected = selectedSummary
+    ? await api(`/api/v1/legal/ocr-reviews/${selectedSummary.media_file_id}`)
+    : null;
   $("#content").innerHTML = `
     <div class="review-toolbar">
       <label for="review-status-filter">状态</label>
@@ -1641,6 +1651,53 @@ async function renderReminders() {
     showAlert(`扫描完成：真实发送 ${result.sent}，Mock 模拟 ${result.simulated}，失败 ${result.failed}，重试 ${result.retrying}`);
     renderReminders();
   });
+}
+
+async function openProtectedMedia(url) {
+  const target = window.open("", "_blank");
+  try {
+    const headers = state.apiKey ? { "X-API-Key": state.apiKey } : {};
+    const response = await fetch(url, { headers });
+    if (!response.ok) throw new Error("缴费截图加载失败");
+    const objectUrl = URL.createObjectURL(await response.blob());
+    if (target) target.location = objectUrl;
+    else window.open(objectUrl, "_blank");
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+  } catch (error) {
+    if (target) target.close();
+    throw error;
+  }
+}
+
+async function renderPaymentTrackings() {
+  const data = await api("/api/v1/legal/payment-trackings?limit=200");
+  const items = data.items || [];
+  const statusText = { pending: "待支付", partial: "部分支付", paid: "已支付", overdue: "已逾期" };
+  $("#content").innerHTML = `
+    <section class="payment-tracking-view">
+      <header class="case-section-header">
+        <div><h2>缴费信息跟踪</h2><p>数据来自已确认的缴费通知、催促任务和付款凭证，剩余时间按截止日实时计算。</p></div>
+        <span class="case-candidate-count">${data.total || 0}</span>
+      </header>
+      ${panel("缴费信息表", table([
+        { label: "日期", key: "notice_date" },
+        { label: "原告", key: "plaintiff" },
+        { label: "被告", key: "defendant" },
+        { label: "案号", render: (row) => `<button class="text-link" data-payment-case="${row.case_id}">${escapeHtml(row.case_no)}</button>` },
+        { label: "缴费信息", render: (row) => row.payment_info ? `${escapeHtml(row.payment_info)}${Number.isFinite(Number(row.payment_info)) ? " 元" : ""}` : fmt(null) },
+        { label: "支付情况", render: (row) => badge(statusText[row.payment_status] || row.payment_status) },
+        { label: "跟踪情况", key: "tracking_status" },
+        { label: "剩余缴费时间", key: "remaining_payment_time" },
+        { label: "缴费截图上传", render: (row) => row.screenshot_url ? `<button class="small ghost" data-payment-screenshot="${escapeHtml(row.screenshot_url)}">查看截图</button>` : '<span class="muted">待上传</span>' },
+      ], items, "payment-tracking-table"))}
+    </section>`;
+  document.querySelectorAll("[data-payment-case]").forEach((button) => button.addEventListener("click", () => {
+    state.selectedCaseId = Number(button.dataset.paymentCase);
+    setView("case-workspace");
+  }));
+  document.querySelectorAll("[data-payment-screenshot]").forEach((button) => button.addEventListener("click", () => {
+    openProtectedMedia(button.dataset.paymentScreenshot).catch((error) => showAlert(error.message, "error"));
+  }));
 }
 
 async function renderMerchantQuestions() {
@@ -2039,6 +2096,7 @@ async function loadView() {
     if (state.view === "archive-groups") await renderArchiveGroups();
     if (state.view === "ocr-reviews") await renderOCRReviews();
     if (state.view === "recognition-settings") await renderRecognitionSettings();
+    if (state.view === "payment-trackings") await renderPaymentTrackings();
     if (state.view === "reminders") await renderReminders();
     if (state.view === "merchant-questions") await renderMerchantQuestions();
     if (state.view === "send-platform") await renderWeComApiPlatform();

@@ -1979,6 +1979,15 @@ tr:hover td {
   font-size: 12px;
 }
 
+.context-available {
+  padding: 3px 7px;
+  border: 1px solid #d7be80;
+  border-radius: 4px;
+  background: #fff8e8;
+  color: #755c21;
+  font-size: 12px;
+}
+
 .context-timeline {
   display: grid;
   gap: 8px;
@@ -2011,6 +2020,27 @@ tr:hover td {
   border: 1px dashed var(--line);
   color: var(--muted);
   text-align: center;
+}
+
+.payment-tracking-table {
+  min-width: 1180px;
+}
+
+.payment-tracking-table th:nth-child(5),
+.payment-tracking-table td:nth-child(5),
+.payment-tracking-table th:nth-child(7),
+.payment-tracking-table td:nth-child(7) {
+  min-width: 150px;
+}
+
+.text-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent-dark);
+  text-align: left;
+  text-decoration: underline;
+  cursor: pointer;
 }
 
 .field-source {

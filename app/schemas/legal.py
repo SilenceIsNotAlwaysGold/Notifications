@@ -594,6 +594,7 @@ class OCRReviewOut(BaseModel):
     event_id: int | None
     extracted_text: str | None
     context_messages: list[dict[str, Any]] = Field(default_factory=list)
+    available_context_messages: list[dict[str, Any]] = Field(default_factory=list)
     ocr_result: dict[str, Any]
     final_result: dict[str, Any] | None
     preview_url: str | None

@@ -194,3 +194,24 @@ def test_review_detail_returns_ai_context_snapshot(client, db_session):
 
     assert response.status_code == 200
     assert response.json()["data"]["context_messages"] == context
+
+
+def test_review_detail_returns_current_context_without_changing_ai_snapshot(client, db_session):
+    _replay_pdf(client, "review_context_neighbor", 807)
+    _replay_pdf(client, "review_context_historical", 808)
+    neighbor = db_session.scalar(select(MediaFile).where(MediaFile.msg_id == "review_context_neighbor"))
+    historical = db_session.scalar(select(MediaFile).where(MediaFile.msg_id == "review_context_historical"))
+    neighbor.extracted_text = "补充案号：（2026）黔0281民初9001号"
+    neighbor.ocr_status = "processed"
+    historical.ocr_result_json = json.dumps({"case_no": None}, ensure_ascii=False)
+    historical.ocr_status = "processed"
+    historical.review_status = "pending"
+    db_session.commit()
+
+    response = client.get(f"/api/v1/legal/ocr-reviews/{historical.id}")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["context_messages"] == []
+    assert len(data["available_context_messages"]) == 1
+    assert "9001号" in data["available_context_messages"][0]["content"]
