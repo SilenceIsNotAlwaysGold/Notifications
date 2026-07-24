@@ -2014,7 +2014,7 @@ function workspaceTable(title, rows, columns) {
 }
 
 function recognizedFactsPanel(rows) {
-  const labels = {court_name:"法院",court_room:"法庭",hearing_mode:"开庭方式",judge_phone:"法官电话",identity_number:"身份证",document_date:"文书签发日",repayment_due_date:"应还款日",enforcement_case_no:"执行案号",order_no:"订单号",repayment_plan:"分期计划"};
+  const labels = {court_name:"法院",court_room:"法庭",hearing_mode:"开庭方式",judge_phone:"法官电话",identity_number:"身份证",document_date:"文书签发日",repayment_due_date:"应还款日",enforcement_case_no:"执行案号",order_no:"订单号",repayment_plan:"分期计划",installment_sequence:"还款期数"};
   const facts = (rows || []).flatMap((row) => Object.entries(row.fields || {}).map(([key, value]) => ({
     label: labels[key] || key,
     value: typeof value === "object" ? JSON.stringify(value) : value,

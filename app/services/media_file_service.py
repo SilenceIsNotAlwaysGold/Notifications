@@ -190,10 +190,12 @@ class MediaFileService:
             event = None
             created_reminders = 0
             cancelled_reminders = 0
-            matched_case = self.case_service.find_case_for_message(
+            matched_case = self.case_service.find_case_for_extracted(
                 result.get("case_no"),
                 media_file.group_id,
                 media_file.tenant_id,
+                plaintiff=result.get("plaintiff"),
+                defendant=result.get("defendant"),
             )
             if matched_case:
                 media_file.case_id = matched_case.id
@@ -307,6 +309,45 @@ class MediaFileService:
             return self.process_ocr(media_file.id, trigger_type="context_message", operator="system:group-context")
         return None
 
+    def reanalyze_repayment_screenshot_annotation(
+        self,
+        context_message: GroupMessage,
+        annotation: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if context_message.msg_type != "text":
+            return None
+        lower_bound = context_message.received_at - timedelta(minutes=10)
+        candidates = self.db.scalars(
+            select(MediaFile)
+            .join(GroupMessage, GroupMessage.id == MediaFile.group_message_id)
+            .where(MediaFile.group_id == context_message.group_id)
+            .where(MediaFile.media_type == "image")
+            .where(MediaFile.ocr_status == "processed")
+            .where(MediaFile.review_status.in_(("pending", "not_required")))
+            .where(MediaFile.business_applied_at.is_(None))
+            .where(GroupMessage.received_at >= lower_bound)
+            .where(GroupMessage.received_at <= context_message.received_at)
+            .order_by(GroupMessage.received_at.desc(), MediaFile.id.desc())
+            .limit(3)
+        ).all()
+        for media_file in candidates:
+            previous = self._load_result(media_file.ocr_result_json)
+            analyzed_ids = {
+                item.get("message_id")
+                for item in previous.get("context_messages") or []
+                if isinstance(item, dict)
+            }
+            annotation_message_id = (previous.get("metadata") or {}).get("repayment_annotation", {}).get("message_id")
+            if context_message.id in analyzed_ids or annotation_message_id == context_message.id:
+                continue
+            summary = self.process_ocr(
+                media_file.id,
+                trigger_type="repayment_annotation",
+                operator="system:repayment-annotation",
+            )
+            return {**summary, "annotation": annotation, "linked_media_file_id": media_file.id}
+        return None
+
     def decide_ocr_review(
         self,
         media_file_id: int,
@@ -354,10 +395,12 @@ class MediaFileService:
         result["metadata"]["reviewed_by"] = operator
         result["metadata"]["reviewed_at"] = now_tz().isoformat()
 
-        matched_case = self.case_service.find_case_for_message(
+        matched_case = self.case_service.find_case_for_extracted(
             result.get("case_no"),
             media_file.group_id,
             media_file.tenant_id,
+            plaintiff=result.get("plaintiff"),
+            defendant=result.get("defendant"),
         )
         if matched_case:
             media_file.case_id = matched_case.id
@@ -526,6 +569,7 @@ class MediaFileService:
             )
         if matched_case and result.get("event_type") == "payment_screenshot":
             if result.get("amount") is not None:
+                installment_sequence = (result.get("metadata") or {}).get("structured_fields", {}).get("installment_sequence")
                 _payment, created = PaymentService(self.db).create(
                     matched_case,
                     amount=result["amount"],
@@ -534,6 +578,8 @@ class MediaFileService:
                     status="approved",
                     operator=event.approved_by or "system:outbox",
                     payment_date=event.event_time.date() if event.event_time else None,
+                    payer_name=result.get("defendant"),
+                    note=f"第 {installment_sequence} 期还款" if installment_sequence else None,
                 )
                 if created:
                     self.document_sync.sync_paid_amount(matched_case)
@@ -545,7 +591,11 @@ class MediaFileService:
 
     @staticmethod
     def _result_requires_review(result: dict[str, Any]) -> bool:
-        return bool(result.get("requires_review")) or (result.get("event_type") or "unknown") == "unknown"
+        event_type = result.get("event_type") or "unknown"
+        repayment_annotation = (result.get("metadata") or {}).get("repayment_annotation")
+        return bool(result.get("requires_review")) or event_type == "unknown" or (
+            event_type == "payment_screenshot" and not repayment_annotation
+        )
 
     @staticmethod
     def _dump_result(result: dict[str, Any]) -> str:

@@ -48,6 +48,8 @@ class LegalLLMAdapter:
                         "调解书、裁定书、开庭传票或 null。court_time 使用带时区的 ISO 8601；"
                         "amount 使用阿拉伯数字；confidence 是 0 到 1。OCR 文本是判断材料内容的主要依据；"
                         "群聊上下文包含相邻消息、附件 OCR 摘要、群资料和已绑定案件，可用于补充案号、当事人和材料用途，"
+                        "若截图后的相邻文字采用‘原告+被告+第几期还款+金额’格式，应将当前材料识别为 payment_screenshot，"
+                        "并从该说明文字提取 plaintiff、defendant、amount 和 installment_sequence。"
                         "但不得把明显属于其他案件的信息套用到当前材料。群内存在多个案件时，必须依据明确案号或紧邻对话建立关联。"
                         "信息冲突或无法确认关联时必须 requires_review=true，并在 review_reasons 中说明。"
                     ),
@@ -74,6 +76,7 @@ class LegalLLMAdapter:
                                 "repayment_due_date": "YYYY-MM-DD|null",
                                 "enforcement_case_no": "string|null",
                                 "order_no": "string|null",
+                                "installment_sequence": "number|null",
                                 "repayment_plan": {
                                     "first_payment_date": "YYYY-MM-DD|null",
                                     "monthly_payment_day": "number|null",

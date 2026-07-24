@@ -22,6 +22,7 @@ from app.services.reminder_service import ReminderService
 from app.services.tenant_settings_service import TenantSettingsService
 from app.services.wecom_archive_group_service import WeComArchiveGroupService
 from app.utils.datetime_utils import ensure_aware, now_tz, today_tz
+from app.utils.repayment_annotation import parse_repayment_annotation
 
 logger = logging.getLogger(__name__)
 
@@ -42,10 +43,15 @@ class MessageService:
         group_message = self._save_group_message(payload)
         MerchantQuestionService(self.db).handle_message(group_message)
         extracted = self._extract(payload, group_message.tenant_id)
-        legal_case = self.case_service.find_case_for_message(
+        repayment_annotation = parse_repayment_annotation(payload.content) if payload.msg_type == "text" else None
+        if repayment_annotation:
+            extracted = self._apply_repayment_annotation(extracted, repayment_annotation, group_message.id)
+        legal_case = self.case_service.find_case_for_extracted(
             extracted.get("case_no"),
             group_message.group_id,
             group_message.tenant_id,
+            plaintiff=extracted.get("plaintiff"),
+            defendant=extracted.get("defendant"),
         )
         if not legal_case and extracted.get("case_no"):
             CaseCandidateService(self.db).detect(
@@ -62,9 +68,20 @@ class MessageService:
         # Media messages are classified after their bytes have been downloaded
         # and OCR has completed. Creating an eager unknown event here would
         # bypass the review gate and duplicate the media OCR event.
-        event_types = [] if payload.msg_type in {"image", "file", "pdf"} else (extracted.get("event_types") or ["unknown"])
+        linked_media = None
+        if repayment_annotation:
+            try:
+                linked_media = self.media_file_service.reanalyze_repayment_screenshot_annotation(
+                    group_message,
+                    repayment_annotation,
+                )
+            except Exception:
+                logger.exception("还款说明文字绑定截图失败 group_message_id=%s", group_message.id)
+        event_types = [] if payload.msg_type in {"image", "file", "pdf"} or linked_media else (extracted.get("event_types") or ["unknown"])
 
         event_ids: list[int] = []
+        if linked_media and linked_media.get("event_id"):
+            event_ids.append(int(linked_media["event_id"]))
         events_by_type: dict[str, LegalEvent] = {}
         for event_type in event_types:
             event = self._create_event(
@@ -102,6 +119,33 @@ class MessageService:
             "event_ids": event_ids,
             "reminder_ids": reminder_ids,
             "extracted": self._json_safe_extracted(extracted),
+            "linked_media_file_id": linked_media.get("linked_media_file_id") if linked_media else None,
+        }
+
+    @staticmethod
+    def _apply_repayment_annotation(
+        extracted: dict[str, Any],
+        annotation: dict[str, Any],
+        message_id: int,
+    ) -> dict[str, Any]:
+        metadata = dict(extracted.get("metadata") or {})
+        structured = dict(metadata.get("structured_fields") or {})
+        structured["installment_sequence"] = annotation["installment_sequence"]
+        metadata["structured_fields"] = structured
+        metadata["repayment_annotation"] = {
+            **annotation,
+            "amount": str(annotation["amount"]),
+            "message_id": message_id,
+        }
+        return {
+            **extracted,
+            "event_type": "payment_screenshot",
+            "event_types": ["payment_screenshot"],
+            "plaintiff": annotation["plaintiff"],
+            "defendant": annotation["defendant"],
+            "amount": annotation["amount"],
+            "amounts": [annotation["amount"]],
+            "metadata": metadata,
         }
 
     def _save_group_message(self, payload: MockMessageCreate) -> GroupMessage:

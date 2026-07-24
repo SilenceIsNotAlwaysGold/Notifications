@@ -7,6 +7,7 @@ from app.adapters.legal_llm import LegalLLMAdapter, LegalLLMError
 from app.core.config import Settings, get_settings
 from app.utils.datetime_utils import app_timezone
 from app.utils.regex_parser import extract_event_time, parse_legal_text
+from app.utils.repayment_annotation import repayment_annotation_from_context
 
 ALLOWED_EVENT_TYPES = {
     "judgment",
@@ -51,6 +52,7 @@ STRUCTURED_FIELDS = {
     "enforcement_case_no",
     "order_no",
     "repayment_plan",
+    "installment_sequence",
 }
 
 
@@ -71,22 +73,69 @@ class LegalTextExtractionService:
     ) -> dict[str, Any]:
         regex_result = parse_legal_text(text, keyword_config=keyword_config)
         if self.settings.legal_extraction_mode != "llm" or (not text and not context_messages):
-            return regex_result
+            return self._apply_repayment_annotation(regex_result, context_messages)
 
         try:
             if context_messages:
                 llm_result = self.llm_adapter.extract(text or "", regex_result, context_messages=context_messages)
             else:
                 llm_result = self.llm_adapter.extract(text or "", regex_result)
-            return self._merge_and_validate(text or "", regex_result, llm_result, context_messages=context_messages)
+            result = self._merge_and_validate(text or "", regex_result, llm_result, context_messages=context_messages)
+            return self._apply_repayment_annotation(result, context_messages)
         except LegalLLMError as exc:
             if not self.settings.legal_llm_fallback_to_regex:
                 raise
-            return self._fallback_result(regex_result, str(exc))
+            return self._apply_repayment_annotation(self._fallback_result(regex_result, str(exc)), context_messages)
         except Exception as exc:
             if not self.settings.legal_llm_fallback_to_regex:
                 raise LegalLLMError(f"LLM 抽取处理失败：{type(exc).__name__}") from exc
-            return self._fallback_result(regex_result, f"LLM 抽取处理失败：{type(exc).__name__}")
+            fallback = self._fallback_result(regex_result, f"LLM 抽取处理失败：{type(exc).__name__}")
+            return self._apply_repayment_annotation(fallback, context_messages)
+
+    @staticmethod
+    def _apply_repayment_annotation(
+        result: dict[str, Any],
+        context_messages: list[dict[str, Any]] | None,
+    ) -> dict[str, Any]:
+        matched = repayment_annotation_from_context(context_messages)
+        if not matched:
+            return result
+        annotation, message = matched
+        metadata = dict(result.get("metadata") or {})
+        structured_fields = dict(metadata.get("structured_fields") or {})
+        structured_fields["installment_sequence"] = annotation["installment_sequence"]
+        field_sources = dict(metadata.get("field_sources") or {})
+        source = f"截图后说明文字#{message.get('message_id')}"
+        field_sources.update(
+            {
+                "plaintiff": source,
+                "defendant": source,
+                "amount": source,
+                "installment_sequence": source,
+            }
+        )
+        amounts = list(result.get("amounts") or [])
+        if annotation["amount"] not in amounts:
+            amounts.insert(0, annotation["amount"])
+        return {
+            **result,
+            "event_type": "payment_screenshot",
+            "event_types": ["payment_screenshot"],
+            "plaintiff": annotation["plaintiff"],
+            "defendant": annotation["defendant"],
+            "amount": annotation["amount"],
+            "amounts": amounts,
+            "metadata": {
+                **metadata,
+                "field_sources": field_sources,
+                "structured_fields": structured_fields,
+                "repayment_annotation": {
+                    **annotation,
+                    "amount": str(annotation["amount"]),
+                    "message_id": message.get("message_id"),
+                },
+            },
+        }
 
     def _merge_and_validate(
         self,

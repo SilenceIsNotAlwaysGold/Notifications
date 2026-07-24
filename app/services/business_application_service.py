@@ -49,6 +49,7 @@ class BusinessApplicationService:
         if WeComArchiveGroupService(self.db).feature_enabled(group_id, "document_sync"):
             DocumentSyncService(self.db).sync_archive_event(event)
         if event.event_type == "payment_screenshot" and event.amount is not None:
+            installment_sequence = metadata.get("structured_fields", {}).get("installment_sequence")
             _record, created = PaymentService(self.db).create(
                 legal_case,
                 amount=event.amount,
@@ -56,6 +57,8 @@ class BusinessApplicationService:
                 status="approved",
                 operator=event.approved_by or "system:outbox",
                 payment_date=event.event_time.date() if event.event_time else None,
+                payer_name=metadata.get("repayment_annotation", {}).get("defendant"),
+                note=f"第 {installment_sequence} 期还款" if installment_sequence else None,
             )
             if created:
                 DocumentSyncService(self.db).sync_paid_amount(legal_case)

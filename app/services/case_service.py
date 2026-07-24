@@ -6,6 +6,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.models.case_status_history import CaseStatusHistory
+from app.models.case_group import CaseGroup
 from app.models.group_message import GroupMessage
 from app.models.legal_case import LegalCase
 from app.models.legal_event import LegalEvent
@@ -74,6 +75,46 @@ class CaseService:
         if legal_case or not group_id:
             return legal_case
         return CaseGroupService(self.db).unique_case_for_group(group_id, tenant_id)
+
+    def find_case_for_extracted(
+        self,
+        case_no: str | None,
+        group_id: str | None,
+        tenant_id: str | None = None,
+        *,
+        plaintiff: str | None = None,
+        defendant: str | None = None,
+    ) -> LegalCase | None:
+        by_number = self.find_case_by_case_no(case_no)
+        if by_number or not group_id:
+            return by_number
+        if defendant:
+            query = (
+                select(LegalCase)
+                .outerjoin(CaseGroup, CaseGroup.case_id == LegalCase.id)
+                .where(
+                    ((CaseGroup.group_id == group_id) & (CaseGroup.status == "active"))
+                    | (LegalCase.group_id == group_id)
+                )
+                .distinct()
+            )
+            if tenant_id:
+                query = query.where((LegalCase.tenant_id == tenant_id) | (LegalCase.tenant_id.is_(None)))
+            candidates = list(self.db.scalars(query.order_by(LegalCase.id.asc())).all())
+            party_matches = [
+                item
+                for item in candidates
+                if self._same_party(item.debtor_name, defendant)
+                and (not plaintiff or not item.plaintiff_name or self._same_party(item.plaintiff_name, plaintiff))
+            ]
+            if len(party_matches) == 1:
+                return party_matches[0]
+        return CaseGroupService(self.db).unique_case_for_group(group_id, tenant_id)
+
+    @staticmethod
+    def _same_party(left: str | None, right: str | None) -> bool:
+        normalize = lambda value: re.sub(r"[\s()（）,，。·]", "", value or "")
+        return bool(normalize(left)) and normalize(left) == normalize(right)
 
     def update_case(self, legal_case: LegalCase, data: CaseUpdate) -> dict[str, object]:
         fields = data.model_fields_set
