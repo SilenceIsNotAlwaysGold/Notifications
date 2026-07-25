@@ -83,6 +83,7 @@ def test_recognition_check_reports_ocr_and_llm_available(monkeypatch):
         assert url == "https://api.deepseek.com/v1/chat/completions"
         assert headers["Authorization"] == "Bearer llm-secret"
         assert json["model"] == "deepseek-chat"
+        assert json["max_tokens"] == 128
         return httpx.Response(
             200,
             json={"choices": [{"message": {"content": '{"ok":true}'}}]},
@@ -95,6 +96,31 @@ def test_recognition_check_reports_ocr_and_llm_available(monkeypatch):
 
     assert status.ocr.available is True
     assert status.llm.available is True
+
+
+def test_recognition_check_exposes_safe_provider_http_error(monkeypatch):
+    monkeypatch.setenv("LEGAL_EXTRACTION_MODE", "llm")
+    monkeypatch.setenv("LEGAL_LLM_BASE_URL", "https://api.deepseek.com/v1")
+    monkeypatch.setenv("LEGAL_LLM_API_KEY", "llm-secret")
+    monkeypatch.setenv("LEGAL_LLM_MODEL", "old-model")
+    get_settings.cache_clear()
+
+    def fake_post(url, **kwargs):
+        request = httpx.Request("POST", url)
+        response = httpx.Response(
+            400,
+            json={"error": {"message": "model name is unsupported"}},
+            request=request,
+        )
+        raise httpx.HTTPStatusError("bad request", request=request, response=response)
+
+    monkeypatch.setattr("app.services.recognition_settings_service.httpx.post", fake_post)
+
+    status = RecognitionSettingsService(get_settings())._check_llm()
+
+    assert status.available is False
+    assert status.message == "AI 模型请求失败（HTTP 400）：model name is unsupported"
+    assert "llm-secret" not in status.message
 
 
 def test_recognition_settings_audit_masks_keys(client, db_session, monkeypatch, tmp_path):

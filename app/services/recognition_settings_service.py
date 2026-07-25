@@ -117,7 +117,8 @@ class RecognitionSettingsService:
                 json={
                     "model": model,
                     "temperature": 0,
-                    "max_tokens": 8,
+                    # Reasoning models may consume part of this budget before producing JSON.
+                    "max_tokens": 128,
                     "response_format": {"type": "json_object"},
                     "messages": [
                         {"role": "system", "content": "只输出 JSON。"},
@@ -131,6 +132,13 @@ class RecognitionSettingsService:
             content = data.get("choices", [{}])[0].get("message", {}).get("content")
             if not content:
                 raise ValueError("empty response")
+        except httpx.HTTPStatusError as exc:
+            return RecognitionServiceStatus(
+                configured=True,
+                available=False,
+                message=self._llm_http_error_message(exc),
+                endpoint=endpoint,
+            )
         except (httpx.HTTPError, ValueError, KeyError, IndexError) as exc:
             return RecognitionServiceStatus(
                 configured=True,
@@ -144,6 +152,20 @@ class RecognitionSettingsService:
             message=f"AI 模型 {model} 可用",
             endpoint=endpoint,
         )
+
+    @staticmethod
+    def _llm_http_error_message(exc: httpx.HTTPStatusError) -> str:
+        response = exc.response
+        detail = ""
+        try:
+            payload = response.json()
+            error = payload.get("error") if isinstance(payload, dict) else None
+            if isinstance(error, dict):
+                detail = str(error.get("message") or "").strip()
+        except ValueError:
+            detail = ""
+        suffix = f"：{detail[:300]}" if detail else ""
+        return f"AI 模型请求失败（HTTP {response.status_code}）{suffix}"
 
     @staticmethod
     def _payload_to_env(payload: RecognitionSettingsUpdate) -> dict[str, str]:
