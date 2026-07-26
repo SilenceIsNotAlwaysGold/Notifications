@@ -419,8 +419,23 @@ class MediaFileService:
             for row in self.db.scalars(select(GroupMessage).where(GroupMessage.id.in_(message_ids))).all()
         } if message_ids else {}
         media_messages = {row.id: messages_by_id.get(row.group_message_id) for row in media_files}
+        used_reanalysis_message_ids: set[int] = set()
+        for media in media_files:
+            previous = self._load_result(media.ocr_result_json)
+            metadata = previous.get("metadata") or {}
+            if not metadata.get("stage_only_reanalysis"):
+                continue
+            if metadata.get("reanalysis_context_message_id") is not None:
+                used_reanalysis_message_ids.add(int(metadata["reanalysis_context_message_id"]))
+                continue
+            for context in previous.get("context_messages") or []:
+                if isinstance(context, dict) and parse_repayment_annotation(str(context.get("content") or "")):
+                    if context.get("message_id") is not None:
+                        used_reanalysis_message_ids.add(int(context["message_id"]))
         candidate_pairs: list[tuple[float, int, int, GroupMessage, MediaFile, dict[str, Any]]] = []
         for message in messages:
+            if message.id in used_reanalysis_message_ids:
+                continue
             annotation = parse_repayment_annotation(message.content)
             if not annotation:
                 continue

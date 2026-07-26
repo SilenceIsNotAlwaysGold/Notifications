@@ -1,3 +1,4 @@
+import json
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -343,6 +344,54 @@ def test_reanalysis_plan_skips_already_staged_material(db_session):
             ocr_result_json='{"metadata": {"stage_only_reanalysis": true}}',
             source="mock",
         )
+    )
+    db_session.flush()
+
+    assert MediaFileService(db_session).repayment_reanalysis_plan(limit=20) == []
+
+
+def test_reanalysis_plan_does_not_reuse_caption_across_batches(db_session):
+    base = now_tz()
+    caption = GroupMessage(
+        group_id="repayment_group",
+        sender_id="operator",
+        msg_type="text",
+        content="甲公司+张三+第1期还款+500元",
+        raw_payload_json="{}",
+        received_at=base,
+    )
+    first_image = GroupMessage(group_id="repayment_group", sender_id="u1", msg_type="image", raw_payload_json="{}", received_at=base + timedelta(seconds=1))
+    second_image = GroupMessage(group_id="repayment_group", sender_id="u1", msg_type="image", raw_payload_json="{}", received_at=base + timedelta(seconds=2))
+    db_session.add_all([caption, first_image, second_image])
+    db_session.flush()
+    db_session.add_all(
+        [
+            MediaFile(
+                group_message_id=first_image.id,
+                group_id="repayment_group",
+                media_type="image",
+                download_status="downloaded",
+                ocr_status="processed",
+                review_status="pending",
+                ocr_result_json=json.dumps(
+                    {
+                        "metadata": {"stage_only_reanalysis": True},
+                        "context_messages": [{"message_id": caption.id, "msg_type": "text", "content": caption.content}],
+                    }
+                ),
+                source="mock",
+            ),
+            MediaFile(
+                group_message_id=second_image.id,
+                group_id="repayment_group",
+                media_type="image",
+                download_status="downloaded",
+                ocr_status="processed",
+                review_status="pending",
+                ocr_result_json='{"metadata": {}}',
+                source="mock",
+            ),
+        ]
     )
     db_session.flush()
 
