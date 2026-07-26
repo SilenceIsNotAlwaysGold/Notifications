@@ -2108,13 +2108,59 @@ tr:hover td {
   gap: 16px;
 }
 
+.attribution-workspace {
+  display: grid;
+  grid-template-columns: minmax(330px, 38%) minmax(0, 1fr);
+  align-items: start;
+  gap: 16px;
+  min-height: 620px;
+}
+
+.attribution-queue-panel,
+.attribution-detail-panel {
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.attribution-queue-panel { position: sticky; top: 12px; }
+.attribution-queue-heading { display: flex; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+.attribution-queue-heading span { color: var(--muted); font-size: 12px; }
+.attribution-queue-list { height: min(62vh, 680px); overflow-y: auto; }
+.attribution-queue-item { width: 100%; min-height: 86px; display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: start; gap: 10px; padding: 13px 14px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; color: inherit; text-align: left; }
+.attribution-queue-item:hover, .attribution-queue-item.active { background: #f4f7f5; }
+.attribution-queue-item.active { box-shadow: inset 3px 0 0 var(--accent); }
+.attribution-item-main { min-width: 0; display: grid; gap: 4px; }
+.attribution-item-main strong, .attribution-item-main span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attribution-item-main small { color: var(--muted); }
+.attribution-item-amount { font-weight: 700; color: #17663a; }
+.attribution-detail-panel { position: sticky; top: 12px; max-height: calc(100vh - 40px); overflow-y: auto; padding: 18px; }
+.attribution-detail-header { display: flex; justify-content: space-between; gap: 20px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.attribution-detail-header h3 { margin: 4px 0; font-size: 16px; }
+.attribution-detail-header p { margin: 0; color: var(--muted); font-size: 12px; }
+.attribution-detail-grid { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(280px, 1fr); gap: 18px; margin-top: 18px; }
+.attribution-preview { height: 320px; display: grid; place-items: center; overflow: hidden; border: 1px solid var(--line); background: #f7f8f7; color: var(--muted); }
+.attribution-preview img, .attribution-preview iframe { width: 100%; height: 100%; object-fit: contain; border: 0; }
+.attribution-fields { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--line); }
+.attribution-fields > div { min-height: 72px; display: grid; align-content: center; gap: 3px; padding: 10px 12px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.attribution-fields > div:nth-child(2n) { border-right: 0; }
+.attribution-fields span, .attribution-fields small { color: var(--muted); font-size: 11px; }
+.attribution-text-section, .attribution-context-section, .attribution-side-effect { margin-top: 18px; }
+.attribution-text-section pre { max-height: 180px; overflow: auto; margin: 7px 0 0; padding: 12px; background: #f7f8f7; white-space: pre-wrap; word-break: break-word; font: inherit; font-size: 12px; line-height: 1.6; }
+.attribution-context-list { max-height: 250px; overflow-y: auto; border: 1px solid var(--line); }
+.attribution-context-list article { padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.attribution-context-list article:last-child { border-bottom: 0; }
+.attribution-context-list span { color: var(--muted); font-size: 11px; }
+.attribution-context-list p { margin: 4px 0 0; font-size: 12px; line-height: 1.5; }
+.attribution-side-effect { padding: 12px 14px; border-left: 3px solid #31704c; background: #f4f7f5; }
+.attribution-side-effect p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
+
 .case-workspace-header {
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
   gap: 24px;
   padding: 20px 0;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--line);
 }
 
 .case-workspace-header h2 {
@@ -2142,7 +2188,7 @@ tr:hover td {
 .workspace-stat-grid {
   display: grid;
   grid-template-columns: repeat(7, minmax(84px, 1fr));
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   background: var(--panel);
 }
 
@@ -2150,7 +2196,7 @@ tr:hover td {
   display: grid;
   gap: 4px;
   padding: 12px 14px;
-  border-right: 1px solid var(--border);
+  border-right: 1px solid var(--line);
 }
 
 .workspace-stat-grid > div:last-child { border-right: 0; }

@@ -42,6 +42,25 @@ class AttributionOut(BaseModel):
     decided_by: str | None
     decided_at: datetime | None
     created_at: datetime
+    group_name: str | None = None
+    source_message_id: int | None = None
+    source_sender_id: str | None = None
+    source_received_at: datetime | None = None
+    source_text: str | None = None
+    media_type: str | None = None
+    mime_type: str | None = None
+    original_filename: str | None = None
+    preview_url: str | None = None
+    ocr_text: str | None = None
+    ocr_status: str | None = None
+    review_status: str | None = None
+    event_type: str | None = None
+    amount: Decimal | None = None
+    recognized_fields: dict[str, Any] = Field(default_factory=dict)
+    field_sources: dict[str, Any] = Field(default_factory=dict)
+    context_messages: list[dict[str, Any]] = Field(default_factory=list)
+    suggested_case_no: str | None = None
+    suggested_case_party: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

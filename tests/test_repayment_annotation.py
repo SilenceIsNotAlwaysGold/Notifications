@@ -26,6 +26,23 @@ def test_parse_labeled_repayment_annotation():
     }
 
 
+def test_parse_compact_repayment_annotations_from_real_messages():
+    samples = [
+        ("深圳市福田区展盛数码商行(个体工商户) 张俊杰第二期还款959.22元", "深圳市福田区展盛数码商行(个体工商户)", "张俊杰", 2, "959.22"),
+        ("中山市优趣儿童用品有限公司石航天第一期还款1000元", "中山市优趣儿童用品有限公司", "石航天", 1, "1000.00"),
+        ("广州市番禺区钟村长希炖品店 张新宇已还款第一期821.46元", "广州市番禺区钟村长希炖品店", "张新宇", 1, "821.46"),
+        ("抚州西鹏商贸有限公司郑礼灿第三期还款821元", "抚州西鹏商贸有限公司", "郑礼灿", 3, "821.00"),
+    ]
+
+    for text, plaintiff, defendant, sequence, amount in samples:
+        result = parse_repayment_annotation(text)
+        assert result is not None
+        assert result["plaintiff"] == plaintiff
+        assert result["defendant"] == defendant
+        assert result["installment_sequence"] == sequence
+        assert result["amount"] == Decimal(amount)
+
+
 def test_annotation_after_image_overrides_ocr_payment_fields():
     service = LegalTextExtractionService(Settings(LEGAL_EXTRACTION_MODE="regex"))
     context = [

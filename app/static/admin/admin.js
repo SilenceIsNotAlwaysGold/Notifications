@@ -17,6 +17,8 @@ const state = {
   selectedCaseId: null,
   attributionPage: 1,
   attributionPageSize: 100,
+  selectedAttributionId: null,
+  attributionPreviewUrl: null,
 };
 
 const titles = {
@@ -2104,17 +2106,26 @@ async function renderAttributionQueue() {
     state.attributionPage = totalPages;
     return renderAttributionQueue();
   }
+  if (!items.some((item) => item.id === state.selectedAttributionId)) {
+    state.selectedAttributionId = items[0]?.id || null;
+  }
+  const selected = state.selectedAttributionId
+    ? await api(`/api/v1/legal/attribution-queue/${state.selectedAttributionId}`)
+    : null;
   $("#content").innerHTML = `
     <section class="attribution-view">
       <header class="case-section-header"><div><h2>案件归属复核</h2><p>按群、上下文和 AI 候选批量确认；确认前不会产生付款、提醒或金山写入。</p></div><span class="case-candidate-count">${total}</span></header>
       ${panel("批量操作", `<form id="attribution-form" class="form-grid"><div class="field wide"><label>目标案件</label><select name="case_id"><option value="">选择案件</option>${cases.map((row)=>`<option value="${row.id}">${escapeHtml(row.case_no)} · ${escapeHtml(row.debtor_name)}</option>`).join("")}</select></div><div class="field wide"><label>驳回原因</label><input name="reason" placeholder="仅驳回时填写" /></div><div class="field form-actions"><button type="submit" data-attribution-action="confirm">确认归属</button><button type="submit" class="danger" data-attribution-action="reject">明确驳回</button></div></form>`)}
-      ${panel("隔离队列", table([
-        {label:"选择",render:(row)=>`<input type="checkbox" data-attribution-id="${row.id}" />`},
-        {label:"群 ID",key:"group_id"},{label:"对象",render:(row)=>`${escapeHtml(row.subject_type)} #${row.subject_id}`},
-        {label:"候选案件",render:(row)=>fmt(row.suggested_case_id)},{label:"置信度",render:(row)=>fmt(row.confidence)},
-        {label:"原因",key:"reason"},{label:"进入时间",key:"created_at"},
-      ], items) + `<div class="kdocs-pagination"><span class="attribution-page-summary">第 ${state.attributionPage} / ${totalPages} 页，本页 ${items.length} 条，共 ${total} 条</span><button type="button" class="ghost small" id="attribution-prev" ${state.attributionPage <= 1 ? "disabled" : ""}>上一页</button><button type="button" class="ghost small" id="attribution-next" ${state.attributionPage >= totalPages ? "disabled" : ""}>下一页</button></div>`)}
+      <div class="attribution-workspace">
+        <section class="attribution-queue-panel">
+          <div class="attribution-queue-heading"><strong>隔离队列</strong><span>本页 ${items.length} 条</span></div>
+          <div class="attribution-queue-list">${items.length ? items.map(attributionQueueItem).join("") : '<div class="empty-state">暂无待归属记录</div>'}</div>
+          <div class="kdocs-pagination"><span class="attribution-page-summary">第 ${state.attributionPage} / ${totalPages} 页，共 ${total} 条</span><button type="button" class="ghost small" id="attribution-prev" ${state.attributionPage <= 1 ? "disabled" : ""}>上一页</button><button type="button" class="ghost small" id="attribution-next" ${state.attributionPage >= totalPages ? "disabled" : ""}>下一页</button></div>
+        </section>
+        <section class="attribution-detail-panel">${selected ? attributionDetail(selected) : '<div class="empty-state">选择左侧记录查看详情</div>'}</section>
+      </div>
     </section>`;
+  if (selected) await loadAttributionPreview(selected);
   $("#attribution-prev").addEventListener("click", async () => {
     state.attributionPage = Math.max(1, state.attributionPage - 1);
     await renderAttributionQueue();
@@ -2139,6 +2150,49 @@ async function renderAttributionQueue() {
     showAlert("批量归属已处理");
     await renderAttributionQueue();
   });
+  document.querySelectorAll("[data-attribution-select]").forEach((button) => button.addEventListener("click", async (event) => {
+    if (event.target.closest("input[type=checkbox]")) return;
+    state.selectedAttributionId = Number(button.dataset.attributionSelect);
+    await renderAttributionQueue();
+  }));
+}
+
+function attributionQueueItem(row) {
+  const fields = row.recognized_fields || {};
+  const party = [fields.plaintiff, fields.defendant].filter(Boolean).join(" / ");
+  return `<button type="button" class="attribution-queue-item ${row.id === state.selectedAttributionId ? "active" : ""}" data-attribution-select="${row.id}">
+    <input type="checkbox" data-attribution-id="${row.id}" aria-label="选择待归属记录 ${row.id}" />
+    <span class="attribution-item-main"><strong>${escapeHtml(row.group_name || row.group_id || "未知群")}</strong><small>${escapeHtml(row.event_type || row.subject_type)} · #${row.subject_id}</small><span>${escapeHtml(party || row.source_text || row.ocr_text || "尚未提取关键字段")}</span></span>
+    <span class="attribution-item-amount">${fields.amount ? `¥${escapeHtml(fields.amount)}` : ""}</span>
+  </button>`;
+}
+
+function attributionDetail(row) {
+  const fields = row.recognized_fields || {};
+  const labels = {case_no:"案号", plaintiff:"原告", defendant:"被告", amount:"金额", installment_sequence:"还款期数", document_type:"文书类型", court_time:"开庭时间"};
+  const fieldRows = Object.entries(labels).map(([key, label]) => `<div><span>${label}</span><strong>${fields[key] !== undefined ? escapeHtml(key === "installment_sequence" ? `第 ${fields[key]} 期` : fields[key]) : '<span class="muted">未识别</span>'}</strong>${row.field_sources?.[key] ? `<small>${escapeHtml(row.field_sources[key])}</small>` : ""}</div>`).join("");
+  const context = (row.context_messages || []).filter((item) => item.position !== "metadata");
+  return `<div class="attribution-detail-header"><div><span class="eyebrow">${escapeHtml(row.group_name || "未命名群")}</span><h3>${escapeHtml(row.group_id)}</h3><p>${escapeHtml(row.source_sender_id || "未知发送人")} · ${escapeHtml(row.source_received_at || row.created_at)}</p></div>${badge(row.review_status || row.status)}</div>
+    <div class="attribution-detail-grid">
+      <section><div class="field-label">原始资料</div><div id="attribution-preview" class="attribution-preview">${row.preview_url ? "加载预览中..." : "无可预览文件"}</div></section>
+      <section><div class="field-label">已识别业务字段</div><div class="attribution-fields">${fieldRows}</div></section>
+    </div>
+    <section class="attribution-text-section"><div class="field-label">发送文字</div><pre>${escapeHtml(row.source_text || "无文字说明")}</pre></section>
+    <section class="attribution-text-section"><div class="field-label">OCR 原文</div><pre>${escapeHtml(row.ocr_text || "无 OCR 文本")}</pre></section>
+    <section class="attribution-context-section"><div class="field-label">相邻群聊上下文</div>${context.length ? `<div class="attribution-context-list">${context.map((item)=>`<article><span>${escapeHtml(item.sender_id)} · ${escapeHtml(item.received_at)}</span><p>${escapeHtml(item.content)}</p></article>`).join("")}</div>` : '<div class="muted">当前没有可用的相邻群聊文字</div>'}</section>
+    <section class="attribution-side-effect"><strong>确认后预览</strong><p>归属到所选案件；资料仍需按复核状态审批，未审批前不会生成付款、提醒或金山写入。</p></section>`;
+}
+
+async function loadAttributionPreview(row) {
+  const container = $("#attribution-preview");
+  if (!container || !row.preview_url) return;
+  if (state.attributionPreviewUrl) URL.revokeObjectURL(state.attributionPreviewUrl);
+  const response = await fetch(row.preview_url, {headers: state.apiKey ? {"X-API-Key":state.apiKey} : {}});
+  if (!response.ok) { container.textContent = "预览加载失败"; return; }
+  state.attributionPreviewUrl = URL.createObjectURL(await response.blob());
+  container.innerHTML = (row.mime_type || "").startsWith("image/")
+    ? `<img src="${state.attributionPreviewUrl}" alt="待归属资料预览" />`
+    : `<iframe src="${state.attributionPreviewUrl}" title="待归属资料预览"></iframe>`;
 }
 
 async function loadView() {

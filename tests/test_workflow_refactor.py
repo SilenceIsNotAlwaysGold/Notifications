@@ -5,12 +5,17 @@ from decimal import Decimal
 from sqlalchemy import select
 
 from app.models.business_outbox import BusinessOutbox
+from app.models.attribution_item import AttributionItem
 from app.models.document_sync_log import DocumentSyncLog
+from app.models.group_message import GroupMessage
 from app.models.legal_event import LegalEvent
+from app.models.media_file import MediaFile
 from app.models.payment_record import PaymentRecord
 from app.models.reminder import Reminder
+from app.models.wecom_archive_group import WeComArchiveGroup
 from app.services.business_application_service import BusinessApplicationService
 from app.services.outbox_service import OutboxService
+from app.utils.datetime_utils import now_tz
 
 
 def _case(client, case_no="（2026）黔0281民初9001号", group_id="workflow_group", total="1000.00"):
@@ -84,6 +89,77 @@ def test_unassigned_event_cannot_be_approved(client, db_session):
     approved = client.post(f"/api/v1/legal/events/{event_id}/approve", json={})
     assert approved.status_code == 400
     assert db_session.get(LegalEvent, event_id).business_status == "staged"
+
+
+def test_attribution_queue_exposes_recognized_fields_and_context(client, db_session):
+    group = WeComArchiveGroup(room_id="detail_group", display_name="还款跟进群")
+    before = GroupMessage(
+        group_id="detail_group",
+        sender_id="lawyer",
+        msg_type="text",
+        content="这是张新宇案件的第一期还款截图",
+        raw_payload_json="{}",
+        received_at=now_tz() - timedelta(minutes=1),
+    )
+    image_message = GroupMessage(
+        group_id="detail_group",
+        sender_id="operator",
+        msg_type="image",
+        raw_payload_json="{}",
+        received_at=now_tz(),
+    )
+    db_session.add_all([group, before, image_message])
+    db_session.flush()
+    media = MediaFile(
+        group_message_id=image_message.id,
+        group_id="detail_group",
+        media_type="image",
+        mime_type="image/png",
+        ocr_status="processed",
+        review_status="pending",
+        extracted_text="微信支付收款 821.46元",
+        ocr_result_json=json.dumps(
+            {
+                "event_type": "payment_screenshot",
+                "amount": "821.46",
+                "plaintiff": "广州市番禺区钟村长希炖品店",
+                "defendant": "张新宇",
+                "metadata": {
+                    "structured_fields": {"installment_sequence": 1},
+                    "field_sources": {"amount": "OCR原文"},
+                },
+            },
+            ensure_ascii=False,
+        ),
+        source="test",
+    )
+    db_session.add(media)
+    db_session.flush()
+    item = AttributionItem(
+        group_id="detail_group",
+        subject_type="media",
+        subject_id=media.id,
+        media_file_id=media.id,
+        reason="无法唯一确定案件",
+        status="pending",
+    )
+    db_session.add(item)
+    db_session.commit()
+
+    listed = client.get("/api/v1/legal/attribution-queue?limit=100")
+    assert listed.status_code == 200
+    summary = next(row for row in listed.json()["data"]["items"] if row["id"] == item.id)
+    assert summary["group_name"] == "还款跟进群"
+    assert summary["event_type"] == "payment_screenshot"
+    assert summary["recognized_fields"]["defendant"] == "张新宇"
+    assert summary["recognized_fields"]["installment_sequence"] == 1
+
+    detail = client.get(f"/api/v1/legal/attribution-queue/{item.id}")
+    assert detail.status_code == 200
+    data = detail.json()["data"]
+    assert data["source_sender_id"] == "operator"
+    assert data["ocr_text"] == "微信支付收款 821.46元"
+    assert any(row["content"] == "这是张新宇案件的第一期还款截图" for row in data["context_messages"])
 
 
 def test_outbox_process_is_idempotent(client, db_session):

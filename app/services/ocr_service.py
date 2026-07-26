@@ -7,6 +7,7 @@ from app.db.session import SessionLocal
 from app.services.legal_text_extraction_service import LegalTextExtractionService
 from app.services.tenant_settings_service import TenantSettingsService
 from app.utils.regex_parser import parse_legal_text
+from app.utils.repayment_annotation import parse_repayment_annotation
 
 
 class OCRService:
@@ -17,7 +18,39 @@ class OCRService:
 
     def extract_from_text(self, text: str | None, tenant_id: str | None = None) -> dict[str, Any]:
         keyword_config = self._keyword_config(tenant_id)
-        return parse_legal_text(text, keyword_config=keyword_config)
+        regex_result = parse_legal_text(text, keyword_config=keyword_config)
+        annotation = parse_repayment_annotation(text)
+        if annotation:
+            metadata = dict(regex_result.get("metadata") or {})
+            metadata["structured_fields"] = {"installment_sequence": annotation["installment_sequence"]}
+            metadata["repayment_annotation"] = {**annotation, "amount": str(annotation["amount"])}
+            return {
+                **regex_result,
+                "event_type": "payment_screenshot",
+                "event_types": ["payment_screenshot"],
+                "plaintiff": annotation["plaintiff"],
+                "defendant": annotation["defendant"],
+                "amount": annotation["amount"],
+                "amounts": [annotation["amount"]],
+                "metadata": metadata,
+            }
+        if self._is_legally_relevant_text(regex_result, text):
+            return self.legal_text_extractor.extract(text, keyword_config=keyword_config)
+        return regex_result
+
+    @staticmethod
+    def _is_legally_relevant_text(parsed: dict[str, Any], text: str | None) -> bool:
+        content = (text or "").strip()
+        if not content:
+            return False
+        return bool(
+            parsed.get("case_no")
+            or parsed.get("document_type")
+            or parsed.get("plaintiff")
+            or parsed.get("defendant")
+            or parsed.get("event_type") != "unknown"
+            or (parsed.get("amount") is not None and any(word in content for word in ("还款", "付款", "缴费", "金额", "调解", "执行")))
+        )
 
     def extract_from_image(self, file_url: str | None) -> dict[str, Any]:
         return {

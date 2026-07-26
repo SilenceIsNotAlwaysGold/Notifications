@@ -91,6 +91,16 @@ def attribution_queue(status: str | None = "pending", group_id: str | None = Non
     return ok("待归属队列查询成功", AttributionListOut(total=total, items=[AttributionOut.model_validate(item) for item in items]))
 
 
+@router.get("/attribution-queue/{item_id}")
+def attribution_detail(item_id: int, db: Session = Depends(get_db), operator_info: dict[str, object] = Depends(get_current_operator)):
+    item = db.get(AttributionItem, item_id)
+    if not item:
+        raise_fail("待归属记录不存在", code=1404, status_code=404)
+    if not has_group_access(operator_info, item.group_id, item.tenant_id):
+        raise_fail("无权限访问该待归属记录", code=403, status_code=403)
+    return ok("待归属详情查询成功", AttributionOut.model_validate(AttributionService(db).detail(item)))
+
+
 @router.post("/attribution-queue/batch-confirm")
 def decide_attribution(payload: AttributionBatchDecision, db: Session = Depends(get_db), operator_info: dict[str, object] = Depends(get_current_operator)):
     items = [db.get(AttributionItem, item_id) for item_id in payload.item_ids]

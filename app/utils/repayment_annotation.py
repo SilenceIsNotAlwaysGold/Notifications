@@ -4,8 +4,14 @@ from typing import Any
 
 
 _SEPARATOR_PATTERN = re.compile(r"\s*[+＋|｜]\s*")
-_SEQUENCE_PATTERN = re.compile(r"第\s*(\d{1,3})\s*期")
+_SEQUENCE_PATTERN = re.compile(r"第\s*(\d{1,3}|[一二三四五六七八九十百]{1,4})\s*期")
 _AMOUNT_PATTERN = re.compile(r"(?:金额\s*[:：]?\s*)?[¥￥]?\s*([\d,]+(?:\.\d{1,2})?)\s*元?")
+_COMPACT_PAYMENT_MARKER = re.compile(r"(?:已\s*还款\s*)?第\s*(?:\d{1,3}|[一二三四五六七八九十百]{1,4})\s*期(?:\s*还款)?")
+_PARTY_SUFFIX_PATTERN = re.compile(
+    r"^(.+?(?:股份有限公司|有限责任公司|有限公司|集团公司|合作社|"
+    r"商行(?:\s*[（(]个体工商户[）)])?|经营部|工作室|服务部|事务所|中心|店))"
+    r"[\s,，、:：+＋]*(.{2,128})$"
+)
 
 
 def parse_repayment_annotation(text: str | None) -> dict[str, Any] | None:
@@ -18,13 +24,9 @@ def parse_repayment_annotation(text: str | None) -> dict[str, Any] | None:
         return None
 
     parts = [part.strip() for part in _SEPARATOR_PATTERN.split(content) if part.strip()]
-    if len(parts) < 4:
-        return None
-
-    plaintiff = _labeled_value(parts, "原告") or _plain_party(parts[0], "原告")
-    defendant = _labeled_value(parts, "被告") or _plain_party(parts[1], "被告")
-    amount = _extract_amount(parts)
-    sequence = int(sequence_match.group(1))
+    plaintiff, defendant = _extract_parties(content, parts)
+    amount = _extract_amount(parts) or _extract_compact_amount(content, sequence_match.end())
+    sequence = _parse_sequence(sequence_match.group(1))
     if not plaintiff or not defendant or amount is None or sequence <= 0:
         return None
     return {
@@ -34,6 +36,38 @@ def parse_repayment_annotation(text: str | None) -> dict[str, Any] | None:
         "amount": amount,
         "raw_text": content[:1000],
     }
+
+
+def _parse_sequence(value: str) -> int:
+    if value.isdigit():
+        return int(value)
+    digits = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+    if value == "十":
+        return 10
+    if "百" in value:
+        hundreds, remainder = value.split("百", 1)
+        return digits.get(hundreds, 1) * 100 + _parse_sequence(remainder) if remainder else digits.get(hundreds, 1) * 100
+    if "十" in value:
+        tens, units = value.split("十", 1)
+        return digits.get(tens, 1) * 10 + digits.get(units, 0)
+    return digits.get(value, 0)
+
+
+def _extract_parties(content: str, parts: list[str]) -> tuple[str | None, str | None]:
+    if len(parts) >= 2:
+        plaintiff = _labeled_value(parts, "原告") or _plain_party(parts[0], "原告")
+        defendant = _labeled_value(parts, "被告") or _plain_party(parts[1], "被告")
+        if plaintiff and defendant:
+            return plaintiff, defendant
+
+    marker = _COMPACT_PAYMENT_MARKER.search(content)
+    prefix = content[: marker.start()].strip(" :：,，。;；+＋") if marker else ""
+    prefix = re.sub(r"^(?:原告(?:人)?\s*[:：]?)", "", prefix).strip()
+    prefix = re.sub(r"\s*被告(?:人)?\s*[:：]?\s*", " ", prefix, count=1).strip()
+    match = _PARTY_SUFFIX_PATTERN.match(prefix)
+    if not match:
+        return None, None
+    return _clean_party(match.group(1)), _clean_party(match.group(2))
 
 
 def repayment_annotation_from_context(context_messages: list[dict[str, Any]] | None) -> tuple[dict[str, Any], dict[str, Any]] | None:
@@ -78,3 +112,15 @@ def _extract_amount(parts: list[str]) -> Decimal | None:
         if amount > 0:
             return amount
     return None
+
+
+def _extract_compact_amount(content: str, sequence_end: int) -> Decimal | None:
+    tail = re.sub(r"^\s*还款\s*", "", content[sequence_end:])
+    match = _AMOUNT_PATTERN.search(tail)
+    if not match:
+        return None
+    try:
+        amount = Decimal(match.group(1).replace(",", "")).quantize(Decimal("0.01"))
+    except InvalidOperation:
+        return None
+    return amount if amount > 0 else None
