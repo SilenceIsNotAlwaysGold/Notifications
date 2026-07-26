@@ -71,10 +71,7 @@ class CaseService:
         group_id: str | None,
         tenant_id: str | None = None,
     ) -> LegalCase | None:
-        legal_case = self.find_case_by_case_no(case_no)
-        if legal_case or not group_id:
-            return legal_case
-        return CaseGroupService(self.db).unique_case_for_group(group_id, tenant_id)
+        return self.find_case_by_case_no(case_no)
 
     def find_case_for_extracted(
         self,
@@ -109,7 +106,7 @@ class CaseService:
             ]
             if len(party_matches) == 1:
                 return party_matches[0]
-        return CaseGroupService(self.db).unique_case_for_group(group_id, tenant_id)
+        return None
 
     @staticmethod
     def _same_party(left: str | None, right: str | None) -> bool:

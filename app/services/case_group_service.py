@@ -40,23 +40,13 @@ class CaseGroupService:
     def unbind(self, binding_id: int) -> CaseGroup:
         binding = self.db.get(CaseGroup, binding_id)
         if not binding:
-            raise ValueError("案件群绑定不存在")
+            raise ValueError("案件沟通群关联不存在")
         if binding.is_primary:
             raise ValueError("主群不能直接解绑，请先设置新的主群")
         binding.status = "inactive"
         binding.updated_at = now_tz()
         self.db.flush()
         return binding
-
-    def unique_case_for_group(self, group_id: str, tenant_id: str | None = None) -> LegalCase | None:
-        query = select(LegalCase).outerjoin(CaseGroup, CaseGroup.case_id == LegalCase.id).where(
-            ((CaseGroup.group_id == group_id) & (CaseGroup.status == "active"))
-            | (LegalCase.group_id == group_id)
-        ).distinct()
-        if tenant_id:
-            query = query.where((LegalCase.tenant_id == tenant_id) | (LegalCase.tenant_id.is_(None)))
-        matches = list(self.db.scalars(query.order_by(LegalCase.id.asc()).limit(2)).all())
-        return matches[0] if len(matches) == 1 else None
 
     def group_case_count(self, group_id: str) -> int:
         return int(self.db.scalar(select(func.count(CaseGroup.id)).where(CaseGroup.group_id == group_id, CaseGroup.status == "active")) or 0)

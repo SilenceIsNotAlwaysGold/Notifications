@@ -132,7 +132,7 @@ def test_case_patch_skips_history_backfill_when_group_has_multiple_cases(client,
     assert db_session.get(LegalEvent, event.id).case_id is None
 
 
-def test_message_without_case_number_uses_unique_group_binding(client, db_session):
+def test_message_without_case_number_never_uses_group_as_case_ownership(client, db_session):
     legal_case = create_case(db_session, "（2026）黔0281民初8104号", group_id="wr_unique")
     db_session.commit()
 
@@ -147,9 +147,10 @@ def test_message_without_case_number_uses_unique_group_binding(client, db_sessio
     )
 
     assert response.status_code == 200
-    assert response.json()["data"]["case_id"] == legal_case.id
+    assert response.json()["data"]["case_id"] is None
     event = db_session.scalar(select(LegalEvent).order_by(LegalEvent.id.desc()))
-    assert event.case_id == legal_case.id
+    assert event.case_id is None
+    assert event.attribution_status == "pending"
 
 
 def test_message_without_case_number_does_not_guess_shared_group_case(client, db_session):

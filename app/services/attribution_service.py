@@ -67,7 +67,7 @@ class AttributionService:
             event_id=event_id,
             suggested_case_id=suggested_case.id if suggested_case else None,
             confidence=100 if suggested_case else None,
-            reason=reason or ("群仅绑定一个有效案件" if suggested_case else "无法唯一确定案件"),
+            reason=reason or ("明确字段唯一匹配候选案件" if suggested_case else "无法唯一确定案件"),
             evidence_json=json.dumps(evidence or {}, ensure_ascii=False, default=str),
             status="pending",
         )

@@ -62,7 +62,7 @@ def bind_case_group(payload: CaseGroupCreate, db: Session = Depends(get_db), ope
         raise_fail("案件不存在", code=1404, status_code=404)
     binding = CaseGroupService(db).bind(legal_case, payload.group_id, str(operator_info["operator"]), primary=payload.is_primary)
     db.commit()
-    return ok("案件群绑定成功", CaseGroupOut.model_validate(binding))
+    return ok("案件沟通群关联成功", CaseGroupOut.model_validate(binding))
 
 
 @router.delete("/case-groups/{binding_id}")
@@ -71,7 +71,7 @@ def unbind_case_group(binding_id: int, db: Session = Depends(get_db), operator_i
 
     binding = db.get(CaseGroup, binding_id)
     if not binding:
-        raise_fail("案件群绑定不存在", code=1404, status_code=404)
+        raise_fail("案件沟通群关联不存在", code=1404, status_code=404)
     if not has_case_access(db, operator_info, binding.case_id):
         raise_fail("无权限访问该案件", code=403, status_code=403)
     try:

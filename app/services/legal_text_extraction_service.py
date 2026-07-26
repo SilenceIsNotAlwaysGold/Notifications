@@ -155,6 +155,13 @@ class LegalTextExtractionService:
         case_no = self._case_no(llm_result.get("case_no")) or regex_result.get("case_no")
         plaintiff = self._short_text(llm_result.get("plaintiff")) or regex_result.get("plaintiff")
         defendant = self._short_text(llm_result.get("defendant")) or regex_result.get("defendant")
+        if case_no and not regex_result.get("case_no") and not self._has_nonmetadata_evidence(case_no, text, context_messages):
+            case_no = None
+            review_reasons.append("案号仅来自群历史关联案件，不能作为当前资料归属依据")
+        if plaintiff and not regex_result.get("plaintiff") and not self._has_nonmetadata_evidence(plaintiff, text, context_messages):
+            plaintiff = None
+        if defendant and not regex_result.get("defendant") and not self._has_nonmetadata_evidence(defendant, text, context_messages):
+            defendant = None
         court_time = self._datetime(llm_result.get("court_time")) or regex_result.get("court_time")
         amount = self._amount(llm_result.get("amount"))
         if amount is None:
@@ -265,6 +272,21 @@ class LegalTextExtractionService:
                 continue
             result[key] = value
         return result
+
+    @staticmethod
+    def _has_nonmetadata_evidence(
+        value: str,
+        text: str,
+        context_messages: list[dict[str, Any]] | None,
+    ) -> bool:
+        normalize = lambda content: re.sub(r"[\s()（）,，。·]", "", content or "")
+        expected = normalize(value)
+        if expected and expected in normalize(text):
+            return True
+        return any(
+            message.get("position") != "metadata" and expected in normalize(str(message.get("content") or ""))
+            for message in context_messages or []
+        )
 
     @staticmethod
     def _fallback_result(regex_result: dict[str, Any], reason: str) -> dict[str, Any]:

@@ -94,6 +94,7 @@ def test_context_includes_group_case_metadata_and_adjacent_attachment_ocr(db_ses
 
     assert context[0]["position"] == "metadata"
     assert "群名称：致和执行一群" in context[0]["content"]
+    assert "历史关联案件（仅作候选，不代表当前资料归属）" in context[0]["content"]
     assert "(2026)黔0281民初9001号" in context[0]["content"]
     assert context[1]["msg_type"] == "image"
     assert context[1]["content"] == "[相邻图片 OCR摘要] 身份证明 张三"

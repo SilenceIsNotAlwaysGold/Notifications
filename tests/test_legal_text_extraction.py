@@ -126,6 +126,41 @@ def test_llm_uses_group_context_to_fill_case_number_missing_from_ocr():
     assert result["metadata"]["field_sources"]["case_no"] == "群聊上文"
 
 
+def test_llm_cannot_assign_case_from_group_history_metadata_only():
+    adapter = StubLLMAdapter(
+        {
+            "event_type": "payment_notice",
+            "case_no": "（2026）闽0625民初1658号",
+            "plaintiff": None,
+            "defendant": "黄建勇",
+            "amount": 400,
+            "confidence": 0.95,
+            "requires_review": False,
+            "review_reasons": [],
+        }
+    )
+    context = [
+        {
+            "message_id": None,
+            "sender_id": "system:group-context",
+            "msg_type": "group_metadata",
+            "content": "该群历史关联案件（仅作候选，不代表当前资料归属）：(2026)闽0625民初1658号（当事人：黄建勇）",
+            "received_at": "2026-07-26T10:00:00+08:00",
+            "position": "metadata",
+        }
+    ]
+
+    result = LegalTextExtractionService(llm_settings(), adapter).extract(
+        "请处理这张新截图",
+        context_messages=context,
+    )
+
+    assert result["case_no"] is None
+    assert result["defendant"] is None
+    assert result["requires_review"] is True
+    assert "案号仅来自群历史关联案件" in result["review_reasons"][0]
+
+
 def test_llm_keeps_court_enforcement_and_installment_fields_for_review():
     adapter = StubLLMAdapter(
         {

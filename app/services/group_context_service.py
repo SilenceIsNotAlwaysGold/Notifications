@@ -126,7 +126,7 @@ class GroupContextService:
             lines.append(f"群名称：{group.display_name}")
         if cases:
             case_lines = [f"{item.case_no}（当事人：{item.debtor_name}，状态：{item.status}）" for item in cases]
-            lines.append("该群已绑定案件：" + "；".join(case_lines))
+            lines.append("该群历史关联案件（仅作候选，不代表当前资料归属）：" + "；".join(case_lines))
         if not lines:
             return None
         return {

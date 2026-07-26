@@ -2063,7 +2063,7 @@ async function renderCaseWorkspace() {
           ${workspaceTable("群聊上下文", data.messages, [{label:"群",key:"group_id"},{label:"发送人",key:"sender_id"},{label:"类型",key:"msg_type"},{label:"内容",render:(row)=>escapeHtml(String(row.content||"").slice(0,180))},{label:"时间",key:"received_at"}])}
         </div>
         <aside class="workspace-side">
-          ${workspaceTable("关联群", data.groups, [{label:"群 ID",key:"group_id"},{label:"主群",render:(row)=>row.is_primary?"是":"否"}])}
+          ${workspaceTable("沟通群", data.groups, [{label:"群 ID",key:"group_id"},{label:"主要发送群",render:(row)=>row.is_primary?"是":"否"}])}
           ${workspaceTable("提醒", data.reminders, [{label:"时间",key:"remind_at"},{label:"内容",render:(row)=>escapeHtml(String(row.content||"").slice(0,80))},{label:"状态",render:(row)=>badge(row.status)}])}
           ${workspaceTable("金山结果", data.sync_logs, [{label:"类型",key:"sync_type"},{label:"结果",render:(row)=>badge(row.outcome)},{label:"行",key:"external_row_index"}])}
           ${workspaceTable("审计时间线", data.audit_timeline, [{label:"类型",key:"type"},{label:"内容",key:"label"},{label:"时间",key:"at"}])}
