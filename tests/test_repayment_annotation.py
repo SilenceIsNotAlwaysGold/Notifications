@@ -22,6 +22,7 @@ def test_parse_labeled_repayment_annotation():
         "defendant": "张三",
         "installment_sequence": 2,
         "amount": Decimal("1200.50"),
+        "payment_kind": "installment",
         "raw_text": "原告：甲公司 + 被告：张三 + 第2期还款 + 金额：1,200.50元",
     }
 
@@ -41,6 +42,32 @@ def test_parse_compact_repayment_annotations_from_real_messages():
         assert result["defendant"] == defendant
         assert result["installment_sequence"] == sequence
         assert result["amount"] == Decimal(amount)
+
+
+def test_parse_real_payment_variants_without_fixed_plus_format():
+    samples = [
+        ("可可店+黄建勇+一次性结清+2700", "可可店", "黄建勇", None, "2700.00", "full_settlement"),
+        ("南城县蹦蹦虎-彭世雄 第一期还款 350元", "南城县蹦蹦虎", "彭世雄", 1, "350.00", "installment"),
+        ("湖北旺利数码科技有限公司-王硕-第二期付款800", "湖北旺利数码科技有限公司", "王硕", 2, "800.00", "installment"),
+        ("玉龙蜜桔科技、卢家红 4100一次性结清", "玉龙蜜桔科技", "卢家红", None, "4100.00", "full_settlement"),
+        (
+            "普宁市洪阳欧气满满电子产品经营部(个体工商户)，被告罗绒绒，支付1269.75元，案件已完结。",
+            "普宁市洪阳欧气满满电子产品经营部(个体工商户)",
+            "罗绒绒",
+            None,
+            "1269.75",
+            "completed",
+        ),
+    ]
+
+    for text, plaintiff, defendant, sequence, amount, payment_kind in samples:
+        result = parse_repayment_annotation(text)
+        assert result is not None
+        assert result["plaintiff"] == plaintiff
+        assert result["defendant"] == defendant
+        assert result["installment_sequence"] == sequence
+        assert result["amount"] == Decimal(amount)
+        assert result["payment_kind"] == payment_kind
 
 
 def test_annotation_after_image_overrides_ocr_payment_fields():
@@ -149,8 +176,8 @@ def test_annotation_reanalyzes_nearest_recent_image_without_case_number(db_sessi
     db_session.flush()
     captured = {}
 
-    def fake_process(self, media_file_id, trigger_type="system", operator=None):
-        captured.update(media_file_id=media_file_id, trigger_type=trigger_type, operator=operator)
+    def fake_process(self, media_file_id, trigger_type="system", operator=None, **kwargs):
+        captured.update(media_file_id=media_file_id, trigger_type=trigger_type, operator=operator, **kwargs)
         return {"event_id": 9}
 
     monkeypatch.setattr(MediaFileService, "process_ocr", fake_process)
@@ -163,6 +190,9 @@ def test_annotation_reanalyzes_nearest_recent_image_without_case_number(db_sessi
         "media_file_id": media.id,
         "trigger_type": "repayment_annotation",
         "operator": "system:repayment-annotation",
+        "force_reprocess": True,
+        "stage_only": True,
+        "preferred_context_message_id": annotation_message.id,
     }
 
 
@@ -185,3 +215,76 @@ def test_linked_annotation_does_not_create_duplicate_text_event(db_session, monk
     assert result["event_ids"] == [77]
     assert result["linked_media_file_id"] == 12
     assert result["extracted"]["event_types"] == ["payment_screenshot"]
+
+
+def test_reanalysis_plan_pairs_text_before_image_and_uses_each_image_once(db_session):
+    base = now_tz()
+    first_text = GroupMessage(
+        group_id="repayment_group",
+        sender_id="operator",
+        msg_type="text",
+        content="甲公司+张三+一次性结清+500元",
+        raw_payload_json="{}",
+        received_at=base,
+    )
+    image_message = GroupMessage(
+        group_id="repayment_group",
+        sender_id="operator",
+        msg_type="image",
+        raw_payload_json="{}",
+        received_at=base + timedelta(seconds=1),
+    )
+    second_text = GroupMessage(
+        group_id="repayment_group",
+        sender_id="operator",
+        msg_type="text",
+        content="乙公司+李四+第2期还款+800元",
+        raw_payload_json="{}",
+        received_at=base + timedelta(seconds=2),
+    )
+    db_session.add_all([first_text, image_message, second_text])
+    db_session.flush()
+    media = MediaFile(
+        group_message_id=image_message.id,
+        group_id="repayment_group",
+        media_type="image",
+        download_status="downloaded",
+        ocr_status="processed",
+        review_status="pending",
+        ocr_result_json='{"metadata": {}}',
+        source="mock",
+    )
+    db_session.add(media)
+    db_session.flush()
+
+    plan = MediaFileService(db_session).repayment_reanalysis_plan(limit=20)
+
+    assert len(plan) == 1
+    assert plan[0]["message_id"] == first_text.id
+    assert plan[0]["media_file_id"] == media.id
+    assert plan[0]["distance_seconds"] == 1.0
+
+
+def test_reanalysis_execution_is_force_reprocessed_and_staged(db_session, monkeypatch):
+    service = MediaFileService(db_session)
+    monkeypatch.setattr(service, "repayment_reanalysis_plan", lambda limit, auth_context=None: [{"message_id": 1, "media_file_id": 2}])
+    captured = {}
+
+    def fake_process(media_file_id, trigger_type, operator, **kwargs):
+        captured.update(media_file_id=media_file_id, trigger_type=trigger_type, operator=operator, **kwargs)
+        return {"event_id": 3, "event_type": "payment_screenshot"}
+
+    monkeypatch.setattr(service, "process_ocr", fake_process)
+
+    result = service.reanalyze_repayment_annotations(limit=10, operator="reviewer")
+
+    assert result["stage_only"] is True
+    assert result["processed"] == 1
+    assert captured == {
+        "media_file_id": 2,
+        "trigger_type": "repayment_annotation_backfill",
+        "operator": "reviewer",
+        "force_reprocess": True,
+        "stage_only": True,
+        "preferred_context_message_id": 1,
+    }

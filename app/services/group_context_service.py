@@ -5,9 +5,9 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.group_message import GroupMessage
-from app.models.legal_case import LegalCase
 from app.models.media_file import MediaFile
 from app.models.wecom_archive_group import WeComArchiveGroup
+from app.utils.repayment_annotation import parse_repayment_annotation
 
 
 class GroupContextService:
@@ -94,6 +94,73 @@ class GroupContextService:
         metadata = self._group_metadata(anchor)
         return self._fit_budget(metadata, entries, max_total_chars)
 
+    def for_extraction(
+        self,
+        message_id: int | None,
+        *,
+        preferred_message_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return nearby evidence only; distant same-group cases must not influence extraction."""
+        if preferred_message_id is not None:
+            preferred = self._preferred_evidence(message_id, preferred_message_id)
+            return preferred if preferred is not None else []
+        context = self.around_message(
+            message_id,
+            before_count=12,
+            after_count=12,
+            window_hours=1,
+            max_total_chars=6000,
+        )
+        nearby = [
+            item
+            for item in context
+            if item.get("position") == "metadata" or float(item.get("distance_seconds") or 0) <= 30 * 60
+        ]
+        repayment = [
+            item
+            for item in nearby
+            if item.get("position") != "metadata"
+            and float(item.get("distance_seconds") or 0) <= 10 * 60
+            and parse_repayment_annotation(str(item.get("content") or ""))
+        ]
+        if repayment:
+            nearest_ids = {item.get("message_id") for item in sorted(repayment, key=self._context_distance)[:3]}
+            nearby = [
+                item
+                for item in nearby
+                if item.get("position") == "metadata" or item.get("message_id") in nearest_ids
+            ]
+        return nearby[:12]
+
+    def _preferred_evidence(self, anchor_id: int | None, preferred_id: int) -> list[dict[str, Any]] | None:
+        if anchor_id is None:
+            return None
+        anchor = self.db.get(GroupMessage, anchor_id)
+        preferred = self.db.get(GroupMessage, preferred_id)
+        if (
+            anchor is None
+            or preferred is None
+            or preferred.group_id != anchor.group_id
+            or preferred.msg_type != "text"
+            or not parse_repayment_annotation(preferred.content)
+        ):
+            return None
+        distance = abs((preferred.received_at - anchor.received_at).total_seconds())
+        if distance > 10 * 60:
+            return None
+        position = "before" if (preferred.received_at, preferred.id) < (anchor.received_at, anchor.id) else "after"
+        evidence = {
+            "message_id": preferred.id,
+            "sender_id": preferred.sender_id,
+            "msg_type": preferred.msg_type,
+            "content": (preferred.content or "")[:2000],
+            "received_at": preferred.received_at.isoformat(),
+            "position": position,
+            "distance_seconds": round(distance, 3),
+        }
+        metadata = self._group_metadata(anchor)
+        return [*([metadata] if metadata else []), evidence]
+
     def _media_by_message(self, message_ids: list[int]) -> dict[int, MediaFile]:
         if not message_ids:
             return {}
@@ -113,20 +180,9 @@ class GroupContextService:
         group = self.db.scalar(
             select(WeComArchiveGroup).where(WeComArchiveGroup.room_id == anchor.group_id)
         )
-        cases = list(
-            self.db.scalars(
-                select(LegalCase)
-                .where(LegalCase.group_id == anchor.group_id)
-                .order_by(LegalCase.updated_at.desc(), LegalCase.id.desc())
-                .limit(20)
-            ).all()
-        )
         lines: list[str] = []
         if group and group.display_name:
             lines.append(f"群名称：{group.display_name}")
-        if cases:
-            case_lines = [f"{item.case_no}（当事人：{item.debtor_name}，状态：{item.status}）" for item in cases]
-            lines.append("该群历史关联案件（仅作候选，不代表当前资料归属）：" + "；".join(case_lines))
         if not lines:
             return None
         return {
@@ -155,6 +211,7 @@ class GroupContextService:
             if remaining <= 0:
                 break
             selected_entry = {key: value for key, value in entry.items() if key != "_distance"}
+            selected_entry["distance_seconds"] = round(float(entry["_distance"]), 3)
             selected_entry["content"] = selected_entry["content"][:remaining]
             remaining -= len(selected_entry["content"])
             selected.append(selected_entry)
@@ -164,6 +221,10 @@ class GroupContextService:
             key=lambda item: (item["received_at"], item["message_id"]),
         )
         return [*metadata_entries, *message_entries]
+
+    @staticmethod
+    def _context_distance(item: dict[str, Any]) -> tuple[float, int]:
+        return float(item.get("distance_seconds") or 0), int(item.get("message_id") or 0)
 
     @staticmethod
     def _media_label(media_type: str) -> str:

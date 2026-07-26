@@ -106,6 +106,70 @@ def test_can_create_case_after_alembic_upgrade(tmp_path, monkeypatch):
         get_settings.cache_clear()
 
 
+def test_attribution_material_migration_supersedes_same_message_event(tmp_path, monkeypatch):
+    database_url = f"sqlite:///{tmp_path / 'attribution_materials.db'}"
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    get_settings.cache_clear()
+    config = _alembic_config(database_url)
+    command.upgrade(config, "0019_business_spec_defaults")
+    engine = create_engine(database_url, future=True)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO group_messages (group_id,sender_id,msg_type,raw_payload_json,received_at,created_at) "
+                    "VALUES ('group_001','u1','image','{}',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)"
+                )
+            )
+            message_id = connection.execute(text("SELECT id FROM group_messages")).scalar_one()
+            connection.execute(
+                text(
+                    "INSERT INTO legal_media_files "
+                    "(group_message_id,group_id,media_type,source,download_status,ocr_status,review_status,created_at,updated_at) "
+                    "VALUES (:message_id,'group_001','image','test','downloaded','processed','pending',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)"
+                ),
+                {"message_id": message_id},
+            )
+            media_id = connection.execute(text("SELECT id FROM legal_media_files")).scalar_one()
+            connection.execute(
+                text(
+                    "INSERT INTO legal_events "
+                    "(group_message_id,event_type,metadata_json,attribution_status,business_status,created_at) "
+                    "VALUES (:message_id,'payment_screenshot','{}','pending','staged',CURRENT_TIMESTAMP)"
+                ),
+                {"message_id": message_id},
+            )
+            event_id = connection.execute(text("SELECT id FROM legal_events")).scalar_one()
+            connection.execute(
+                text(
+                    "INSERT INTO attribution_items "
+                    "(group_id,subject_type,subject_id,media_file_id,evidence_json,status,created_at,updated_at) VALUES "
+                    "('group_001','media',:media_id,:media_id,'{}','pending',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),"
+                    "('group_001','event',:event_id,:event_id,'{}','pending',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)"
+                ),
+                {"media_id": media_id, "event_id": event_id},
+            )
+
+        command.upgrade(config, "head")
+
+        with engine.connect() as connection:
+            rows = connection.execute(text("SELECT subject_type,status,reason FROM attribution_items ORDER BY id")).mappings().all()
+            event = connection.execute(text("SELECT attribution_status,business_status FROM legal_events WHERE id=:id"), {"id": event_id}).mappings().one()
+            outbox_count = connection.execute(text("SELECT COUNT(*) FROM business_outbox")).scalar_one()
+            payment_count = connection.execute(text("SELECT COUNT(*) FROM payment_records")).scalar_one()
+            reminder_count = connection.execute(text("SELECT COUNT(*) FROM reminders")).scalar_one()
+            sync_count = connection.execute(text("SELECT COUNT(*) FROM document_sync_logs")).scalar_one()
+        assert [dict(row) for row in rows] == [
+            {"subject_type": "media", "status": "pending", "reason": None},
+            {"subject_type": "event", "status": "superseded", "reason": "[0020] 已合并到同一来源消息的资料包"},
+        ]
+        assert dict(event) == {"attribution_status": "pending", "business_status": "staged"}
+        assert (outbox_count, payment_count, reminder_count, sync_count) == (0, 0, 0, 0)
+    finally:
+        engine.dispose()
+        get_settings.cache_clear()
+
+
 def test_sync_idempotency_migration_keeps_first_key_and_renames_legacy_duplicates(tmp_path, monkeypatch):
     database_url = f"sqlite:///{tmp_path / 'sync_idempotency.db'}"
     monkeypatch.setenv("DATABASE_URL", database_url)

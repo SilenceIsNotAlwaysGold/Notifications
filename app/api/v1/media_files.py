@@ -7,10 +7,29 @@ from app.api.v1.response import ok, raise_fail
 from app.core.resource_permissions import filter_by_case_or_group, has_media_access
 from app.models.media_file import MediaFile
 from app.db.session import get_db
-from app.schemas.legal import MediaFileListOut, MediaFileOut, MediaOCRResultOut
+from app.schemas.legal import MediaFileListOut, MediaFileOut, MediaOCRResultOut, RepaymentReanalysisRequest
 from app.services.media_file_service import MediaFileService
 
 router = APIRouter(prefix="/legal/media-files", tags=["legal-media-files"])
+
+
+@router.post("/reanalyze-repayment-annotations")
+def reanalyze_repayment_annotations(
+    payload: RepaymentReanalysisRequest,
+    db: Session = Depends(get_db),
+    operator_info: dict[str, object] = Depends(get_current_operator),
+):
+    service = MediaFileService(db)
+    plan = service.repayment_reanalysis_plan(limit=payload.limit, auth_context=operator_info)
+    if payload.dry_run:
+        return ok("还款资料重新分析预览成功", {"planned": len(plan), "items": plan, "stage_only": True})
+    result = service.reanalyze_repayment_annotations(
+        limit=payload.limit,
+        operator=str(operator_info["operator"]),
+        auth_context=operator_info,
+    )
+    db.commit()
+    return ok("还款资料已重新分析并保持待复核", result)
 
 
 @router.get("")

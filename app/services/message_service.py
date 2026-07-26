@@ -130,7 +130,9 @@ class MessageService:
     ) -> dict[str, Any]:
         metadata = dict(extracted.get("metadata") or {})
         structured = dict(metadata.get("structured_fields") or {})
-        structured["installment_sequence"] = annotation["installment_sequence"]
+        if annotation.get("installment_sequence") is not None:
+            structured["installment_sequence"] = annotation["installment_sequence"]
+        structured["payment_kind"] = annotation.get("payment_kind")
         metadata["structured_fields"] = structured
         metadata["repayment_annotation"] = {
             **annotation,

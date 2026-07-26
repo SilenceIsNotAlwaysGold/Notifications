@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -12,6 +12,7 @@ from app.schemas.legal import CaseCandidateConfirm, CaseCandidateConfirmOut, Cas
 from app.services.case_candidate_service import CaseCandidateService
 from app.services.case_lifecycle_service import CaseLifecycleService
 from app.services.case_service import CaseService
+from app.services.case_import_service import CaseImportService
 
 router = APIRouter(prefix="/legal/cases", tags=["legal-cases"])
 
@@ -72,6 +73,36 @@ def scan_case_statuses(db: Session = Depends(get_db), operator_info: dict[str, o
     result = CaseLifecycleService(db).scan_cases(trigger_type="api", operator=str(operator_info["operator"]), auth_context=operator_info)
     db.commit()
     return ok("案件状态扫描完成", CaseLifecycleScanOut(**result))
+
+
+@router.post("/import-xlsx")
+async def import_cases_xlsx(
+    file: UploadFile = File(...),
+    group_id: str = Form(...),
+    tenant_id: str | None = Form(None),
+    confirm: bool = Form(False),
+    db: Session = Depends(get_db),
+    operator_info: dict[str, object] = Depends(get_current_operator),
+):
+    if not file.filename or not file.filename.lower().endswith(".xlsx"):
+        raise_fail("仅支持 XLSX 案件表格", code=1400)
+    group_id = group_id.strip()
+    tenant_id = tenant_id.strip() if tenant_id and tenant_id.strip() else None
+    if not group_id:
+        raise_fail("目标群不能为空", code=1400)
+    if not has_group_access(operator_info, group_id, tenant_id):
+        raise_fail("无权限访问目标群", code=403, status_code=403)
+    if tenant_id and not has_tenant_data_access(db, operator_info, tenant_id):
+        raise_fail("无权限访问目标租户", code=403, status_code=403)
+    service = CaseImportService(db)
+    try:
+        preview = service.parse_xlsx(await file.read(), group_id=group_id, tenant_id=tenant_id)
+        result = service.confirm(preview, str(operator_info["operator"])) if confirm else preview
+        db.commit()
+    except (IntegrityError, ValueError) as exc:
+        db.rollback()
+        raise_fail(str(exc) if isinstance(exc, ValueError) else "表格中存在重复案号", code=1400)
+    return ok("案件表格已导入" if confirm else "案件表格预览成功", result)
 
 
 @router.get("/candidates")

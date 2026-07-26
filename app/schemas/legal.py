@@ -526,6 +526,11 @@ class MediaFileListOut(BaseModel):
     items: list[MediaFileOut]
 
 
+class RepaymentReanalysisRequest(BaseModel):
+    dry_run: bool = True
+    limit: int = Field(default=20, ge=1, le=100)
+
+
 class MediaOCRResultOut(BaseModel):
     media_file_id: int
     ocr_status: str

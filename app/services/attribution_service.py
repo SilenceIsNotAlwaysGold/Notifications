@@ -33,6 +33,10 @@ class AttributionService:
         self.case_groups = CaseGroupService(db)
 
     def ensure_media(self, media: MediaFile, *, suggested_case: LegalCase | None = None, reason: str | None = None, evidence: dict | None = None) -> AttributionItem:
+        existing = self._existing_for_message(media.group_message_id)
+        if existing and existing.media_file_id != media.id:
+            existing.status = "superseded"
+            existing.reason = self._append_reason(existing.reason, "已合并到同一来源消息的资料包")
         return self._ensure(
             subject_type="media",
             subject_id=media.id,
@@ -45,6 +49,9 @@ class AttributionService:
         )
 
     def ensure_event(self, event: LegalEvent, *, group_id: str | None = None, suggested_case: LegalCase | None = None, reason: str | None = None) -> AttributionItem:
+        existing = self._existing_for_message(event.group_message_id)
+        if existing:
+            return existing
         if group_id is None and event.group_message_id:
             message = self.db.get(GroupMessage, event.group_message_id)
             group_id = message.group_id if message else None
@@ -81,6 +88,28 @@ class AttributionService:
         self.db.add(item)
         self.db.flush()
         return item
+
+    def _existing_for_message(self, message_id: int | None) -> AttributionItem | None:
+        if message_id is None:
+            return None
+        media_ids = select(MediaFile.id).where(MediaFile.group_message_id == message_id)
+        event_ids = select(LegalEvent.id).where(LegalEvent.group_message_id == message_id)
+        return self.db.scalar(
+            select(AttributionItem)
+            .where(AttributionItem.status == "pending")
+            .where(
+                AttributionItem.media_file_id.in_(media_ids)
+                | AttributionItem.event_id.in_(event_ids)
+            )
+            .order_by(
+                (AttributionItem.subject_type == "media").desc(),
+                AttributionItem.id.asc(),
+            )
+        )
+
+    @staticmethod
+    def _append_reason(current: str | None, message: str) -> str:
+        return f"{current}；{message}" if current else message
 
     def list(self, *, status: str | None = "pending", group_id: str | None = None, offset: int = 0, limit: int = 50, auth_context: dict | None = None) -> tuple[int, list[dict]]:
         query = select(AttributionItem)

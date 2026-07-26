@@ -7,6 +7,8 @@ from app.core.config import get_settings
 from app.core.config_validator import validate_runtime_config
 from app.models.api_key import ApiKey
 from app.models.operation_audit_log import OperationAuditLog
+from app.models.group_message import GroupMessage
+from app.models.media_file import MediaFile
 from app.services.api_key_service import ApiKeyService
 from app.utils.datetime_utils import now_tz
 
@@ -82,6 +84,64 @@ def test_auditor_role_cannot_create_case(client, db_session, monkeypatch):
     )
 
     assert response.status_code == 403
+
+
+def test_auditor_cannot_execute_repayment_reanalysis(client, db_session, monkeypatch):
+    _enable_auth(monkeypatch)
+    key = _create_db_key(db_session, "auditor")
+
+    response = client.post(
+        "/api/v1/legal/media-files/reanalyze-repayment-annotations",
+        headers={"X-API-Key": key},
+        json={"dry_run": True, "limit": 20},
+    )
+
+    assert response.status_code == 403
+
+
+def test_repayment_reanalysis_respects_legal_group_scope(client, db_session, monkeypatch):
+    _enable_auth(monkeypatch)
+    monkeypatch.setenv("RESOURCE_SCOPE_ENABLED", "true")
+    get_settings.cache_clear()
+    key_data = ApiKeyService(db_session).create_api_key(
+        name="scoped-legal",
+        role="legal",
+        expires_at=None,
+        allowed_group_ids=["allowed_group"],
+        created_by="test",
+    )
+    base = now_tz()
+    caption = GroupMessage(
+        group_id="outside_group",
+        sender_id="lawyer",
+        msg_type="text",
+        content="甲公司+张三+第1期还款+100元",
+        raw_payload_json="{}",
+        received_at=base,
+    )
+    image = GroupMessage(group_id="outside_group", sender_id="u1", msg_type="image", raw_payload_json="{}", received_at=base + timedelta(seconds=1))
+    db_session.add_all([caption, image])
+    db_session.flush()
+    db_session.add(
+        MediaFile(
+            group_message_id=image.id,
+            group_id="outside_group",
+            media_type="image",
+            ocr_status="processed",
+            review_status="pending",
+            source="test",
+        )
+    )
+    db_session.commit()
+
+    response = client.post(
+        "/api/v1/legal/media-files/reanalyze-repayment-annotations",
+        headers={"X-API-Key": key_data["api_key"]},
+        json={"dry_run": True, "limit": 20},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["planned"] == 0
 
 
 def test_system_role_can_run_due(client, db_session, monkeypatch):

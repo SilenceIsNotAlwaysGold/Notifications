@@ -56,7 +56,7 @@ def test_context_window_is_bounded_on_each_side(db_session):
     assert [item["content"] for item in context] == ["消息 -2", "消息 -1", "消息 1"]
 
 
-def test_context_includes_group_case_metadata_and_adjacent_attachment_ocr(db_session):
+def test_context_includes_group_name_but_not_historical_case_facts(db_session):
     anchor_time = now_tz()
     adjacent = _message("group_001", "merchant", None, anchor_time - timedelta(minutes=3))
     anchor = _message("group_001", "merchant", None, anchor_time)
@@ -94,8 +94,8 @@ def test_context_includes_group_case_metadata_and_adjacent_attachment_ocr(db_ses
 
     assert context[0]["position"] == "metadata"
     assert "群名称：致和执行一群" in context[0]["content"]
-    assert "历史关联案件（仅作候选，不代表当前资料归属）" in context[0]["content"]
-    assert "(2026)黔0281民初9001号" in context[0]["content"]
+    assert "历史关联案件" not in context[0]["content"]
+    assert "(2026)黔0281民初9001号" not in context[0]["content"]
     assert context[1]["msg_type"] == "image"
     assert context[1]["content"] == "[相邻图片 OCR摘要] 身份证明 张三"
 
@@ -113,6 +113,41 @@ def test_context_prefers_nearest_messages_within_character_budget(db_session):
     assert len(context) == 1
     assert context[0]["message_id"] == near.id
     assert len(context[0]["content"]) == 30
+
+
+def test_extraction_context_keeps_only_nearest_repayment_evidence(db_session):
+    anchor_time = now_tz()
+    far_case = _message("group_001", "lawyer", "甲公司+张三+第1期还款+100元", anchor_time - timedelta(minutes=20))
+    near_case = _message("group_001", "lawyer", "乙公司+李四+第2期还款+800元", anchor_time + timedelta(seconds=2))
+    noise = _message("group_001", "other", "讨论另外一个案件", anchor_time + timedelta(minutes=2))
+    anchor = _message("group_001", "merchant", None, anchor_time)
+    db_session.add_all([far_case, near_case, noise, anchor])
+    db_session.flush()
+
+    context = GroupContextService(db_session).for_extraction(anchor.id)
+
+    assert [item["message_id"] for item in context] == [near_case.id]
+    assert context[0]["distance_seconds"] == 2.0
+
+
+def test_extraction_context_honors_planned_caption_pair(db_session):
+    anchor_time = now_tz()
+    first = _message("group_001", "lawyer", "甲公司+张三+第1期还款+100元", anchor_time - timedelta(seconds=3))
+    planned = _message("group_001", "lawyer", "乙公司+李四+第2期还款+800元", anchor_time - timedelta(minutes=9))
+    noise = [
+        _message("group_001", "other", f"普通消息 {index}", anchor_time - timedelta(seconds=20 + index))
+        for index in range(15)
+    ]
+    anchor = _message("group_001", "merchant", None, anchor_time)
+    db_session.add_all([first, planned, *noise, anchor])
+    db_session.flush()
+
+    context = GroupContextService(db_session).for_extraction(
+        anchor.id,
+        preferred_message_id=planned.id,
+    )
+
+    assert [item["message_id"] for item in context] == [planned.id]
 
 
 def test_case_number_message_reanalyzes_nearest_pending_material(db_session, monkeypatch):
@@ -140,8 +175,8 @@ def test_case_number_message_reanalyzes_nearest_pending_material(db_session, mon
     db_session.flush()
     captured = {}
 
-    def fake_process(self, media_file_id, trigger_type="system", operator=None):
-        captured.update(media_file_id=media_file_id, trigger_type=trigger_type, operator=operator)
+    def fake_process(self, media_file_id, trigger_type="system", operator=None, **kwargs):
+        captured.update(media_file_id=media_file_id, trigger_type=trigger_type, operator=operator, **kwargs)
         return {"media_file_id": media_file_id}
 
     monkeypatch.setattr(MediaFileService, "process_ocr", fake_process)
@@ -156,6 +191,8 @@ def test_case_number_message_reanalyzes_nearest_pending_material(db_session, mon
         "media_file_id": media.id,
         "trigger_type": "context_message",
         "operator": "system:group-context",
+        "force_reprocess": True,
+        "stage_only": True,
     }
 
 

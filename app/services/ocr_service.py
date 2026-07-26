@@ -22,7 +22,10 @@ class OCRService:
         annotation = parse_repayment_annotation(text)
         if annotation:
             metadata = dict(regex_result.get("metadata") or {})
-            metadata["structured_fields"] = {"installment_sequence": annotation["installment_sequence"]}
+            metadata["structured_fields"] = {
+                "installment_sequence": annotation.get("installment_sequence"),
+                "payment_kind": annotation.get("payment_kind"),
+            }
             metadata["repayment_annotation"] = {**annotation, "amount": str(annotation["amount"])}
             return {
                 **regex_result,

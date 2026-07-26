@@ -19,6 +19,7 @@ const state = {
   attributionPageSize: 100,
   selectedAttributionId: null,
   attributionPreviewUrl: null,
+  caseImportUpload: null,
 };
 
 const titles = {
@@ -111,10 +112,8 @@ function showAlert(message, type = "info") {
 }
 
 async function api(path, options = {}) {
-  const headers = {
-    "Content-Type": "application/json",
-    ...(options.headers || {}),
-  };
+  const isFormData = options.body instanceof FormData;
+  const headers = { ...(isFormData ? {} : { "Content-Type": "application/json" }), ...(options.headers || {}) };
   if (state.apiKey) {
     headers["X-API-Key"] = state.apiKey;
   }
@@ -780,6 +779,53 @@ function caseForm() {
   `;
 }
 
+function caseImportForm(groups) {
+  return `<form id="case-import-form" class="form-grid">
+    <div class="field wide"><label>案件表格</label><input name="file" type="file" accept=".xlsx" required /></div>
+    <div class="field wide"><label>沟通群</label><select name="group_id" required><option value="">选择群</option>${groups.filter((group)=>group.status === "enabled").map((group)=>`<option value="${escapeHtml(group.room_id)}">${escapeHtml(group.display_name || "未命名群")} · ${escapeHtml(group.room_id)}</option>`).join("")}</select></div>
+    <div class="field"><label>租户 ID</label><input name="tenant_id" maxlength="128" /></div>
+    <div class="field form-actions"><button type="submit">预览导入</button></div>
+  </form><div id="case-import-preview"></div>`;
+}
+
+function renderCaseImportPreview(data) {
+  const container = $("#case-import-preview");
+  if (!container) return;
+  const rows = data.items || [];
+  container.innerHTML = `<div class="import-summary"><span>共 ${data.total} 行</span><span>可新建 ${data.creatable}</span><span>已存在 ${data.existing}</span><span>异常 ${data.invalid}</span></div>
+    ${table([
+      {label:"行",key:"row_number"},{label:"状态",render:(row)=>badge({create:"可新建",existing:"已存在",invalid:"异常"}[row.status] || row.status)},{label:"案号",key:"case_no"},
+      {label:"原告",key:"plaintiff_name"},{label:"被告",key:"debtor_name"},{label:"到期日",key:"due_date"},
+      {label:"问题",render:(row)=>escapeHtml((row.errors || []).join("；"))},
+    ], rows.slice(0, 100))}
+    ${data.creatable ? '<div class="import-actions"><button type="button" id="confirm-case-import">确认新建案件</button></div>' : ""}`;
+  $("#confirm-case-import")?.addEventListener("click", confirmCaseImport);
+}
+
+async function submitCaseImport(event) {
+  event.preventDefault();
+  const formData = new FormData(event.currentTarget);
+  const file = formData.get("file");
+  if (!(file instanceof File) || !file.name) return showAlert("请选择 XLSX 文件", "error");
+  state.caseImportUpload = {file, groupId:String(formData.get("group_id") || ""), tenantId:String(formData.get("tenant_id") || "")};
+  formData.set("confirm", "false");
+  const result = await api("/api/v1/legal/cases/import-xlsx", {method:"POST", body:formData});
+  renderCaseImportPreview(result);
+}
+
+async function confirmCaseImport() {
+  if (!state.caseImportUpload) return;
+  const formData = new FormData();
+  formData.set("file", state.caseImportUpload.file);
+  formData.set("group_id", state.caseImportUpload.groupId);
+  formData.set("tenant_id", state.caseImportUpload.tenantId);
+  formData.set("confirm", "true");
+  const result = await api("/api/v1/legal/cases/import-xlsx", {method:"POST", body:formData});
+  state.caseImportUpload = null;
+  showAlert(`案件导入完成：新建 ${result.created} 个`);
+  await renderCases();
+}
+
 function caseEditForm(item) {
   return `
     <form id="case-edit-form" class="form-grid" data-case-id="${item.id}">
@@ -863,6 +909,7 @@ async function renderCases() {
         </div>
       </section>
       ${panel("创建案件", caseForm())}
+      ${panel("批量导入案件", caseImportForm(archiveGroups))}
       ${editingCase ? panel(`编辑案件 · ${escapeHtml(editingCase.case_no)}`, caseEditForm(editingCase)) : ""}
       ${panel(
         "案件列表",
@@ -921,6 +968,7 @@ async function renderCases() {
     });
   });
   $("#case-form").addEventListener("submit", submitCase);
+  $("#case-import-form").addEventListener("submit", submitCaseImport);
   document.querySelectorAll("[data-edit-case]").forEach((button) => {
     button.addEventListener("click", () => {
       state.editingCaseId = Number(button.dataset.editCase);
@@ -2115,6 +2163,7 @@ async function renderAttributionQueue() {
   $("#content").innerHTML = `
     <section class="attribution-view">
       <header class="case-section-header"><div><h2>案件归属复核</h2><p>按群、上下文和 AI 候选批量确认；确认前不会产生付款、提醒或金山写入。</p></div><span class="case-candidate-count">${total}</span></header>
+      <div class="attribution-tools"><button type="button" class="ghost small" id="preview-repayment-reanalysis">预览说明文字重分析</button><span id="repayment-reanalysis-status" class="muted"></span></div>
       ${panel("批量操作", `<form id="attribution-form" class="form-grid"><div class="field wide"><label>目标案件</label><select name="case_id"><option value="">选择案件</option>${cases.map((row)=>`<option value="${row.id}">${escapeHtml(row.case_no)} · ${escapeHtml(row.debtor_name)}</option>`).join("")}</select></div><div class="field wide"><label>驳回原因</label><input name="reason" placeholder="仅驳回时填写" /></div><div class="field form-actions"><button type="submit" data-attribution-action="confirm">确认归属</button><button type="submit" class="danger" data-attribution-action="reject">明确驳回</button></div></form>`)}
       <div class="attribution-workspace">
         <section class="attribution-queue-panel">
@@ -2155,6 +2204,14 @@ async function renderAttributionQueue() {
     state.selectedAttributionId = Number(button.dataset.attributionSelect);
     await renderAttributionQueue();
   }));
+  $("#preview-repayment-reanalysis").addEventListener("click", async () => {
+    const preview = await api("/api/v1/legal/media-files/reanalyze-repayment-annotations", {method:"POST", body:JSON.stringify({dry_run:true, limit:20})});
+    $("#repayment-reanalysis-status").textContent = `可安全重分析 ${preview.planned} 份`;
+    if (!preview.planned || !window.confirm(`确认重新分析这 ${preview.planned} 份资料吗？结果仍会保持待复核。`)) return;
+    const result = await api("/api/v1/legal/media-files/reanalyze-repayment-annotations", {method:"POST", body:JSON.stringify({dry_run:false, limit:20})});
+    showAlert(`重分析完成：成功 ${result.processed}，失败 ${result.failed}`);
+    await renderAttributionQueue();
+  });
 }
 
 function attributionQueueItem(row) {

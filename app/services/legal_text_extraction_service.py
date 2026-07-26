@@ -103,9 +103,12 @@ class LegalTextExtractionService:
         annotation, message = matched
         metadata = dict(result.get("metadata") or {})
         structured_fields = dict(metadata.get("structured_fields") or {})
-        structured_fields["installment_sequence"] = annotation["installment_sequence"]
+        if annotation.get("installment_sequence") is not None:
+            structured_fields["installment_sequence"] = annotation["installment_sequence"]
+        structured_fields["payment_kind"] = annotation.get("payment_kind")
         field_sources = dict(metadata.get("field_sources") or {})
-        source = f"截图后说明文字#{message.get('message_id')}"
+        relative = "前" if message.get("position") == "before" else "后"
+        source = f"截图{relative}说明文字#{message.get('message_id')}"
         field_sources.update(
             {
                 "plaintiff": source,

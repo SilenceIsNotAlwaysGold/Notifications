@@ -7,11 +7,12 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.adapters.wecom_media import WeComMediaAdapter
 from app.core.config import get_settings
+from app.core.resource_permissions import allowed_group_ids, allowed_tenant_ids, resource_scope_enabled, tenant_scope_enabled
 from app.models.document_sync_log import DocumentSyncLog
 from app.models.ai_call_audit import AICallAudit
 from app.models.group_message import GroupMessage
@@ -32,6 +33,7 @@ from app.services.system_run_log_service import SystemRunLogService
 from app.services.tenant_settings_service import TenantSettingsService
 from app.services.wecom_archive_group_service import WeComArchiveGroupService
 from app.utils.datetime_utils import now_tz
+from app.utils.repayment_annotation import parse_repayment_annotation
 from app.utils.media_storage import MediaStorage
 
 logger = logging.getLogger(__name__)
@@ -109,7 +111,16 @@ class MediaFileService:
         self.db.flush()
         return media_file
 
-    def process_ocr(self, media_file_id: int, trigger_type: str = "system", operator: str | None = None) -> dict[str, Any]:
+    def process_ocr(
+        self,
+        media_file_id: int,
+        trigger_type: str = "system",
+        operator: str | None = None,
+        *,
+        force_reprocess: bool = False,
+        stage_only: bool = False,
+        preferred_context_message_id: int | None = None,
+    ) -> dict[str, Any]:
         run_service = SystemRunLogService(self.db)
         run_log = run_service.start_run("ocr_process", trigger_type, summary={"media_file_id": media_file_id, **({"operator": operator} if operator else {})})
         media_file = self._get_media_file(media_file_id)
@@ -139,7 +150,7 @@ class MediaFileService:
             )
             run_service.finish_success(run_log, summary=self._run_summary(summary), total_count=1, success_count=1, failed_count=0)
             return summary
-        if media_file.ocr_status == "processed" and not get_settings().ocr_enable_reprocess:
+        if media_file.ocr_status == "processed" and not force_reprocess and not get_settings().ocr_enable_reprocess:
             summary = self._ocr_summary(media_file, message="OCR 已处理，当前配置不允许重复处理")
             run_service.finish_success(run_log, summary=self._run_summary(summary), total_count=1, success_count=1, failed_count=0)
             return summary
@@ -153,7 +164,10 @@ class MediaFileService:
             return summary
 
         try:
-            context_messages = GroupContextService(self.db).around_message(media_file.group_message_id)
+            context_messages = GroupContextService(self.db).for_extraction(
+                media_file.group_message_id,
+                preferred_message_id=preferred_context_message_id,
+            )
             result = self.ocr_service.extract_from_file(
                 media_file.local_path,
                 media_file.media_type,
@@ -172,7 +186,10 @@ class MediaFileService:
                 return summary
 
             extracted_text = result.get("raw_text") or result.get("extracted_text") or ""
-            result["requires_review"] = self._result_requires_review(result)
+            result["requires_review"] = self._result_requires_review(result) or stage_only
+            if stage_only:
+                result.setdefault("review_reasons", []).append("上下文重新分析结果必须人工确认")
+                result.setdefault("metadata", {})["stage_only_reanalysis"] = True
             media_file.extracted_text = extracted_text
             media_file.ocr_result_json = self._dump_result(result)
             media_file.review_result_json = None
@@ -190,13 +207,14 @@ class MediaFileService:
             event = None
             created_reminders = 0
             cancelled_reminders = 0
-            matched_case = self.case_service.find_case_for_extracted(
+            suggested_case = self.case_service.find_case_for_extracted(
                 result.get("case_no"),
                 media_file.group_id,
                 media_file.tenant_id,
                 plaintiff=result.get("plaintiff"),
                 defendant=result.get("defendant"),
             )
+            matched_case = None if stage_only else suggested_case
             if matched_case:
                 media_file.case_id = matched_case.id
                 media_file.tenant_id = matched_case.tenant_id or media_file.tenant_id
@@ -220,6 +238,7 @@ class MediaFileService:
                     event.attribution_status = "pending"
                     AttributionService(self.db).ensure_media(
                         media_file,
+                        suggested_case=suggested_case if stage_only else None,
                         reason="OCR 与群上下文无法唯一确定案件",
                         evidence={"case_no": result.get("case_no"), "event_type": result.get("event_type")},
                     )
@@ -306,7 +325,13 @@ class MediaFileService:
             }
             if context_message.id in analyzed_ids:
                 continue
-            return self.process_ocr(media_file.id, trigger_type="context_message", operator="system:group-context")
+            return self.process_ocr(
+                media_file.id,
+                trigger_type="context_message",
+                operator="system:group-context",
+                force_reprocess=True,
+                stage_only=True,
+            )
         return None
 
     def reanalyze_repayment_screenshot_annotation(
@@ -317,6 +342,7 @@ class MediaFileService:
         if context_message.msg_type != "text":
             return None
         lower_bound = context_message.received_at - timedelta(minutes=10)
+        upper_bound = context_message.received_at + timedelta(minutes=10)
         candidates = self.db.scalars(
             select(MediaFile)
             .join(GroupMessage, GroupMessage.id == MediaFile.group_message_id)
@@ -325,10 +351,11 @@ class MediaFileService:
             .where(MediaFile.ocr_status == "processed")
             .where(MediaFile.review_status.in_(("pending", "not_required")))
             .where(MediaFile.business_applied_at.is_(None))
+            .where(MediaFile.case_id.is_(None))
             .where(GroupMessage.received_at >= lower_bound)
-            .where(GroupMessage.received_at <= context_message.received_at)
-            .order_by(GroupMessage.received_at.desc(), MediaFile.id.desc())
-            .limit(3)
+            .where(GroupMessage.received_at <= upper_bound)
+            .order_by(func.abs(func.julianday(GroupMessage.received_at) - func.julianday(context_message.received_at)), MediaFile.id.desc())
+            .limit(5)
         ).all()
         for media_file in candidates:
             previous = self._load_result(media_file.ocr_result_json)
@@ -344,9 +371,119 @@ class MediaFileService:
                 media_file.id,
                 trigger_type="repayment_annotation",
                 operator="system:repayment-annotation",
+                force_reprocess=True,
+                stage_only=True,
+                preferred_context_message_id=context_message.id,
             )
             return {**summary, "annotation": annotation, "linked_media_file_id": media_file.id}
         return None
+
+    def repayment_reanalysis_plan(
+        self,
+        *,
+        limit: int = 20,
+        auth_context: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        auth_context = auth_context or {}
+        message_query = (
+            select(GroupMessage)
+            .where(GroupMessage.msg_type == "text")
+            .where(GroupMessage.content.is_not(None))
+        )
+        media_query = (
+            select(MediaFile)
+            .join(GroupMessage, GroupMessage.id == MediaFile.group_message_id)
+            .where(MediaFile.media_type == "image")
+            .where(MediaFile.ocr_status == "processed")
+            .where(MediaFile.review_status.in_(("pending", "not_required")))
+            .where(MediaFile.business_applied_at.is_(None))
+            .where(MediaFile.case_id.is_(None))
+        )
+        if resource_scope_enabled(auth_context) and auth_context.get("role") != "admin":
+            groups = allowed_group_ids(auth_context)
+            if groups:
+                message_query = message_query.where(GroupMessage.group_id.in_(groups))
+                media_query = media_query.where(MediaFile.group_id.in_(groups))
+        if tenant_scope_enabled(auth_context):
+            tenants = allowed_tenant_ids(auth_context)
+            if tenants:
+                message_query = message_query.where(GroupMessage.tenant_id.in_(tenants))
+                media_query = media_query.where(MediaFile.tenant_id.in_(tenants))
+        messages = list(self.db.scalars(message_query.order_by(GroupMessage.received_at.asc(), GroupMessage.id.asc())).all())
+        media_files = list(self.db.scalars(media_query.order_by(GroupMessage.received_at.asc(), MediaFile.id.asc())).all())
+        message_ids = {row.group_message_id for row in media_files if row.group_message_id is not None}
+        messages_by_id = {
+            row.id: row
+            for row in self.db.scalars(select(GroupMessage).where(GroupMessage.id.in_(message_ids))).all()
+        } if message_ids else {}
+        media_messages = {row.id: messages_by_id.get(row.group_message_id) for row in media_files}
+        used_media_ids: set[int] = set()
+        plan: list[dict[str, Any]] = []
+        for message in messages:
+            annotation = parse_repayment_annotation(message.content)
+            if not annotation:
+                continue
+            candidates: list[tuple[float, MediaFile]] = []
+            for media in media_files:
+                media_message = media_messages.get(media.id)
+                if media.id in used_media_ids or media_message is None or media.group_id != message.group_id:
+                    continue
+                previous = self._load_result(media.ocr_result_json)
+                if (previous.get("metadata") or {}).get("repayment_annotation"):
+                    continue
+                distance = abs((media_message.received_at - message.received_at).total_seconds())
+                if distance <= 10 * 60:
+                    candidates.append((distance, media))
+            if not candidates:
+                continue
+            distance, media = min(candidates, key=lambda item: (item[0], item[1].id))
+            used_media_ids.add(media.id)
+            plan.append(
+                {
+                    "message_id": message.id,
+                    "media_file_id": media.id,
+                    "distance_seconds": round(distance, 3),
+                    "group_id": message.group_id,
+                    "annotation": {**annotation, "amount": str(annotation["amount"])},
+                }
+            )
+            if len(plan) >= limit:
+                break
+        return plan
+
+    def reanalyze_repayment_annotations(
+        self,
+        *,
+        limit: int,
+        operator: str,
+        auth_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        plan = self.repayment_reanalysis_plan(limit=limit, auth_context=auth_context)
+        results: list[dict[str, Any]] = []
+        for item in plan:
+            summary = self.process_ocr(
+                item["media_file_id"],
+                trigger_type="repayment_annotation_backfill",
+                operator=operator,
+                force_reprocess=True,
+                stage_only=True,
+                preferred_context_message_id=item["message_id"],
+            )
+            results.append(
+                {
+                    **item,
+                    "event_id": summary.get("event_id"),
+                    "event_type": summary.get("event_type"),
+                    "error": summary.get("error"),
+                }
+            )
+        return {
+            "planned": len(plan),
+            "processed": sum(not item.get("error") for item in results),
+            "failed": sum(bool(item.get("error")) for item in results),
+            "items": results,
+            "stage_only": True,
+        }
 
     def decide_ocr_review(
         self,

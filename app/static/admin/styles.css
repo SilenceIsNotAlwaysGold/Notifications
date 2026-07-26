@@ -2116,6 +2116,11 @@ tr:hover td {
   min-height: 620px;
 }
 
+.attribution-tools, .import-summary, .import-actions { display: flex; align-items: center; gap: 12px; }
+.attribution-tools { justify-content: flex-end; }
+.import-summary { margin: 16px 0 10px; padding: 10px 12px; background: var(--panel-muted); border: 1px solid var(--line); font-size: 12px; }
+.import-actions { justify-content: flex-end; margin-top: 12px; }
+
 .attribution-queue-panel,
 .attribution-detail-panel {
   border: 1px solid var(--line);
