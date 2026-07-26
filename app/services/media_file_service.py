@@ -417,26 +417,29 @@ class MediaFileService:
             for row in self.db.scalars(select(GroupMessage).where(GroupMessage.id.in_(message_ids))).all()
         } if message_ids else {}
         media_messages = {row.id: messages_by_id.get(row.group_message_id) for row in media_files}
-        used_media_ids: set[int] = set()
-        plan: list[dict[str, Any]] = []
+        candidate_pairs: list[tuple[float, int, int, GroupMessage, MediaFile, dict[str, Any]]] = []
         for message in messages:
             annotation = parse_repayment_annotation(message.content)
             if not annotation:
                 continue
-            candidates: list[tuple[float, MediaFile]] = []
             for media in media_files:
                 media_message = media_messages.get(media.id)
-                if media.id in used_media_ids or media_message is None or media.group_id != message.group_id:
+                if media_message is None or media.group_id != message.group_id:
                     continue
                 previous = self._load_result(media.ocr_result_json)
                 if (previous.get("metadata") or {}).get("repayment_annotation"):
                     continue
                 distance = abs((media_message.received_at - message.received_at).total_seconds())
                 if distance <= 10 * 60:
-                    candidates.append((distance, media))
-            if not candidates:
+                    candidate_pairs.append((distance, message.id, media.id, message, media, annotation))
+
+        used_message_ids: set[int] = set()
+        used_media_ids: set[int] = set()
+        plan: list[dict[str, Any]] = []
+        for distance, message_id, media_id, message, media, annotation in sorted(candidate_pairs):
+            if message_id in used_message_ids or media_id in used_media_ids:
                 continue
-            distance, media = min(candidates, key=lambda item: (item[0], item[1].id))
+            used_message_ids.add(message_id)
             used_media_ids.add(media.id)
             plan.append(
                 {
@@ -449,7 +452,7 @@ class MediaFileService:
             )
             if len(plan) >= limit:
                 break
-        return plan
+        return sorted(plan, key=lambda item: (item["message_id"], item["media_file_id"]))
 
     def reanalyze_repayment_annotations(
         self,

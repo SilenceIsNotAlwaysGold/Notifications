@@ -265,6 +265,54 @@ def test_reanalysis_plan_pairs_text_before_image_and_uses_each_image_once(db_ses
     assert plan[0]["distance_seconds"] == 1.0
 
 
+def test_reanalysis_plan_prefers_near_caption_over_older_unrelated_caption(db_session):
+    base = now_tz()
+    stale = GroupMessage(
+        group_id="repayment_group",
+        sender_id="operator",
+        msg_type="text",
+        content="甲公司+张三+第1期还款+449.63元",
+        raw_payload_json="{}",
+        received_at=base,
+    )
+    image_message = GroupMessage(
+        group_id="repayment_group",
+        sender_id="operator",
+        msg_type="image",
+        raw_payload_json="{}",
+        received_at=base + timedelta(minutes=6),
+    )
+    matching = GroupMessage(
+        group_id="repayment_group",
+        sender_id="operator",
+        msg_type="text",
+        content="乙公司+李四+第2期还款+1650.62元",
+        raw_payload_json="{}",
+        received_at=base + timedelta(minutes=6, milliseconds=30),
+    )
+    db_session.add_all([stale, image_message, matching])
+    db_session.flush()
+    media = MediaFile(
+        group_message_id=image_message.id,
+        group_id="repayment_group",
+        media_type="image",
+        download_status="downloaded",
+        ocr_status="processed",
+        review_status="pending",
+        ocr_result_json='{"metadata": {}}',
+        source="mock",
+    )
+    db_session.add(media)
+    db_session.flush()
+
+    plan = MediaFileService(db_session).repayment_reanalysis_plan(limit=20)
+
+    assert len(plan) == 1
+    assert plan[0]["message_id"] == matching.id
+    assert plan[0]["annotation"]["amount"] == "1650.62"
+    assert plan[0]["distance_seconds"] == 0.03
+
+
 def test_reanalysis_execution_is_force_reprocessed_and_staged(db_session, monkeypatch):
     service = MediaFileService(db_session)
     monkeypatch.setattr(service, "repayment_reanalysis_plan", lambda limit, auth_context=None: [{"message_id": 1, "media_file_id": 2}])
