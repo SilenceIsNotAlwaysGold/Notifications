@@ -190,6 +190,8 @@ class MediaFileService:
             if stage_only:
                 result.setdefault("review_reasons", []).append("上下文重新分析结果必须人工确认")
                 result.setdefault("metadata", {})["stage_only_reanalysis"] = True
+                if preferred_context_message_id is not None:
+                    result["metadata"]["reanalysis_context_message_id"] = preferred_context_message_id
             media_file.extracted_text = extracted_text
             media_file.ocr_result_json = self._dump_result(result)
             media_file.review_result_json = None
@@ -427,7 +429,8 @@ class MediaFileService:
                 if media_message is None or media.group_id != message.group_id:
                     continue
                 previous = self._load_result(media.ocr_result_json)
-                if (previous.get("metadata") or {}).get("repayment_annotation"):
+                previous_metadata = previous.get("metadata") or {}
+                if previous_metadata.get("repayment_annotation") or previous_metadata.get("stage_only_reanalysis"):
                     continue
                 distance = abs((media_message.received_at - message.received_at).total_seconds())
                 if distance <= 10 * 60:

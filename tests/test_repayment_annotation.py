@@ -313,6 +313,42 @@ def test_reanalysis_plan_prefers_near_caption_over_older_unrelated_caption(db_se
     assert plan[0]["distance_seconds"] == 0.03
 
 
+def test_reanalysis_plan_skips_already_staged_material(db_session):
+    base = now_tz()
+    caption = GroupMessage(
+        group_id="repayment_group",
+        sender_id="operator",
+        msg_type="text",
+        content="甲公司+张三+第1期还款+500元",
+        raw_payload_json="{}",
+        received_at=base,
+    )
+    image_message = GroupMessage(
+        group_id="repayment_group",
+        sender_id="operator",
+        msg_type="image",
+        raw_payload_json="{}",
+        received_at=base + timedelta(seconds=1),
+    )
+    db_session.add_all([caption, image_message])
+    db_session.flush()
+    db_session.add(
+        MediaFile(
+            group_message_id=image_message.id,
+            group_id="repayment_group",
+            media_type="image",
+            download_status="downloaded",
+            ocr_status="processed",
+            review_status="pending",
+            ocr_result_json='{"metadata": {"stage_only_reanalysis": true}}',
+            source="mock",
+        )
+    )
+    db_session.flush()
+
+    assert MediaFileService(db_session).repayment_reanalysis_plan(limit=20) == []
+
+
 def test_reanalysis_execution_is_force_reprocessed_and_staged(db_session, monkeypatch):
     service = MediaFileService(db_session)
     monkeypatch.setattr(service, "repayment_reanalysis_plan", lambda limit, auth_context=None: [{"message_id": 1, "media_file_id": 2}])

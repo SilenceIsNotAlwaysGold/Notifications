@@ -309,6 +309,7 @@ def test_stage_only_reanalysis_never_creates_business_side_effects(db_session, m
     db_session.refresh(media)
     event = db_session.get(LegalEvent, result["event_id"])
     item = db_session.scalar(select(AttributionItem).where(AttributionItem.media_file_id == media.id, AttributionItem.status == "pending"))
+    stored_result = json.loads(media.ocr_result_json)
     assert media.case_id is None
     assert media.review_status == "pending"
     assert event.case_id is None
@@ -316,6 +317,8 @@ def test_stage_only_reanalysis_never_creates_business_side_effects(db_session, m
     assert event.business_status == "staged"
     assert item is not None
     assert item.suggested_case_id == legal_case.id
+    assert stored_result["metadata"]["stage_only_reanalysis"] is True
+    assert stored_result["metadata"]["reanalysis_context_message_id"] == caption.id
     assert db_session.scalar(select(BusinessOutbox)) is None
     assert db_session.scalar(select(PaymentRecord)) is None
     assert db_session.scalar(select(Reminder)) is None
