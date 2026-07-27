@@ -202,10 +202,10 @@ def test_archive_group_api_can_update_discovered_group(client, db_session):
 def test_matching_group_names_auto_onboard_with_policy_overrides(db_session):
     service = WeComArchiveGroupService(db_session)
     merchant = service.create_group(
-        WeComArchiveGroupCreate(room_id="wr_merchant", display_name="一号法务起诉沟通群", status="discovered")
+        WeComArchiveGroupCreate(room_id="wr_merchant", display_name="淳弘公司-致和法务对接起诉群", status="discovered")
     )
     debtor = service.create_group(
-        WeComArchiveGroupCreate(room_id="wr_debtor", display_name="张三还款对接群", status="discovered")
+        WeComArchiveGroupCreate(room_id="wr_debtor", display_name="张三法务起诉还款对接群", status="discovered")
     )
     blocked = service.create_group(
         WeComArchiveGroupCreate(

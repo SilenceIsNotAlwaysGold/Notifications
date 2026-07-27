@@ -163,12 +163,12 @@ class WeComArchiveGroupService:
             group.status = "enabled"
             return
         name = group.display_name or ""
-        if "法务起诉沟通群" in name:
-            group.status = "enabled"
-            group.group_type = "merchant"
-        elif "还款对接群" in name:
+        if "还款对接群" in name:
             group.status = "enabled"
             group.group_type = "debtor"
+        elif all(keyword in name for keyword in ("法务", "起诉", "群")):
+            group.status = "enabled"
+            group.group_type = "merchant"
 
     def feature_enabled(self, room_id: str, feature: str) -> bool:
         if feature not in GROUP_FEATURE_DEFAULTS:
