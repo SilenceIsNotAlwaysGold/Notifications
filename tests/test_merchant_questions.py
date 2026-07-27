@@ -173,6 +173,48 @@ def test_system_generated_internal_message_does_not_close_real_question(client, 
     assert question.status == "open"
 
 
+def test_conversation_closing_messages_do_not_create_questions(client, db_session):
+    _create_group(client)
+    now = datetime(2026, 7, 20, 10, 0, tzinfo=app_timezone())
+
+    for index, content in enumerate(("好的，谢谢", "收到，辛苦了", "已经解决了", "暂时不用了")):
+        _text(client, "merchant_group", f"merchant_{index}", content, now + timedelta(seconds=index))
+
+    assert db_session.scalar(select(MerchantQuestion)) is None
+
+
+def test_closing_message_closes_same_senders_pending_question_and_reminders(client, db_session):
+    _create_group(client)
+    asked_at = datetime(2026, 7, 20, 10, 0, tzinfo=app_timezone())
+    _text(client, "merchant_group", "merchant_001", "诉讼费今天需要交吗？", asked_at)
+    service = MerchantQuestionService(db_session)
+    service.scan_timeouts(asked_at + timedelta(minutes=6))
+    question = db_session.scalar(select(MerchantQuestion))
+    reminder = db_session.scalar(select(Reminder))
+    assert question.status == "timed_out"
+    assert reminder.status == "pending"
+    db_session.commit()
+
+    _text(client, "merchant_group", "merchant_001", "不用了，已经解决，谢谢", asked_at + timedelta(minutes=7))
+    db_session.expire_all()
+
+    assert db_session.get(MerchantQuestion, question.id).status == "closed"
+    assert db_session.get(MerchantQuestion, question.id).close_reason == "商家确认对话结束，无需回复"
+    assert db_session.get(Reminder, reminder.id).status == "cancelled"
+    assert len(list(db_session.scalars(select(MerchantQuestion)).all())) == 1
+
+
+def test_action_request_is_not_misclassified_as_conversation_closing(client, db_session):
+    _create_group(client)
+    now = datetime(2026, 7, 20, 10, 0, tzinfo=app_timezone())
+
+    _text(client, "merchant_group", "merchant_001", "好的，麻烦再核实一下，谢谢", now)
+
+    question = db_session.scalar(select(MerchantQuestion))
+    assert question is not None
+    assert question.status == "open"
+
+
 def test_internal_reply_cancels_all_pending_timeout_stages(client, db_session, monkeypatch):
     monkeypatch.setenv("MERCHANT_QUESTION_ESCALATION_MINUTES", "30")
     get_settings.cache_clear()

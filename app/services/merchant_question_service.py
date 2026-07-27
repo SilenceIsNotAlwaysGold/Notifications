@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import datetime, time, timedelta
 
 from sqlalchemy import func, select
@@ -17,6 +18,17 @@ SYSTEM_MESSAGE_PREFIXES = (
     "【商家待回复】",
     "商家消息超过",
     "商家消息超时",
+)
+
+CONVERSATION_CLOSING_PATTERN = re.compile(
+    r"^(?:"
+    r"好(?:的|嘞)?|可以(?:的)?|行|没问题|嗯+|收到|已收到|知悉|明白|了解|"
+    r"ok|okay|谢谢(?:你)?|感谢|辛苦了|多谢|"
+    r"不用了|暂时不用了|不需要了|已解决|已经解决了?|"
+    r"处理好了?|已处理好了?|已经处理好了?|没事了|"
+    r"先这样|那就这样|后续再联系|回头再联系"
+    r")+$",
+    re.IGNORECASE,
 )
 
 
@@ -40,6 +52,9 @@ class MerchantQuestionService:
         internal_userids = set(self.group_service.internal_userids(group))
         if message.sender_id in internal_userids:
             closed = self._close_relevant_question(message)
+            return {"created": 0, "closed": closed}
+        if self._is_conversation_closing(message.content or ""):
+            closed = self._close_sender_question(message)
             return {"created": 0, "closed": closed}
 
         existing = self.db.scalar(
@@ -253,6 +268,26 @@ class MerchantQuestionService:
         self.db.flush()
         return 1
 
+    def _close_sender_question(self, message: GroupMessage) -> int:
+        question = self.db.scalar(
+            select(MerchantQuestion)
+            .where(MerchantQuestion.group_id == message.group_id)
+            .where(MerchantQuestion.sender_id == message.sender_id)
+            .where(MerchantQuestion.status.in_(["open", "timed_out", "escalated"]))
+            .where(MerchantQuestion.asked_at <= ensure_aware(message.received_at))
+            .order_by(MerchantQuestion.asked_at.desc(), MerchantQuestion.id.desc())
+        )
+        if not question:
+            return 0
+        question.status = "closed"
+        question.closed_by = message.sender_id
+        question.closed_at = ensure_aware(message.received_at)
+        question.close_reason = "商家确认对话结束，无需回复"
+        question.updated_at = now_tz()
+        self._cancel_pending_question_reminders(question, question.close_reason, message.sender_id)
+        self.db.flush()
+        return 1
+
     def _cancel_pending_question_reminders(self, question: MerchantQuestion, reason: str, operator: str) -> None:
         reminders = list(
             self.db.scalars(
@@ -268,6 +303,13 @@ class MerchantQuestionService:
     def _is_system_generated(content: str) -> bool:
         cleaned = content.strip()
         return any(cleaned.startswith(prefix) for prefix in SYSTEM_MESSAGE_PREFIXES)
+
+    @staticmethod
+    def _is_conversation_closing(content: str) -> bool:
+        body = content.rsplit("------", 1)[-1].strip()
+        body = re.sub(r"^(?:@\S+\s*)+", "", body)
+        normalized = re.sub(r"[\s,，。.!！?？~～、;；:：\"'“”‘’()（）]+", "", body)
+        return bool(normalized and CONVERSATION_CLOSING_PATTERN.fullmatch(normalized))
 
     @staticmethod
     def _stage_content(minutes: int, content: str, escalated: bool = False) -> str:
