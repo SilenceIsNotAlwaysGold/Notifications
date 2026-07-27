@@ -1991,6 +1991,17 @@ tr:hover td {
   font-size: 13px;
 }
 
+.summons-heading {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.summons-heading strong,
+.summons-heading .mono {
+  overflow-wrap: anywhere;
+}
+
 .required {
   color: var(--danger);
   font-size: 12px;

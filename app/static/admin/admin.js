@@ -1619,7 +1619,7 @@ function courtSummonsDetail(review) {
   const canRetry = review.workflow_status === "write_failed";
   return `
     <div class="review-detail-header">
-      <div>
+      <div class="summons-heading">
         <span class="eyebrow">${escapeHtml(review.group_name || "未命名群")}</span>
         <strong>${escapeHtml(review.original_filename || `传票 ${review.media_file_id}`)}</strong>
         <div class="muted mono">${escapeHtml(review.group_id)} · ${escapeHtml(review.msg_id || "无消息 ID")}</div>
