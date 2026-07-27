@@ -26,17 +26,20 @@ class BusinessApplicationService:
             raise ValueError("业务事件不存在")
         if event.business_status == "applied":
             return
-        if event.attribution_status != "confirmed" or not event.case_id:
+        case_independent_court = event.event_type == "court_notice" and event.attribution_status == "not_required"
+        if not case_independent_court and (event.attribution_status != "confirmed" or not event.case_id):
             raise ValueError("案件归属未确认")
         if event.business_status != "approved":
             raise ValueError("业务事件尚未批准")
-        legal_case = self.db.get(LegalCase, event.case_id)
+        legal_case = self.db.get(LegalCase, event.case_id) if event.case_id else None
         metadata = json.loads(event.metadata_json or "{}")
         media = self.db.get(MediaFile, metadata.get("media_file_id")) if metadata.get("media_file_id") else None
         if media:
             result = MediaFileService._load_result(media.review_result_json or media.ocr_result_json)
             MediaFileService(self.db)._apply_ocr_business(media, event, result, legal_case)
         else:
+            if not legal_case:
+                raise ValueError("开庭传票缺少原始截图")
             self._apply_text_event(event, legal_case)
         event.business_status = "applied"
         event.applied_at = now_tz()

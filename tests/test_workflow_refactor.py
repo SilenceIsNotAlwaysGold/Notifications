@@ -342,6 +342,161 @@ def test_outbox_process_is_idempotent(client, db_session):
     assert len(list(db_session.scalars(select(DocumentSyncLog).where(DocumentSyncLog.case_id == case_id)).all())) >= 1
 
 
+def test_court_notice_without_case_uploads_summons_and_writes_court_sheet(db_session, tmp_path):
+    image_path = tmp_path / "summons.jpg"
+    image_path.write_bytes(b"summons-image")
+    result = {
+        "event_type": "court_notice",
+        "document_type": "开庭传票",
+        "case_no": None,
+        "plaintiff": "测试公司",
+        "defendant": "张三",
+        "court_time": "2026-08-03T09:30:00+08:00",
+        "requires_review": False,
+        "metadata": {"structured_fields": {"court_name": "测试人民法院"}},
+    }
+    media = MediaFile(
+        group_id="court_group",
+        msg_id="court-msg-1",
+        media_type="image",
+        original_filename="summons.jpg",
+        file_ext=".jpg",
+        local_path=str(image_path),
+        download_status="downloaded",
+        ocr_status="processed",
+        review_status="not_required",
+        ocr_result_json=json.dumps(result, ensure_ascii=False),
+        source="test",
+    )
+    db_session.add(media)
+    db_session.flush()
+    event = LegalEvent(
+        event_type="court_notice",
+        event_time=now_tz(),
+        attribution_status="not_required",
+        business_status="approved",
+        metadata_json=json.dumps({"media_file_id": media.id}, ensure_ascii=False),
+    )
+    db_session.add(event)
+    db_session.flush()
+    media.review_event_id = event.id
+
+    BusinessApplicationService(db_session).apply_event(event.id)
+
+    logs = list(db_session.scalars(select(DocumentSyncLog).order_by(DocumentSyncLog.id)).all())
+    assert event.business_status == "applied"
+    assert media.business_applied_at is not None
+    assert [log.sync_type for log in logs] == ["legal_document_upload", "court_time"]
+    assert {log.status for log in logs} == {"applied"}
+    row = json.loads(logs[1].request_payload_json)["payload"]["row"]
+    assert row["被告"] == "张三"
+    assert row["开庭时间"] == "2026-08-03T09:30:00+08:00"
+    assert row["传票"].startswith("kdocs://")
+    assert db_session.scalar(select(Reminder)) is None
+
+
+def test_court_notice_ocr_without_case_is_auto_approved(db_session, tmp_path, monkeypatch):
+    image_path = tmp_path / "auto-court.jpg"
+    image_path.write_bytes(b"court-image")
+    message = GroupMessage(
+        group_id="court_group",
+        sender_id="operator",
+        msg_type="image",
+        raw_payload_json="{}",
+        received_at=now_tz(),
+    )
+    db_session.add(message)
+    db_session.flush()
+    media = MediaFile(
+        group_message_id=message.id,
+        group_id="court_group",
+        msg_id="court-msg-auto",
+        media_type="image",
+        original_filename="auto-court.jpg",
+        file_ext=".jpg",
+        local_path=str(image_path),
+        download_status="downloaded",
+        ocr_status="pending",
+        source="test",
+    )
+    db_session.add(media)
+    db_session.flush()
+    service = MediaFileService(db_session)
+    monkeypatch.setattr(
+        service.ocr_service,
+        "extract_from_file",
+        lambda *_args, **_kwargs: {
+            "success": True,
+            "raw_text": "测试人民法院传票，被告张三，2026年8月3日9:30开庭",
+            "event_type": "court_notice",
+            "document_type": "开庭传票",
+            "defendant": "张三",
+            "court_time": "2026-08-03T09:30:00+08:00",
+            "requires_review": False,
+            "metadata": {"structured_fields": {"court_name": "测试人民法院"}},
+        },
+    )
+
+    service.process_ocr(media.id)
+
+    event = db_session.get(LegalEvent, media.review_event_id)
+    assert media.review_status == "not_required"
+    assert event.case_id is None
+    assert event.attribution_status == "not_required"
+    assert event.business_status == "approved"
+    assert db_session.scalar(select(AttributionItem)) is None
+    assert db_session.scalar(select(BusinessOutbox).where(BusinessOutbox.aggregate_id == event.id)) is not None
+
+
+def test_corrected_court_notice_without_case_exits_attribution_queue(db_session, tmp_path):
+    image_path = tmp_path / "corrected-court.jpg"
+    image_path.write_bytes(b"court-image")
+    result = {
+        "event_type": "court_notice",
+        "document_type": "开庭传票",
+        "defendant": None,
+        "court_time": "2026-08-03T09:00:00+08:00",
+        "requires_review": True,
+        "metadata": {},
+    }
+    media = MediaFile(
+        group_id="court_group",
+        media_type="image",
+        local_path=str(image_path),
+        download_status="downloaded",
+        ocr_status="processed",
+        review_status="pending",
+        ocr_result_json=json.dumps(result, ensure_ascii=False),
+        source="test",
+    )
+    db_session.add(media)
+    db_session.flush()
+    event = LegalEvent(
+        event_type="court_notice",
+        attribution_status="pending",
+        business_status="staged",
+        metadata_json=json.dumps({"media_file_id": media.id}),
+    )
+    db_session.add(event)
+    db_session.flush()
+    media.review_event_id = event.id
+    item = AttributionService(db_session).ensure_media(media)
+
+    MediaFileService(db_session).decide_ocr_review(
+        media.id,
+        "corrected",
+        "reviewer",
+        corrections={"defendant": "张三"},
+    )
+
+    assert media.review_status == "corrected"
+    assert event.case_id is None
+    assert event.attribution_status == "not_required"
+    assert event.business_status == "approved"
+    assert item.status == "superseded"
+    assert db_session.scalar(select(BusinessOutbox).where(BusinessOutbox.aggregate_id == event.id)) is not None
+
+
 def test_approved_text_repayment_plan_creates_installment_schedule(client, db_session):
     case_id = _case(client, case_no="（2026）黔0281民初9004号")
     event = LegalEvent(

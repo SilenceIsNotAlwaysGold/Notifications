@@ -87,6 +87,28 @@ def test_llm_low_confidence_marks_result_for_review():
     assert "结构化抽取置信度低" in result["review_reasons"]
 
 
+def test_court_notice_without_defendant_requires_review():
+    adapter = StubLLMAdapter(
+        {
+            "event_type": "court_notice",
+            "document_type": "开庭传票",
+            "case_no": None,
+            "plaintiff": None,
+            "defendant": None,
+            "court_time": "2026-08-03T09:00:00+08:00",
+            "confidence": 0.93,
+            "requires_review": False,
+            "review_reasons": [],
+        }
+    )
+
+    result = LegalTextExtractionService(llm_settings(), adapter).extract("开庭传票，8月3日上午9时开庭")
+
+    assert result["event_type"] == "court_notice"
+    assert result["requires_review"] is True
+    assert "缺少被告" in result["review_reasons"]
+
+
 def test_llm_uses_group_context_to_fill_case_number_missing_from_ocr():
     adapter = StubLLMAdapter(
         {

@@ -217,11 +217,12 @@ class MediaFileService:
                 defendant=result.get("defendant"),
             )
             matched_case = None if stage_only else suggested_case
+            is_court_notice = result.get("event_type") == "court_notice"
             if matched_case:
                 media_file.case_id = matched_case.id
                 media_file.tenant_id = matched_case.tenant_id or media_file.tenant_id
                 self._backfill_group_message_events(media_file, matched_case.id, media_file.tenant_id)
-            elif result.get("case_no"):
+            elif result.get("case_no") and not is_court_notice:
                 CaseCandidateService(self.db).detect(
                     case_no=result.get("case_no"),
                     group_id=media_file.group_id,
@@ -236,6 +237,13 @@ class MediaFileService:
                 media_file.review_event_id = event.id
                 if matched_case:
                     event.attribution_status = "confirmed"
+                elif is_court_notice:
+                    event.attribution_status = "not_required"
+                    AttributionService(self.db).mark_media_not_required(
+                        media_file.id,
+                        "开庭传票可独立写入开庭时间表，无需案件归属",
+                        "system:court-notice",
+                    )
                 else:
                     event.attribution_status = "pending"
                     AttributionService(self.db).ensure_media(
@@ -250,7 +258,7 @@ class MediaFileService:
                 else:
                     media_file.review_status = "not_required"
                     media_file.review_result_json = media_file.ocr_result_json
-                    if matched_case and event.event_type != "unknown":
+                    if (matched_case or is_court_notice) and event.event_type != "unknown":
                         event.business_status = "approved"
                         event.approved_by = "system:auto-confidence"
                         event.approved_at = now_tz()
@@ -548,6 +556,11 @@ class MediaFileService:
         if decision == "corrected":
             for key, value in (corrections or {}).items():
                 result[key] = value
+        if result.get("event_type") == "court_notice":
+            if not result.get("court_time"):
+                raise ValueError("开庭传票缺少开庭时间，请修正后再确认")
+            if not (result.get("defendant") or "").strip():
+                raise ValueError("开庭传票缺少被告姓名，请修正后再确认")
         result["requires_review"] = False
         result.setdefault("metadata", {})["review_decision"] = decision
         result["metadata"]["reviewed_by"] = operator
@@ -564,7 +577,8 @@ class MediaFileService:
             media_file.case_id = matched_case.id
             media_file.tenant_id = matched_case.tenant_id or media_file.tenant_id
             self._backfill_group_message_events(media_file, matched_case.id, media_file.tenant_id)
-        elif result.get("case_no"):
+        is_court_notice = result.get("event_type") == "court_notice"
+        if not matched_case and result.get("case_no") and not is_court_notice:
             CaseCandidateService(self.db).detect(
                 case_no=result.get("case_no"),
                 group_id=media_file.group_id,
@@ -581,11 +595,17 @@ class MediaFileService:
         media_file.reviewed_at = now_tz()
         media_file.review_note = note
         media_file.review_result_json = self._dump_result(result)
-        if matched_case:
-            event.attribution_status = "confirmed"
+        if matched_case or is_court_notice:
+            event.attribution_status = "confirmed" if matched_case else "not_required"
             event.business_status = "approved"
             event.approved_by = operator
             event.approved_at = now_tz()
+            if is_court_notice:
+                AttributionService(self.db).mark_media_not_required(
+                    media_file.id,
+                    "开庭传票可独立写入开庭时间表，无需案件归属",
+                    operator,
+                )
             OutboxService(self.db).enqueue_event(event.id, event.tenant_id)
         else:
             event.attribution_status = "pending"
@@ -662,10 +682,16 @@ class MediaFileService:
         if event is None:
             event = LegalEvent(group_message_id=media_file.group_message_id, event_type="unknown", metadata_json="{}")
             self.db.add(event)
+        event_time = result.get("court_time") or result.get("event_time")
+        if isinstance(event_time, str):
+            try:
+                event_time = datetime.fromisoformat(event_time)
+            except ValueError:
+                event_time = None
         event.case_id = media_file.case_id
         event.tenant_id = media_file.tenant_id
         event.event_type = result.get("event_type") or "unknown"
-        event.event_time = result.get("court_time") or result.get("event_time") or event.event_time or now_tz()
+        event.event_time = event_time or event.event_time or now_tz()
         event.amount = result.get("amount")
         confidence = result.get("extraction_confidence") or result.get("confidence")
         event.confidence = Decimal(str(confidence)) if confidence is not None else None
@@ -699,10 +725,14 @@ class MediaFileService:
     ) -> dict[str, int]:
         if media_file.business_applied_at is not None or event.business_status == "applied":
             return {"created_reminders": 0, "cancelled_reminders": 0}
-        if not matched_case or event.attribution_status != "confirmed" or event.business_status != "approved":
+        is_case_independent_court = event.event_type == "court_notice" and event.attribution_status == "not_required"
+        if not is_case_independent_court and (not matched_case or event.attribution_status != "confirmed"):
             raise ValueError("案件归属和业务审批完成后才能执行外部业务")
+        if event.business_status != "approved":
+            raise ValueError("业务事件尚未批准")
         if WeComArchiveGroupService(self.db).feature_enabled(media_file.group_id, "document_sync"):
-            self.document_sync.sync_archive_event(event, media_file=media_file)
+            if event.event_type != "court_notice":
+                self.document_sync.sync_archive_event(event, media_file=media_file)
             self._sync_kdocs_business(event, media_file, result, matched_case)
         created_reminders = 0
         cancelled_reminders = 0
@@ -848,7 +878,11 @@ class MediaFileService:
             return
 
         if event_type == "court_notice":
-            self.document_sync.sync_court_time(event, self._court_time_row(result, legal_case, media_file))
+            upload_url = self._upload_court_notice(media_file, result, legal_case)
+            self.document_sync.sync_court_time(
+                event,
+                self._court_time_row(result, legal_case, media_file, upload_url=upload_url),
+            )
             return
 
         if event_type in {"payment_notice", "payment_screenshot"}:
@@ -896,7 +930,13 @@ class MediaFileService:
             "消息ID": media_file.msg_id,
         }
 
-    def _court_time_row(self, result: dict[str, Any], legal_case: LegalCase | None, media_file: MediaFile) -> dict[str, Any]:
+    def _court_time_row(
+        self,
+        result: dict[str, Any],
+        legal_case: LegalCase | None,
+        media_file: MediaFile,
+        upload_url: str | None = None,
+    ) -> dict[str, Any]:
         court_time = result.get("court_time") or result.get("event_time")
         structured = (result.get("metadata") or {}).get("structured_fields") or {}
         return {
@@ -907,12 +947,36 @@ class MediaFileService:
             "开庭时间": court_time.isoformat() if hasattr(court_time, "isoformat") else court_time,
             "开庭方式": structured.get("hearing_mode") or "确认线上还是现场开庭",
             "金额": str(legal_case.total_amount) if legal_case else None,
-            "文件链接": media_file.public_url or media_file.local_path,
+            "传票": upload_url or media_file.public_url or media_file.local_path,
             "承办法官电话": structured.get("judge_phone"),
             "识别摘要": (result.get("raw_text") or result.get("extracted_text") or "")[:500],
             "需人工复核": bool(result.get("requires_review")),
             "消息ID": media_file.msg_id,
         }
+
+    def _upload_court_notice(
+        self,
+        media_file: MediaFile,
+        result: dict[str, Any],
+        legal_case: LegalCase | None,
+    ) -> str:
+        if not media_file.local_path:
+            raise ValueError("开庭传票原图不存在，无法上传")
+        target_filename = self._target_legal_document_filename(media_file, result)
+        upload_log = self.document_sync.sync_legal_document_upload(
+            media_file,
+            target_filename,
+            self._document_metadata(result, legal_case, media_file),
+        )
+        if upload_log.status == "failed":
+            upload_log = self.document_sync.retry_failed_sync(upload_log.id, operator="system:court-notice")
+        if upload_log.status != "applied":
+            raise ValueError(f"开庭传票上传失败：{upload_log.error_message or upload_log.status}")
+        response = json.loads(upload_log.response_payload_json or "{}")
+        upload_url = response.get("url") or response.get("file_url")
+        if not upload_url:
+            raise ValueError("开庭传票已上传但未取得可访问链接")
+        return str(upload_url)
 
     def _payment_registration_row(self, result: dict[str, Any], legal_case: LegalCase | None, media_file: MediaFile) -> dict[str, Any]:
         event_time = result.get("event_time") or result.get("court_time") or now_tz()

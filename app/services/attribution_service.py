@@ -270,6 +270,22 @@ class AttributionService:
         self.db.flush()
         return len(items)
 
+    def mark_media_not_required(self, media_file_id: int, reason: str, operator: str) -> int:
+        items = list(
+            self.db.scalars(
+                select(AttributionItem)
+                .where(AttributionItem.media_file_id == media_file_id)
+                .where(AttributionItem.status == "pending")
+            ).all()
+        )
+        for item in items:
+            item.status = "superseded"
+            item.reason = self._append_reason(item.reason, reason)
+            item.decided_by = operator
+            item.decided_at = now_tz()
+        self.db.flush()
+        return len(items)
+
     def _assign(self, item: AttributionItem, legal_case: LegalCase) -> None:
         if item.media_file_id:
             media = self.db.get(MediaFile, item.media_file_id)

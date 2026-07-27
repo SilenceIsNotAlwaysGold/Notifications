@@ -408,8 +408,11 @@ class LegalTextExtractionService:
                 missing.append("缺少原告")
             if not defendant:
                 missing.append("缺少被告")
-        elif event_type == "court_notice" and not court_time:
-            missing.append("缺少开庭时间")
+        elif event_type == "court_notice":
+            if not court_time:
+                missing.append("缺少开庭时间")
+            if not defendant:
+                missing.append("缺少被告")
         elif event_type in {"payment_notice", "payment_screenshot"} and amount is None:
             missing.append("缺少金额")
         return missing
