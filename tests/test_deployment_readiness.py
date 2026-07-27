@@ -40,6 +40,14 @@ def test_admin_queries_cases_within_api_page_limit():
     assert '/api/v1/legal/cases?limit=100' in content
 
 
+def test_unmapped_group_test_send_explains_required_mapping():
+    content = (ROOT / "app/static/admin/admin.js").read_text(encoding="utf-8")
+
+    assert 'data-send-mapped="${row.wecomapi_room_id ? "true" : "false"}"' in content
+    assert "请先选择平台群 ID，并点击保存" in content
+    assert 'row.wecomapi_room_id ? "" : "disabled"' not in content
+
+
 def test_compose_contains_only_current_runtime_services():
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     for service in ("api:", "ocr-sidecar:", "archive-sidecar:", "migrate:", "backup:"):

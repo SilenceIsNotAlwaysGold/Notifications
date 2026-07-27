@@ -1276,7 +1276,7 @@ async function renderArchiveGroups() {
             { label: "最后发现", key: "last_seen_at" },
             {
               label: "操作",
-              render: (row) => `<div class="mapping-row-actions"><button class="small" data-save-archive-group="${escapeHtml(row.room_id)}">保存</button><button class="small ghost" data-test-send-group="${escapeHtml(row.room_id)}" ${row.wecomapi_room_id ? "" : "disabled"}>测试发送</button></div>`,
+              render: (row) => `<div class="mapping-row-actions"><button class="small" data-save-archive-group="${escapeHtml(row.room_id)}">保存</button><button class="small ghost" data-test-send-group="${escapeHtml(row.room_id)}" data-send-mapped="${row.wecomapi_room_id ? "true" : "false"}" title="${row.wecomapi_room_id ? "发送通道测试消息" : "需要先配置平台群 ID"}">测试发送</button></div>`,
             },
           ],
           groups,
@@ -1365,6 +1365,12 @@ async function renderArchiveGroups() {
 
   document.querySelectorAll("[data-test-send-group]").forEach((button) => {
     button.addEventListener("click", async () => {
+      if (button.dataset.sendMapped !== "true") {
+        const mappingInput = button.closest("tr").querySelector('[data-field="wecomapi_room_id"]');
+        showAlert("请先选择平台群 ID，并点击保存", "error");
+        mappingInput?.focus();
+        return;
+      }
       if (!window.confirm("确认向该企业微信群发送一条通道测试消息？")) return;
       button.disabled = true;
       try {
@@ -1373,6 +1379,8 @@ async function renderArchiveGroups() {
           body: JSON.stringify({ room_id: button.dataset.testSendGroup }),
         });
         showAlert(`测试消息发送成功，通道：${result.mode}`);
+      } catch (error) {
+        showAlert(error.message, "error");
       } finally {
         button.disabled = false;
       }
