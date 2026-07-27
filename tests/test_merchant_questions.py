@@ -187,6 +187,16 @@ def test_conversation_closing_messages_do_not_create_questions(client, db_sessio
     assert db_session.scalar(select(MerchantQuestion)) is None
 
 
+def test_explicit_payment_confirmation_does_not_create_question(client, db_session):
+    _create_group(client)
+    now = datetime(2026, 7, 20, 10, 0, tzinfo=app_timezone())
+
+    for index, content in enumerate(("已缴费", "已代缴", "已收款", "转账成功")):
+        _text(client, "merchant_group", f"merchant_{index}", content, now + timedelta(seconds=index))
+
+    assert db_session.scalar(select(MerchantQuestion)) is None
+
+
 def test_closing_message_closes_same_senders_pending_question_and_reminders(client, db_session):
     _create_group(client)
     asked_at = datetime(2026, 7, 20, 10, 0, tzinfo=app_timezone())

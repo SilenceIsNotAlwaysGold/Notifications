@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
+import json
+import re
 from typing import Any
 
 from sqlalchemy import func, select
@@ -10,8 +12,10 @@ from sqlalchemy.orm import Session
 
 from app.models.legal_case import LegalCase
 from app.models.legal_event import LegalEvent
+from app.models.contact import Contact
 from app.models.payment_record import PaymentRecord
 from app.models.reminder import Reminder
+from app.models.wecom_archive_group import WeComArchiveGroup
 from app.utils.datetime_utils import now_tz
 
 
@@ -26,6 +30,7 @@ class PaymentTrackingService:
         *,
         case_ids: list[int] | None = None,
         status: str | None = None,
+        query_text: str = "",
         offset: int = 0,
         limit: int = 100,
         today: date | None = None,
@@ -35,7 +40,7 @@ class PaymentTrackingService:
             .join(LegalCase, LegalCase.id == LegalEvent.case_id)
             .where(LegalEvent.event_type == "payment_notice")
             .where(LegalEvent.attribution_status == "confirmed")
-            .where(LegalEvent.business_status == "applied")
+            .where(LegalEvent.business_status.in_(("applied", "legacy_applied")))
         )
         if case_ids is not None:
             if not case_ids:
@@ -48,24 +53,34 @@ class PaymentTrackingService:
         rows = self._build_rows(pairs, today=today or now_tz().date())
         if status:
             rows = [row for row in rows if row["payment_status"] == status]
+        normalized_query = query_text.strip().casefold()
+        if normalized_query:
+            rows = [
+                row
+                for row in rows
+                if any(
+                    normalized_query in str(row.get(field) or "").casefold()
+                    for field in ("plaintiff", "defendant", "case_no", "payment_type", "payment_info")
+                )
+            ]
         return len(rows), rows[offset : offset + limit]
 
     def _build_rows(self, pairs: list[tuple[LegalEvent, LegalCase]], *, today: date) -> list[dict[str, Any]]:
         event_ids = [event.id for event, _case in pairs]
-        case_ids = list({legal_case.id for _event, legal_case in pairs})
         reminders = list(
             self.db.scalars(
                 select(Reminder)
                 .where(Reminder.source_event_id.in_(event_ids))
-                .where(Reminder.reminder_type == "payment_tracking")
+                .where(Reminder.reminder_type.in_(("payment_tracking", "payment_confirmation")))
                 .order_by(Reminder.remind_at.asc(), Reminder.id.asc())
             ).all()
         )
         payments = list(
             self.db.scalars(
                 select(PaymentRecord)
-                .where(PaymentRecord.case_id.in_(case_ids))
+                .where(PaymentRecord.applies_to_event_id.in_(event_ids))
                 .where(PaymentRecord.status == "approved")
+                .where(PaymentRecord.record_type.in_(("fee_payment", "fee_reversal")))
                 .order_by(PaymentRecord.created_at.desc(), PaymentRecord.id.desc())
             ).all()
         )
@@ -73,14 +88,29 @@ class PaymentTrackingService:
         for reminder in reminders:
             if reminder.source_event_id is not None:
                 reminders_by_event[reminder.source_event_id].append(reminder)
-        payments_by_case: dict[int, list[PaymentRecord]] = defaultdict(list)
+        payments_by_event: dict[int, list[PaymentRecord]] = defaultdict(list)
         for payment in payments:
-            payments_by_case[payment.case_id].append(payment)
+            if payment.applies_to_event_id is not None:
+                payments_by_event[payment.applies_to_event_id].append(payment)
 
         return [
-            self._row(event, legal_case, reminders_by_event[event.id], payments_by_case[legal_case.id], today)
+            self._row(event, legal_case, reminders_by_event[event.id], payments_by_event[event.id], today)
             for event, legal_case in pairs
         ]
+
+    def get_row(self, event_id: int, *, today: date | None = None) -> dict[str, Any] | None:
+        pair = self.db.execute(
+            select(LegalEvent, LegalCase)
+            .join(LegalCase, LegalCase.id == LegalEvent.case_id)
+            .where(LegalEvent.id == event_id)
+            .where(LegalEvent.event_type == "payment_notice")
+            .where(LegalEvent.attribution_status == "confirmed")
+            .where(LegalEvent.business_status.in_(("applied", "legacy_applied")))
+        ).one_or_none()
+        if pair is None:
+            return None
+        rows = self._build_rows([pair], today=today or now_tz().date())
+        return rows[0] if rows else None
 
     @staticmethod
     def _row(
@@ -91,15 +121,20 @@ class PaymentTrackingService:
         today: date,
     ) -> dict[str, Any]:
         effective_paid = sum((Decimal(str(item.amount)) for item in payments), Decimal("0"))
+        effective_paid = max(Decimal("0.00"), effective_paid.quantize(Decimal("0.01")))
         required = Decimal(str(event.amount)) if event.amount is not None else None
-        deadline = max((item.remind_at.date() for item in reminders), default=None)
+        metadata = PaymentTrackingService._metadata(event)
+        structured = metadata.get("structured_fields") if isinstance(metadata.get("structured_fields"), dict) else {}
+        notice_date = event.event_time.date() if event.event_time else event.created_at.date()
+        deadline = PaymentTrackingService._deadline(structured, notice_date, reminders)
+        payment_type = PaymentTrackingService._payment_type(structured, event.extracted_text)
         payment_status = PaymentTrackingService._payment_status(required, effective_paid, deadline, today)
         sent = [item for item in reminders if item.status == "sent"]
         failed = [item for item in reminders if item.status == "failed"]
         pending = [item for item in reminders if item.status == "pending"]
         if sent:
-            latest = max((item.sent_at or item.remind_at for item in sent)).date().isoformat()
-            tracking = f"{latest} 已催促 {len(sent)} 次"
+            latest = max((item.sent_at or item.remind_at for item in sent)).date()
+            tracking = f"{latest.year}年{latest.month}月{latest.day}日已催促{len(sent)}次"
         elif failed:
             tracking = f"催促失败 {len(failed)} 次"
         elif pending:
@@ -114,14 +149,25 @@ class PaymentTrackingService:
             days = (deadline - today).days
             remaining = f"剩余 {days} 天" if days >= 0 else f"逾期 {abs(days)} 天"
         screenshot = next((item for item in payments if item.source_media_file_id), None)
+        notice_media_id = metadata.get("media_file_id")
+        receipt_urls = [
+            f"/api/v1/legal/media-files/{item.source_media_file_id}/content"
+            for item in payments
+            if item.source_media_file_id is not None and item.amount > 0
+        ]
+        outstanding = max(Decimal("0.00"), required - effective_paid) if required is not None else None
         return {
             "event_id": event.id,
             "case_id": legal_case.id,
-            "notice_date": (event.event_time.date() if event.event_time else event.created_at.date()),
+            "notice_date": notice_date,
             "plaintiff": legal_case.plaintiff_name,
             "defendant": legal_case.debtor_name,
             "case_no": legal_case.case_no,
             "payment_info": str(required.quantize(Decimal("0.01"))) if required is not None else event.extracted_text,
+            "payment_type": payment_type,
+            "required_amount": required,
+            "paid_amount": effective_paid,
+            "outstanding_amount": outstanding,
             "payment_status": payment_status,
             "tracking_status": tracking,
             "payment_deadline": deadline,
@@ -130,7 +176,195 @@ class PaymentTrackingService:
             "screenshot_url": (
                 f"/api/v1/legal/media-files/{screenshot.source_media_file_id}/content" if screenshot else None
             ),
+            "notice_screenshot_url": (
+                f"/api/v1/legal/media-files/{notice_media_id}/content" if notice_media_id else None
+            ),
+            "receipt_urls": receipt_urls,
         }
+
+    def list_unassigned_receipts(
+        self,
+        *,
+        case_ids: list[int] | None = None,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> tuple[int, list[dict[str, Any]]]:
+        query = (
+            select(PaymentRecord, LegalCase)
+            .join(LegalCase, LegalCase.id == PaymentRecord.case_id)
+            .where(PaymentRecord.status == "approved")
+            .where(PaymentRecord.record_type == "fee_payment")
+            .where(PaymentRecord.applies_to_event_id.is_(None))
+        )
+        if case_ids is not None:
+            if not case_ids:
+                return 0, []
+            query = query.where(PaymentRecord.case_id.in_(case_ids))
+        pairs = list(self.db.execute(query.order_by(PaymentRecord.created_at.desc(), PaymentRecord.id.desc())).all())
+        rows = [
+            {
+                "id": payment.id,
+                "case_id": legal_case.id,
+                "source_event_id": payment.source_event_id,
+                "source_media_file_id": payment.source_media_file_id,
+                "amount": payment.amount,
+                "payment_date": payment.payment_date,
+                "payer_name": payment.payer_name,
+                "case_no": legal_case.case_no,
+                "plaintiff": legal_case.plaintiff_name,
+                "defendant": legal_case.debtor_name,
+                "screenshot_url": (
+                    f"/api/v1/legal/media-files/{payment.source_media_file_id}/content"
+                    if payment.source_media_file_id
+                    else None
+                ),
+            }
+            for payment, legal_case in pairs
+        ]
+        return len(rows), rows[offset : offset + limit]
+
+    def daily_summary(
+        self,
+        *,
+        summary_date: date,
+        case_ids: list[int] | None = None,
+    ) -> dict[str, Any]:
+        query = (
+            select(LegalEvent, LegalCase)
+            .join(LegalCase, LegalCase.id == LegalEvent.case_id)
+            .where(LegalEvent.event_type == "payment_notice")
+            .where(LegalEvent.attribution_status == "confirmed")
+            .where(LegalEvent.business_status.in_(("applied", "legacy_applied")))
+        )
+        if case_ids is not None:
+            if not case_ids:
+                return self._daily_summary_result(summary_date, [], [])
+            query = query.where(LegalEvent.case_id.in_(case_ids))
+        pairs = list(self.db.execute(query.order_by(LegalEvent.id.asc())).all())
+        if not pairs:
+            return self._daily_summary_result(summary_date, [], [])
+        rows = self._build_rows(pairs, today=summary_date)
+        events = {event.id: event for event, _case in pairs}
+        event_ids = list(events)
+        payment_records = list(
+            self.db.scalars(
+                select(PaymentRecord)
+                .where(PaymentRecord.applies_to_event_id.in_(event_ids))
+                .where(PaymentRecord.status == "approved")
+                .where(PaymentRecord.record_type == "fee_payment")
+            ).all()
+        )
+        confirmed_dates: dict[int, set[date]] = defaultdict(set)
+        for payment in payment_records:
+            confirmed_on = payment.payment_date or (payment.approved_at.date() if payment.approved_at else None)
+            if payment.applies_to_event_id is not None and confirmed_on is not None:
+                confirmed_dates[payment.applies_to_event_id].add(confirmed_on)
+        group_ids = {
+            event.group_message.group_id
+            for event, _case in pairs
+            if event.group_message is not None
+        }
+        group_names = {
+            group.room_id: group.display_name or group.room_id
+            for group in self.db.scalars(
+                select(WeComArchiveGroup).where(WeComArchiveGroup.room_id.in_(group_ids))
+            ).all()
+        } if group_ids else {}
+        sender_ids = {
+            event.group_message.sender_id
+            for event, _case in pairs
+            if event.group_message is not None and event.group_message.sender_id
+        }
+        sender_names: dict[str, str] = {}
+        if sender_ids:
+            contacts = self.db.scalars(
+                select(Contact).where(
+                    (Contact.archive_user_id.in_(sender_ids)) | (Contact.wecomapi_user_id.in_(sender_ids))
+                )
+            ).all()
+            for contact in contacts:
+                if contact.archive_user_id:
+                    sender_names[contact.archive_user_id] = contact.display_name
+                if contact.wecomapi_user_id:
+                    sender_names[contact.wecomapi_user_id] = contact.display_name
+        confirmed: list[str] = []
+        pending: list[str] = []
+        for row in rows:
+            event = events[row["event_id"]]
+            message = event.group_message
+            group_id = message.group_id if message else "未知群"
+            group_name = group_names.get(group_id, group_id)
+            sender_id = message.sender_id if message else None
+            sender = sender_names.get(sender_id, sender_id or "来源待确认")
+            party = "-".join(value for value in (row.get("plaintiff"), row.get("defendant")) if value)
+            fee = f"{row.get('payment_type') or '缴费'}{self._money_text(row.get('required_amount'))}"
+            prefix = f"{sender} - {group_name} - {party}{fee}"
+            if row["payment_status"] == "paid":
+                if summary_date not in confirmed_dates.get(row["event_id"], set()) and row["notice_date"] != summary_date:
+                    continue
+                confirmed.append(f"{prefix} - 已缴费")
+            else:
+                state = row.get("tracking_status") or row.get("remaining_payment_time") or "待跟进"
+                pending.append(f"{prefix} - {state}")
+        return self._daily_summary_result(summary_date, confirmed, pending)
+
+    @staticmethod
+    def _money_text(value: Any) -> str:
+        if value is None:
+            return ""
+        return f"{Decimal(str(value)).quantize(Decimal('0.01'))}元"
+
+    @staticmethod
+    def _daily_summary_result(summary_date: date, confirmed: list[str], pending: list[str]) -> dict[str, Any]:
+        weekdays = "一二三四五六日"
+        lines = [
+            f"【每日缴费信息汇总】{summary_date.year}年{summary_date.month}月{summary_date.day}日（周{weekdays[summary_date.weekday()]}）",
+            "",
+            "一、已确认收款/已缴费",
+            "",
+            *([f"{index}. {item}" for index, item in enumerate(confirmed, 1)] or ["暂无"]),
+            "",
+            "二、待确认/未支付的缴费",
+            "",
+            *([f"{index}. {item}" for index, item in enumerate(pending, 1)] or ["暂无"]),
+        ]
+        return {
+            "summary_date": summary_date,
+            "confirmed_count": len(confirmed),
+            "pending_count": len(pending),
+            "content": "\n".join(lines),
+        }
+
+    @staticmethod
+    def _metadata(event: LegalEvent) -> dict[str, Any]:
+        try:
+            value = json.loads(event.metadata_json or "{}")
+            return value if isinstance(value, dict) else {}
+        except (TypeError, ValueError):
+            return {}
+
+    @staticmethod
+    def _deadline(structured: dict[str, Any], notice_date: date, reminders: list[Reminder]) -> date | None:
+        raw_deadline = structured.get("payment_deadline")
+        if raw_deadline:
+            try:
+                return date.fromisoformat(str(raw_deadline)[:10])
+            except ValueError:
+                pass
+        try:
+            term_days = int(structured.get("payment_term_days"))
+        except (TypeError, ValueError):
+            term_days = 0
+        if term_days > 0:
+            return notice_date + timedelta(days=term_days)
+        return max((item.remind_at.date() for item in reminders), default=notice_date + timedelta(days=7))
+
+    @staticmethod
+    def _payment_type(structured: dict[str, Any], text: str | None) -> str:
+        if structured.get("payment_type"):
+            return str(structured["payment_type"])
+        match = re.search(r"(案件受理费|诉讼费|公告费|执行费|保全费|开庭费|鉴定费)", text or "")
+        return match.group(1) if match else "其他缴费"
 
     @staticmethod
     def _payment_status(

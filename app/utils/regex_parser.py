@@ -20,7 +20,7 @@ FULL_DATETIME_PATTERNS = [
 CN_TIME_PATTERN = re.compile(r"(?:(\d{4})年)?(\d{1,2})月(\d{1,2})日\s*(上午|下午)?\s*(\d{1,2})点")
 
 PAYMENT_NOTICE_KEYWORDS = ["需要缴费", "缴费通知", "缴费金额", "诉讼费", "公告费", "开庭费", "缴纳"]
-PAYMENT_DONE_KEYWORDS = ["已付款", "已支付", "支付成功", "转账成功", "已缴费", "付款截图"]
+PAYMENT_DONE_KEYWORDS = ["已付款", "已支付", "支付成功", "转账成功", "已缴费", "已代缴", "已收款", "付款截图"]
 COURT_KEYWORDS = ["传票", "开庭", "现场开庭"]
 JUDGMENT_KEYWORDS = ["判决书", "民事判决书", "调解书", "民事调解书", "裁定书", "民事裁定书"]
 DEFAULT_KEYWORDS = ["强制执行", "仲裁", "逾期"]

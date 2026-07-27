@@ -1,3 +1,5 @@
+from datetime import date
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -22,8 +24,12 @@ from app.schemas.workflow import (
     KDocsReconciliationListOut,
     KDocsReconciliationOut,
     PaymentCreate,
+    PaymentDailySummaryOut,
     PaymentListOut,
     PaymentOut,
+    PaymentReceiptAssignment,
+    PaymentReceiptListOut,
+    PaymentReceiptOut,
     PaymentTrackingListOut,
     PaymentTrackingOut,
     PaymentUpdate,
@@ -131,6 +137,7 @@ def list_payments(case_id: int, offset: int = Query(0, ge=0), limit: int = Query
 @router.get("/payment-trackings")
 def list_payment_trackings(
     status: str | None = Query(default=None, pattern="^(pending|partial|paid|overdue)$"),
+    query: str = Query(default="", max_length=100),
     offset: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=200),
     db: Session = Depends(get_db),
@@ -146,6 +153,7 @@ def list_payment_trackings(
     total, items = PaymentTrackingService(db).list_rows(
         case_ids=accessible_case_ids,
         status=status,
+        query_text=query,
         offset=offset,
         limit=limit,
     )
@@ -153,6 +161,77 @@ def list_payment_trackings(
         "缴费信息跟踪查询成功",
         PaymentTrackingListOut(total=total, items=[PaymentTrackingOut(**item) for item in items]),
     )
+
+
+@router.get("/payment-trackings/unassigned-receipts")
+def list_unassigned_payment_receipts(
+    offset: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=200),
+    db: Session = Depends(get_db),
+    operator_info: dict[str, object] = Depends(get_current_operator),
+):
+    from app.models.legal_case import LegalCase
+
+    accessible_case_ids = [
+        case_id
+        for case_id in db.scalars(select(LegalCase.id)).all()
+        if has_case_access(db, operator_info, case_id)
+    ]
+    total, items = PaymentTrackingService(db).list_unassigned_receipts(
+        case_ids=accessible_case_ids,
+        offset=offset,
+        limit=limit,
+    )
+    return ok(
+        "待关联缴费凭证查询成功",
+        PaymentReceiptListOut(total=total, items=[PaymentReceiptOut(**item) for item in items]),
+    )
+
+
+@router.get("/payment-trackings/daily-summary")
+def payment_daily_summary(
+    summary_date: date | None = Query(default=None, alias="date"),
+    db: Session = Depends(get_db),
+    operator_info: dict[str, object] = Depends(get_current_operator),
+):
+    from app.models.legal_case import LegalCase
+
+    accessible_case_ids = [
+        case_id
+        for case_id in db.scalars(select(LegalCase.id)).all()
+        if has_case_access(db, operator_info, case_id)
+    ]
+    result = PaymentTrackingService(db).daily_summary(
+        summary_date=summary_date or now_tz().date(),
+        case_ids=accessible_case_ids,
+    )
+    return ok("每日缴费信息汇总生成成功", PaymentDailySummaryOut(**result))
+
+
+@router.post("/payment-trackings/{event_id}/assign-receipt")
+def assign_payment_receipt(
+    event_id: int,
+    payload: PaymentReceiptAssignment,
+    db: Session = Depends(get_db),
+    operator_info: dict[str, object] = Depends(get_current_operator),
+):
+    event = db.get(LegalEvent, event_id)
+    record = db.get(PaymentRecord, payload.payment_id)
+    if not event or event.event_type != "payment_notice":
+        raise_fail("缴费通知不存在", code=1404, status_code=404)
+    if not record:
+        raise_fail("付款凭证不存在", code=1404, status_code=404)
+    if event.case_id is None or record.case_id != event.case_id:
+        raise_fail("付款凭证与缴费通知不属于同一案件", code=1400)
+    if not has_case_access(db, operator_info, event.case_id):
+        raise_fail("无权限访问该案件", code=403, status_code=403)
+    try:
+        result = PaymentService(db).assign_to_notice(record, event.id, str(operator_info["operator"]))
+        db.commit()
+    except ValueError as exc:
+        db.rollback()
+        raise_fail(str(exc), code=1400)
+    return ok("付款凭证已关联缴费通知", PaymentOut.model_validate(result))
 
 
 @router.post("/cases/{case_id}/payments")
@@ -165,6 +244,8 @@ def create_payment(case_id: int, payload: PaymentCreate, db: Session = Depends(g
     record, _created = PaymentService(db).create(
         legal_case,
         amount=payload.amount,
+        applies_to_event_id=payload.applies_to_event_id,
+        record_type="fee_payment" if payload.applies_to_event_id else "payment",
         payment_date=payload.payment_date,
         payer_name=payload.payer_name,
         status=payload.status,

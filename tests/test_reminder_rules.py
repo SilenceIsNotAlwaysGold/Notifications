@@ -163,6 +163,34 @@ def test_rule_change_rebuilds_pending_and_disable_cancels(db_session, client):
     assert db_session.get(Reminder, target.id).status == "cancelled"
 
 
+def test_payment_tracking_uses_d3_d5_and_actual_deadline(db_session):
+    legal_case = _case(db_session)
+    event = LegalEvent(
+        case_id=legal_case.id,
+        event_type="payment_notice",
+        event_time=datetime(2026, 7, 20, 8, 0, tzinfo=app_timezone()),
+        amount=Decimal("400.00"),
+        attribution_status="confirmed",
+        business_status="approved",
+    )
+    db_session.add(event)
+    db_session.flush()
+
+    reminders = ReminderService(db_session).create_payment_tracking(
+        legal_case.id,
+        date(2026, 7, 20),
+        source_event_id=event.id,
+        payment_amount=event.amount,
+        deadline_date=date(2026, 7, 26),
+    )
+
+    assert {item.remind_at.date() for item in reminders} == {
+        date(2026, 7, 23),
+        date(2026, 7, 25),
+        date(2026, 7, 26),
+    }
+
+
 def test_custom_reminder_can_be_edited_then_cancelled(client, db_session):
     created = client.post(
         "/api/v1/legal/reminders/custom",

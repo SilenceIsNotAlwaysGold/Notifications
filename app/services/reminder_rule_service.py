@@ -187,13 +187,22 @@ class ReminderRuleService:
         start_date: date,
         source_event: LegalEvent | None = None,
         payment_amount: Any = None,
+        deadline_date: date | None = None,
     ) -> list[Reminder]:
         if not WeComArchiveGroupService(self.db).feature_enabled(legal_case.group_id, "payment_tracking"):
             return []
         created: list[Reminder] = []
-        for rule in self.effective_rules(legal_case.tenant_id, "payment_tracking"):
+        rules = self.effective_rules(legal_case.tenant_id, "payment_tracking")
+        created_dates: set[date] = set()
+        for rule in rules:
             target_date = self._target_date(rule, start_date)
+            if deadline_date and target_date > deadline_date:
+                continue
             created.extend(self._create_for_rule(rule, legal_case, target_date, source_event, payment_amount))
+            created_dates.add(target_date)
+        if deadline_date and deadline_date not in created_dates and rules:
+            final_rule = max(rules, key=lambda item: item.offset_days)
+            created.extend(self._create_for_rule(final_rule, legal_case, deadline_date, source_event, payment_amount))
         return created
 
     def rebuild_pending_for_rule(self, rule: ReminderRule) -> int:

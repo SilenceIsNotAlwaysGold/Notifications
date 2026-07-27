@@ -87,6 +87,30 @@ def test_llm_low_confidence_marks_result_for_review():
     assert "结构化抽取置信度低" in result["review_reasons"]
 
 
+def test_payment_notice_extracts_fee_type_and_deadline_rules():
+    adapter = StubLLMAdapter(
+        {
+            "event_type": "payment_notice",
+            "amount": 400,
+            "confidence": 0.92,
+            "requires_review": False,
+            "review_reasons": [],
+        }
+    )
+
+    absolute = LegalTextExtractionService(llm_settings(), adapter).extract(
+        "案件受理费400元，请于2026年8月12日前缴纳"
+    )
+    relative = LegalTextExtractionService(llm_settings(), adapter).extract(
+        "公告费400元，请在收到通知后5天内缴费"
+    )
+
+    assert absolute["metadata"]["structured_fields"]["payment_type"] == "案件受理费"
+    assert absolute["metadata"]["structured_fields"]["payment_deadline"] == "2026-08-12"
+    assert relative["metadata"]["structured_fields"]["payment_type"] == "公告费"
+    assert relative["metadata"]["structured_fields"]["payment_term_days"] == 5
+
+
 def test_court_notice_without_defendant_requires_review():
     adapter = StubLLMAdapter(
         {

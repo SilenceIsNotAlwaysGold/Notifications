@@ -28,6 +28,10 @@ const state = {
   syncType: "",
   syncTarget: "",
   syncSortOrder: "desc",
+  paymentTrackingPage: 1,
+  paymentTrackingPageSize: 30,
+  paymentTrackingStatus: "",
+  paymentTrackingQuery: "",
   wecomPlatformGroups: [],
   selectedCaseId: null,
   attributionPage: 1,
@@ -1909,33 +1913,112 @@ async function openProtectedMedia(url) {
 }
 
 async function renderPaymentTrackings() {
-  const data = await api("/api/v1/legal/payment-trackings?limit=200");
+  const params = new URLSearchParams({
+    offset: String((state.paymentTrackingPage - 1) * state.paymentTrackingPageSize),
+    limit: String(state.paymentTrackingPageSize),
+  });
+  if (state.paymentTrackingStatus) params.set("status", state.paymentTrackingStatus);
+  if (state.paymentTrackingQuery) params.set("query", state.paymentTrackingQuery);
+  const [data, receiptData, dailySummary] = await Promise.all([
+    api(`/api/v1/legal/payment-trackings?${params.toString()}`),
+    api("/api/v1/legal/payment-trackings/unassigned-receipts?limit=200"),
+    api("/api/v1/legal/payment-trackings/daily-summary"),
+  ]);
   const items = data.items || [];
+  const unassignedReceipts = receiptData.items || [];
+  const totalPages = Math.max(1, Math.ceil((data.total || 0) / state.paymentTrackingPageSize));
+  if (state.paymentTrackingPage > totalPages) {
+    state.paymentTrackingPage = totalPages;
+    return renderPaymentTrackings();
+  }
   const statusText = { pending: "待支付", partial: "部分支付", paid: "已支付", overdue: "已逾期" };
+  const statusClass = { pending: "warn", partial: "warn", paid: "ok", overdue: "danger" };
+  const money = (value) => value === null || value === undefined ? fmt(null) : `${escapeHtml(Number(value).toFixed(2))} 元`;
+  const receiptOptions = (row) => {
+    const candidates = unassignedReceipts.filter((receipt) => receipt.case_id === row.case_id);
+    if (!candidates.length) return '<span class="muted">暂无待关联凭证</span>';
+    return `<div class="payment-receipt-assignment"><select aria-label="选择付款凭证" data-payment-receipt-select="${row.event_id}"><option value="">选择凭证</option>${candidates.map((receipt) => `<option value="${receipt.id}">${escapeHtml(`${receipt.amount} 元 · ${receipt.payment_date || "日期待确认"} · 凭证 #${receipt.id}`)}</option>`).join("")}</select><button type="button" class="small" data-payment-assign="${row.event_id}">关联</button></div>`;
+  };
+  const filters = `
+    <form id="payment-tracking-filter" class="payment-tracking-filter">
+      <label><span>支付状态</span><select name="status">
+        <option value="" ${state.paymentTrackingStatus ? "" : "selected"}>全部状态</option>
+        ${Object.entries(statusText).map(([value, label]) => `<option value="${value}" ${state.paymentTrackingStatus === value ? "selected" : ""}>${label}</option>`).join("")}
+      </select></label>
+      <label class="payment-tracking-search"><span>搜索</span><input name="query" value="${escapeHtml(state.paymentTrackingQuery)}" placeholder="原告、被告、案号、缴费类型" /></label>
+      <label><span>每页</span><select name="page_size">${[20, 30, 50, 100].map((size) => `<option value="${size}" ${state.paymentTrackingPageSize === size ? "selected" : ""}>${size} 条</option>`).join("")}</select></label>
+      <button type="submit">查询</button><button type="button" class="ghost" id="payment-tracking-reset">重置</button>
+    </form>`;
   $("#content").innerHTML = `
     <section class="payment-tracking-view">
       <header class="case-section-header">
-        <div><h2>缴费信息跟踪</h2><p>数据来自已确认的缴费通知、催促任务和付款凭证，剩余时间按截止日实时计算。</p></div>
+        <div><h2>缴费信息跟踪</h2><p>每条缴费通知独立核算，付款凭证只有确认关联后才会更新支付状态。</p></div>
         <span class="case-candidate-count">${data.total || 0}</span>
       </header>
-      ${panel("缴费信息表", table([
+      ${panel("今日缴费信息汇总", `<div class="payment-summary-meta"><span>已确认 ${escapeHtml(dailySummary.confirmed_count)} 项 · 待确认 ${escapeHtml(dailySummary.pending_count)} 项</span><button type="button" class="ghost small" id="copy-payment-summary">复制汇总</button></div><pre class="payment-daily-summary">${escapeHtml(dailySummary.content)}</pre>`)}
+      ${panel("缴费信息表", `${filters}${table([
         { label: "日期", key: "notice_date" },
         { label: "原告", key: "plaintiff" },
         { label: "被告", key: "defendant" },
         { label: "案号", render: (row) => `<button class="text-link" data-payment-case="${row.case_id}">${escapeHtml(row.case_no)}</button>` },
-        { label: "缴费信息", render: (row) => row.payment_info ? `${escapeHtml(row.payment_info)}${Number.isFinite(Number(row.payment_info)) ? " 元" : ""}` : fmt(null) },
-        { label: "支付情况", render: (row) => badge(statusText[row.payment_status] || row.payment_status) },
+        { label: "缴费信息", render: (row) => `<strong>${escapeHtml(row.payment_type || "其他缴费")}</strong><small class="payment-amount-detail">应缴 ${money(row.required_amount)}<br>已缴 ${money(row.paid_amount)}<br>未缴 ${money(row.outstanding_amount)}</small>` },
+        { label: "支付情况", render: (row) => `<span class="badge ${statusClass[row.payment_status] || ""}">${escapeHtml(statusText[row.payment_status] || row.payment_status)}</span>` },
         { label: "跟踪情况", key: "tracking_status" },
-        { label: "剩余缴费时间", key: "remaining_payment_time" },
-        { label: "缴费截图上传", render: (row) => row.screenshot_url ? `<button class="small ghost" data-payment-screenshot="${escapeHtml(row.screenshot_url)}">查看截图</button>` : '<span class="muted">待上传</span>' },
-      ], items, "payment-tracking-table"))}
+        { label: "截止时间", render: (row) => `${fmt(row.payment_deadline)}<small class="payment-amount-detail">${escapeHtml(row.remaining_payment_time)}</small>` },
+        { label: "通知截图", render: (row) => row.notice_screenshot_url ? `<button class="small ghost" data-payment-screenshot="${escapeHtml(row.notice_screenshot_url)}">查看通知</button>` : '<span class="muted">无</span>' },
+        { label: "付款凭证", render: (row) => row.receipt_urls?.length ? row.receipt_urls.map((url, index) => `<button class="small ghost" data-payment-screenshot="${escapeHtml(url)}">凭证 ${index + 1}</button>`).join(" ") : '<span class="muted">待上传</span>' },
+        { label: "凭证关联", render: receiptOptions },
+      ], items, "payment-tracking-table")}
+      <div class="kdocs-pagination"><span>共 ${escapeHtml(data.total || 0)} 条，第 ${state.paymentTrackingPage} / ${totalPages} 页 · 待关联凭证 ${escapeHtml(receiptData.total || 0)} 份</span><button type="button" class="ghost small" id="payment-tracking-prev" ${state.paymentTrackingPage <= 1 ? "disabled" : ""}>上一页</button><button type="button" class="ghost small" id="payment-tracking-next" ${state.paymentTrackingPage >= totalPages ? "disabled" : ""}>下一页</button></div>`)}
     </section>`;
+  $("#payment-tracking-filter").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    state.paymentTrackingStatus = String(form.get("status") || "");
+    state.paymentTrackingQuery = String(form.get("query") || "").trim();
+    state.paymentTrackingPageSize = Number(form.get("page_size") || 30);
+    state.paymentTrackingPage = 1;
+    await renderPaymentTrackings();
+  });
+  $("#copy-payment-summary").addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(dailySummary.content);
+      showAlert("今日缴费信息汇总已复制");
+    } catch {
+      showAlert("浏览器未允许复制，请手动选择汇总文字", "error");
+    }
+  });
+  $("#payment-tracking-reset").addEventListener("click", async () => {
+    state.paymentTrackingStatus = "";
+    state.paymentTrackingQuery = "";
+    state.paymentTrackingPage = 1;
+    await renderPaymentTrackings();
+  });
+  $("#payment-tracking-prev").addEventListener("click", async () => { state.paymentTrackingPage -= 1; await renderPaymentTrackings(); });
+  $("#payment-tracking-next").addEventListener("click", async () => { state.paymentTrackingPage += 1; await renderPaymentTrackings(); });
   document.querySelectorAll("[data-payment-case]").forEach((button) => button.addEventListener("click", () => {
     state.selectedCaseId = Number(button.dataset.paymentCase);
     setView("case-workspace");
   }));
   document.querySelectorAll("[data-payment-screenshot]").forEach((button) => button.addEventListener("click", () => {
     openProtectedMedia(button.dataset.paymentScreenshot).catch((error) => showAlert(error.message, "error"));
+  }));
+  document.querySelectorAll("[data-payment-assign]").forEach((button) => button.addEventListener("click", async () => {
+    const eventId = Number(button.dataset.paymentAssign);
+    const select = document.querySelector(`[data-payment-receipt-select="${eventId}"]`);
+    const paymentId = Number(select?.value || 0);
+    if (!paymentId) return showAlert("请先选择要关联的付款凭证", "error");
+    const receipt = unassignedReceipts.find((item) => item.id === paymentId);
+    if (!window.confirm(`确认将凭证 #${paymentId}（${receipt?.amount || "-"} 元）关联到这笔缴费通知？`)) return;
+    button.disabled = true;
+    try {
+      await api(`/api/v1/legal/payment-trackings/${eventId}/assign-receipt`, { method: "POST", body: JSON.stringify({ payment_id: paymentId }) });
+      showAlert("付款凭证已关联；金山写入状态可在“写入记录”中查看");
+      await renderPaymentTrackings();
+    } catch (error) {
+      showAlert(error.message, "error");
+      button.disabled = false;
+    }
   }));
 }
 

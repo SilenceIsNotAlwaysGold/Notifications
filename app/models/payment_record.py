@@ -16,6 +16,7 @@ class PaymentRecord(Base):
     tenant_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     case_id: Mapped[int] = mapped_column(ForeignKey("legal_cases.id"), index=True)
     source_event_id: Mapped[int | None] = mapped_column(ForeignKey("legal_events.id"), nullable=True, index=True)
+    applies_to_event_id: Mapped[int | None] = mapped_column(ForeignKey("legal_events.id"), nullable=True, index=True)
     source_media_file_id: Mapped[int | None] = mapped_column(ForeignKey("legal_media_files.id"), nullable=True, index=True)
     record_type: Mapped[str] = mapped_column(String(32), default="payment", index=True)
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 2))

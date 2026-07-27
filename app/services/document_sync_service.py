@@ -14,6 +14,7 @@ from app.models.document_sync_log import DocumentSyncLog
 from app.models.legal_case import LegalCase
 from app.models.legal_event import LegalEvent
 from app.models.media_file import MediaFile
+from app.models.payment_record import PaymentRecord
 from app.services.system_run_log_service import SystemRunLogService
 from app.utils.datetime_utils import now_tz
 
@@ -234,6 +235,61 @@ class DocumentSyncService:
             external_row_key=row.get("案号"),
             idempotency_key=f"kdocs:payment_registration:{event.id}",
         )
+
+    def sync_payment_receipt_allocation(
+        self,
+        notice: LegalEvent,
+        payment: "PaymentRecord",
+        tracking_row: dict[str, Any],
+    ) -> DocumentSyncLog:
+        notice_log = self.db.scalar(
+            select(DocumentSyncLog)
+            .where(DocumentSyncLog.sync_type == "payment_registration")
+            .where(DocumentSyncLog.idempotency_key.like(f"kdocs:payment_registration:{notice.id}:%"))
+            .where(DocumentSyncLog.outcome == "applied")
+            .order_by(DocumentSyncLog.id.desc())
+        )
+        receipt_links = tracking_row.get("receipt_urls") or []
+        row = {
+            "日期": tracking_row.get("notice_date"),
+            "原告": tracking_row.get("plaintiff"),
+            "被告": tracking_row.get("defendant"),
+            "案号": tracking_row.get("case_no"),
+            "缴费信息": self._payment_information(tracking_row),
+            "支付情况": {"paid": "已支付", "partial": "部分支付", "overdue": "已逾期"}.get(
+                tracking_row.get("payment_status"), "待支付"
+            ),
+            "跟踪情况": tracking_row.get("tracking_status"),
+            "剩余缴费时间": tracking_row.get("remaining_payment_time"),
+            "缴费截图上传": "；".join(receipt_links) or None,
+            "事件类型": "payment_screenshot",
+            "_target_row_index": notice_log.external_row_index if notice_log else None,
+        }
+        payload = {
+            "tenant_id": notice.tenant_id,
+            "space_id": self.settings.kdocs_space_id,
+            "sheet_id": self.settings.kdocs_payment_sheet_id,
+            "row": row,
+        }
+        return self._execute_once(
+            case_id=notice.case_id,
+            tenant_id=notice.tenant_id,
+            sync_type="payment_receipt_allocation",
+            operation="append_payment_registration_row",
+            initial_payload=payload,
+            callback=lambda: self.adapter.append_payment_registration_row(row, tenant_id=notice.tenant_id),
+            external_sheet_name=self.settings.kdocs_payment_sheet_id,
+            external_row_key=tracking_row.get("case_no"),
+            idempotency_key=f"kdocs:payment_receipt_allocation:{payment.id}:{notice.id}",
+        )
+
+    @staticmethod
+    def _payment_information(tracking_row: dict[str, Any]) -> str | None:
+        amount = tracking_row.get("required_amount")
+        payment_type = tracking_row.get("payment_type")
+        if amount is None:
+            return tracking_row.get("payment_info")
+        return f"{payment_type or '其他缴费'} {Decimal(str(amount)).quantize(Decimal('0.01'))}元"
 
     def retry_failed_sync(self, sync_log_id: int, operator: str | None = None) -> DocumentSyncLog:
         run_service = SystemRunLogService(self.db)

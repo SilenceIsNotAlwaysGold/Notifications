@@ -2023,6 +2023,80 @@ tr:hover td {
   padding: 0 0 16px;
 }
 
+.payment-tracking-filter {
+  display: grid;
+  grid-template-columns: 170px minmax(260px, 1fr) 130px auto auto;
+  gap: 10px;
+  align-items: end;
+  padding-bottom: 16px;
+}
+
+.payment-tracking-view {
+  display: grid;
+  gap: 14px;
+}
+
+.payment-summary-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.payment-daily-summary {
+  max-height: 320px;
+  margin: 0;
+  padding: 14px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-muted);
+  color: var(--text);
+  font: 13px/1.75 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+}
+
+.payment-tracking-filter label > span {
+  display: block;
+  margin-bottom: 6px;
+  color: #344054;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.payment-tracking-table {
+  min-width: 1500px;
+}
+
+.payment-tracking-table th:nth-child(5),
+.payment-tracking-table td:nth-child(5) {
+  min-width: 155px;
+}
+
+.payment-amount-detail {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.55;
+}
+
+.payment-receipt-assignment {
+  display: grid;
+  grid-template-columns: minmax(170px, 1fr) auto;
+  gap: 6px;
+  min-width: 250px;
+}
+
+.payment-receipt-assignment select {
+  min-width: 0;
+  padding: 7px 9px;
+}
+
 .sync-filter-bar label {
   display: grid;
   gap: 6px;

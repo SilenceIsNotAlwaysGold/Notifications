@@ -87,6 +87,7 @@ class AttributionBatchDecision(BaseModel):
 
 class PaymentCreate(BaseModel):
     amount: Decimal = Field(gt=0)
+    applies_to_event_id: int | None = Field(default=None, ge=1)
     payment_date: date | None = None
     payer_name: str | None = Field(default=None, max_length=255)
     note: str | None = Field(default=None, max_length=1000)
@@ -109,6 +110,7 @@ class PaymentOut(BaseModel):
     tenant_id: str | None
     case_id: int
     source_event_id: int | None
+    applies_to_event_id: int | None
     source_media_file_id: int | None
     record_type: str
     amount: Decimal
@@ -140,17 +142,53 @@ class PaymentTrackingOut(BaseModel):
     defendant: str
     case_no: str
     payment_info: str | None
+    payment_type: str
+    required_amount: Decimal | None
+    paid_amount: Decimal
+    outstanding_amount: Decimal | None
     payment_status: str
     tracking_status: str
     payment_deadline: date | None
     remaining_payment_time: str
     screenshot_media_file_id: int | None
     screenshot_url: str | None
+    notice_screenshot_url: str | None
+    receipt_urls: list[str]
+
+
+class PaymentReceiptOut(BaseModel):
+    id: int
+    case_id: int
+    source_event_id: int | None
+    source_media_file_id: int | None
+    amount: Decimal
+    payment_date: date | None
+    payer_name: str | None
+    case_no: str
+    plaintiff: str | None
+    defendant: str
+    screenshot_url: str | None
+
+
+class PaymentReceiptListOut(BaseModel):
+    total: int
+    items: list[PaymentReceiptOut]
+
+
+class PaymentReceiptAssignment(BaseModel):
+    payment_id: int = Field(ge=1)
 
 
 class PaymentTrackingListOut(BaseModel):
     total: int
     items: list[PaymentTrackingOut]
+
+
+class PaymentDailySummaryOut(BaseModel):
+    summary_date: date
+    confirmed_count: int
+    pending_count: int
+    content: str
 
 
 class EventDecision(BaseModel):

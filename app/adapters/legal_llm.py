@@ -52,6 +52,8 @@ class LegalLLMAdapter:
                         "只有 OCR 原文或非元数据的相邻消息明确出现案号，或明确出现可唯一匹配的原告和被告时才能归属。"
                         "若截图后的相邻文字采用‘原告+被告+第几期还款+金额’格式，应将当前材料识别为 payment_screenshot，"
                         "并从该说明文字提取 plaintiff、defendant、amount 和 installment_sequence。"
+                        "缴费通知必须区分诉讼费、案件受理费、公告费、执行费、保全费、开庭费、鉴定费等 payment_type，"
+                        "提取明确截止日期 payment_deadline；只有写明X日内时才填写 payment_term_days。"
                         "开庭传票必须重点识别被告姓名：优先读取‘被传唤人姓名’或‘被告’栏，即使内容为手写也要结合 OCR 原文判断；"
                         "开庭传票默认将公司、个体工商户等经营主体名称识别为原告，将被传唤人、当事人或自然人姓名识别为被告；"
                         "如果公司名称和自然人姓名被放反，必须按‘公司=原告、被传唤人=被告’纠正；"
@@ -83,6 +85,9 @@ class LegalLLMAdapter:
                                 "enforcement_case_no": "string|null",
                                 "order_no": "string|null",
                                 "installment_sequence": "number|null",
+                                "payment_type": "string|null",
+                                "payment_deadline": "YYYY-MM-DD|null",
+                                "payment_term_days": "number|null",
                                 "repayment_plan": {
                                     "first_payment_date": "YYYY-MM-DD|null",
                                     "monthly_payment_day": "number|null",

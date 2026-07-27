@@ -1,5 +1,5 @@
 import re
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -53,6 +53,9 @@ STRUCTURED_FIELDS = {
     "order_no",
     "repayment_plan",
     "installment_sequence",
+    "payment_type",
+    "payment_deadline",
+    "payment_term_days",
 }
 
 
@@ -171,6 +174,11 @@ class LegalTextExtractionService:
             amount = regex_result.get("amount")
         confidence = self._confidence(llm_result.get("confidence"))
         structured_fields = self._structured_fields(llm_result)
+        if event_type == "payment_notice":
+            structured_fields = {
+                **self._payment_notice_fields(text),
+                **structured_fields,
+            }
 
         if self._has_classification_conflict(llm_event_type, regex_event_type):
             review_reasons.append("LLM 与规则的材料类型判断不一致")
@@ -274,6 +282,35 @@ class LegalTextExtractionService:
             elif not isinstance(value, (str, int, float, bool)):
                 continue
             result[key] = value
+        return result
+
+    @staticmethod
+    def _payment_notice_fields(text: str) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        payment_type = re.search(r"(案件受理费|诉讼费|公告费|执行费|保全费|开庭费|鉴定费)", text)
+        if payment_type:
+            result["payment_type"] = payment_type.group(1)
+        absolute = re.search(
+            r"(?:请于|须于|应于|截止(?:日期)?(?:为|至)?)[^\d]{0,8}"
+            r"(20\d{2})[年./-](\d{1,2})[月./-](\d{1,2})日?",
+            text,
+        )
+        if absolute:
+            try:
+                result["payment_deadline"] = date(
+                    int(absolute.group(1)),
+                    int(absolute.group(2)),
+                    int(absolute.group(3)),
+                ).isoformat()
+            except ValueError:
+                pass
+        relative = re.search(r"(?:收到|送达|接到|本通知)?[^。；\n]{0,20}?(\d{1,3})\s*(?:日|天)内[^。；\n]{0,20}?(?:缴纳|交纳|缴费|交费)", text)
+        if not relative:
+            relative = re.search(r"(?:缴费|交费|缴纳|交纳)[^。；\n]{0,20}?(\d{1,3})\s*(?:日|天)内", text)
+        if relative:
+            days = int(relative.group(1))
+            if 1 <= days <= 365:
+                result["payment_term_days"] = days
         return result
 
     @staticmethod

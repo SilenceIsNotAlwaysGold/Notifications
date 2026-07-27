@@ -72,6 +72,7 @@ def test_alembic_upgrade_head_succeeds_with_temp_sqlite(tmp_path, monkeypatch):
         assert "dedupe_key" in {column["name"] for column in inspector.get_columns("reminders")}
         assert "group_type" in {column["name"] for column in inspector.get_columns("wecom_archive_groups")}
         assert "access_policy" in {column["name"] for column in inspector.get_columns("wecom_archive_groups")}
+        assert "applies_to_event_id" in {column["name"] for column in inspector.get_columns("payment_records")}
     finally:
         engine.dispose()
         get_settings.cache_clear()

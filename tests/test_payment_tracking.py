@@ -8,6 +8,7 @@ from app.models.payment_record import PaymentRecord
 from app.models.reminder import Reminder
 from app.services.payment_tracking_service import PaymentTrackingService
 from app.services.media_file_service import MediaFileService
+from app.core.permissions import has_permission
 from app.utils.datetime_utils import now_tz
 
 
@@ -73,7 +74,8 @@ def test_payment_tracking_api_matches_customer_ledger_headers(client, db_session
             PaymentRecord(
                 case_id=legal_case.id,
                 source_media_file_id=screenshot.id,
-                record_type="payment",
+                applies_to_event_id=event.id,
+                record_type="fee_payment",
                 amount=Decimal("10.00"),
                 status="approved",
                 credential_fingerprint="payment-tracking-test",
@@ -94,7 +96,7 @@ def test_payment_tracking_api_matches_customer_ledger_headers(client, db_session
     assert row["case_no"] == "(2026)辽0423民初1568号"
     assert row["payment_info"] == "36.00"
     assert row["payment_status"] == "partial"
-    assert "已催促 1 次" in row["tracking_status"]
+    assert "已催促1次" in row["tracking_status"]
     assert row["remaining_payment_time"] == "剩余 7 天"
     assert row["screenshot_url"].endswith(f"/{screenshot.id}/content")
 
@@ -154,3 +156,16 @@ def test_partial_payment_screenshot_preserves_notice_fields(db_session):
     assert row["缴费信息"] is None
     assert row["支付情况"] == "部分支付"
     assert row["剩余缴费时间"] is None
+
+
+def test_payment_tracking_permissions_allow_legal_write_and_auditor_read_only():
+    read_paths = [
+        "/api/v1/legal/payment-trackings",
+        "/api/v1/legal/payment-trackings/unassigned-receipts",
+        "/api/v1/legal/payment-trackings/daily-summary",
+    ]
+    assert all(has_permission("legal", "GET", path) for path in read_paths)
+    assert all(has_permission("auditor", "GET", path) for path in read_paths)
+    assignment = "/api/v1/legal/payment-trackings/12/assign-receipt"
+    assert has_permission("legal", "POST", assignment)
+    assert not has_permission("auditor", "POST", assignment)

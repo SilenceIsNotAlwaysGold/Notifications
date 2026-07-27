@@ -28,6 +28,7 @@ from app.services.group_context_service import GroupContextService
 from app.services.ocr_service import OCRService
 from app.services.outbox_service import OutboxService
 from app.services.payment_service import PaymentService
+from app.services.payment_tracking_service import PaymentTrackingService
 from app.services.reminder_service import ReminderService
 from app.services.system_run_log_service import SystemRunLogService
 from app.services.tenant_settings_service import TenantSettingsService
@@ -792,6 +793,25 @@ class MediaFileService:
             raise ValueError("案件归属和业务审批完成后才能执行外部业务")
         if event.business_status != "approved":
             raise ValueError("业务事件尚未批准")
+        if matched_case and result.get("event_type") == "payment_screenshot" and result.get("amount") is not None:
+            installment_sequence = (result.get("metadata") or {}).get("structured_fields", {}).get("installment_sequence")
+            is_repayment = bool((result.get("metadata") or {}).get("repayment_annotation"))
+            payment_record, created = PaymentService(self.db).create(
+                matched_case,
+                amount=result["amount"],
+                record_type="repayment" if is_repayment else "fee_payment",
+                source_event=event,
+                source_media=media_file,
+                status="approved",
+                operator=event.approved_by or "system:outbox",
+                payment_date=event.event_time.date() if event.event_time else None,
+                payer_name=result.get("defendant"),
+                note=f"第 {installment_sequence} 期还款" if installment_sequence else None,
+            )
+            if payment_record.applies_to_event_id:
+                result.setdefault("metadata", {})["payment_notice_event_id"] = payment_record.applies_to_event_id
+            if created and is_repayment:
+                self.document_sync.sync_paid_amount(matched_case)
         if WeComArchiveGroupService(self.db).feature_enabled(media_file.group_id, "document_sync"):
             if event.event_type != "court_notice":
                 self.document_sync.sync_archive_event(event, media_file=media_file)
@@ -817,22 +837,6 @@ class MediaFileService:
                     source_event_id=event.id,
                 )
             )
-        if matched_case and result.get("event_type") == "payment_screenshot":
-            if result.get("amount") is not None:
-                installment_sequence = (result.get("metadata") or {}).get("structured_fields", {}).get("installment_sequence")
-                _payment, created = PaymentService(self.db).create(
-                    matched_case,
-                    amount=result["amount"],
-                    source_event=event,
-                    source_media=media_file,
-                    status="approved",
-                    operator=event.approved_by or "system:outbox",
-                    payment_date=event.event_time.date() if event.event_time else None,
-                    payer_name=result.get("defendant"),
-                    note=f"第 {installment_sequence} 期还款" if installment_sequence else None,
-                )
-                if created:
-                    self.document_sync.sync_paid_amount(matched_case)
         media_file.business_applied_at = now_tz()
         event.business_status = "applied"
         event.applied_at = now_tz()
@@ -995,15 +999,38 @@ class MediaFileService:
         source_event = self.db.get(LegalEvent, event_id)
         reminders = self.reminder_service.create_payment_tracking(
             legal_case.id,
-            start_date=now_tz().date(),
+            start_date=(source_event.event_time or now_tz()).date() if source_event else now_tz().date(),
             days=7,
             source_event_id=event_id,
             payment_amount=source_event.amount if source_event else None,
+            deadline_date=(
+                PaymentTrackingService._deadline(
+                    (
+                        PaymentTrackingService._metadata(source_event).get("structured_fields")
+                        if isinstance(PaymentTrackingService._metadata(source_event).get("structured_fields"), dict)
+                        else {}
+                    ),
+                    (source_event.event_time or now_tz()).date(),
+                    [],
+                )
+                if source_event
+                else None
+            ),
         )
         marker = f" OCR:{media_file.group_message_id}:payment_notice:event:{event_id}"
         for reminder in reminders:
             reminder.content = f"{reminder.content}{marker}"
-        return len(reminders)
+        metadata = PaymentTrackingService._metadata(source_event) if source_event else {}
+        structured = metadata.get("structured_fields") if isinstance(metadata.get("structured_fields"), dict) else {}
+        source_message = self.db.get(GroupMessage, media_file.group_message_id) if media_file.group_message_id else None
+        immediate = self.reminder_service.create_payment_confirmation_followups(
+            legal_case.id,
+            source_event_id=event_id,
+            start_at=ensure_aware(source_message.received_at) if source_message else now_tz(),
+            payment_type=structured.get("payment_type"),
+            payment_amount=source_event.amount if source_event else None,
+        )
+        return len(reminders) + len(immediate)
 
     def _sync_kdocs_business(
         self,
@@ -1145,24 +1172,41 @@ class MediaFileService:
     def _payment_registration_row(self, result: dict[str, Any], legal_case: LegalCase | None, media_file: MediaFile) -> dict[str, Any]:
         event_time = result.get("event_time") or result.get("court_time") or now_tz()
         is_paid = result.get("event_type") == "payment_screenshot"
-        payment_amount = Decimal(str(result.get("amount") or 0))
-        fully_paid = bool(
-            is_paid
-            and legal_case
-            and legal_case.total_amount > 0
-            and legal_case.paid_amount + payment_amount >= legal_case.total_amount
-        )
+        metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+        notice_event_id = metadata.get("payment_notice_event_id")
+        notice = self.db.get(LegalEvent, notice_event_id) if notice_event_id else None
+        paid_for_notice = PaymentService(self.db)._notice_paid_amount(notice.id) if notice else Decimal("0.00")
+        fully_paid = bool(is_paid and notice and notice.amount is not None and paid_for_notice >= notice.amount)
+        target_row_index = None
+        if notice:
+            notice_log = self.db.scalar(
+                select(DocumentSyncLog)
+                .where(DocumentSyncLog.sync_type == "payment_registration")
+                .where(DocumentSyncLog.idempotency_key.like(f"kdocs:payment_registration:{notice.id}:%"))
+                .where(DocumentSyncLog.outcome == "applied")
+                .order_by(DocumentSyncLog.id.desc())
+            )
+            target_row_index = notice_log.external_row_index if notice_log else None
+        structured = metadata.get("structured_fields") if isinstance(metadata.get("structured_fields"), dict) else {}
+        payment_type = structured.get("payment_type")
+        payment_info = str(result.get("amount")) if result.get("amount") is not None else None
+        if payment_type and payment_info:
+            payment_info = f"{payment_type} {payment_info}元"
+        notice_date = event_time.date() if hasattr(event_time, "date") else now_tz().date()
+        deadline = PaymentTrackingService._deadline(structured, notice_date, [])
+        remaining_days = max(0, (deadline - notice_date).days) if deadline else 7
         return {
-            "日期": None if is_paid else (event_time.date().isoformat() if hasattr(event_time, "date") else str(event_time)[:10]),
+            "日期": None if is_paid else notice_date.isoformat(),
             "原告": legal_case.plaintiff_name if legal_case else result.get("plaintiff"),
             "案号": self._case_no(result, legal_case),
             "被告": legal_case.debtor_name if legal_case else result.get("defendant"),
-            "缴费信息": None if is_paid else (str(result.get("amount")) if result.get("amount") is not None else None),
+            "缴费信息": None if is_paid else payment_info,
             "支付情况": ("已支付" if fully_paid else "部分支付") if is_paid else "待支付",
             "跟踪情况": "已识别付款凭证，待核对是否足额" if is_paid and not fully_paid else ("已识别付款凭证" if is_paid else "待首次催促"),
-            "剩余缴费时间": "已缴费" if fully_paid else (None if is_paid else "+7天"),
-            "缴费截图上传": media_file.public_url or media_file.local_path,
+            "剩余缴费时间": "已缴费" if fully_paid else (None if is_paid else f"+{remaining_days}天"),
+            "缴费截图上传": media_file.public_url or f"平台媒体 #{media_file.id}",
             "事件类型": result.get("event_type"),
+            "_target_row_index": target_row_index,
         }
 
     def _target_legal_document_filename(self, media_file: MediaFile, result: dict[str, Any]) -> str:

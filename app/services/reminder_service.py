@@ -145,6 +145,7 @@ class ReminderService:
         days: int = 7,
         source_event_id: int | None = None,
         payment_amount: object = None,
+        deadline_date: date | None = None,
     ) -> list[Reminder]:
         legal_case = self.db.get(LegalCase, case_id) if case_id else None
         if case_id and not legal_case:
@@ -158,7 +159,52 @@ class ReminderService:
             start_date,
             source_event=source_event,
             payment_amount=payment_amount,
+            deadline_date=deadline_date,
         )
+
+    def create_payment_confirmation_followups(
+        self,
+        case_id: int,
+        *,
+        source_event_id: int,
+        start_at: datetime,
+        payment_type: str | None,
+        payment_amount: object = None,
+    ) -> list[Reminder]:
+        legal_case = self.db.get(LegalCase, case_id)
+        if not legal_case:
+            raise ValueError("案件不存在")
+        source_event = self.db.get(LegalEvent, source_event_id)
+        if not source_event or source_event.case_id != legal_case.id:
+            raise ValueError("缴费通知不存在或不属于该案件")
+        target_userid = legal_case.debtor_wecom_userid or legal_case.lawyer_wecom_userid
+        amount_text = f"{payment_amount}元" if payment_amount is not None else "金额待确认"
+        fee_text = payment_type or "缴费"
+        content = (
+            f"【缴费待确认】案件 {legal_case.case_no}，{legal_case.debtor_name}，"
+            f"{fee_text}{amount_text}，尚未收到明确付款确认。请核实后回复“已缴费/已代缴/已收款”。"
+        )
+        created: list[Reminder] = []
+        for minutes in (30, 90):
+            dedupe_key = f"payment-confirmation:{source_event_id}:{minutes}"
+            if self.db.scalar(select(Reminder.id).where(Reminder.dedupe_key == dedupe_key)):
+                continue
+            created.append(
+                self._create(
+                    case_id=legal_case.id,
+                    tenant_id=legal_case.tenant_id,
+                    group_id=legal_case.group_id,
+                    reminder_type="payment_confirmation",
+                    remind_at=ensure_aware(start_at) + timedelta(minutes=minutes),
+                    content=content,
+                    target_userid=target_userid,
+                    source_event_id=source_event_id,
+                    dedupe_key=dedupe_key,
+                    flush=False,
+                )
+            )
+        self.db.flush()
+        return created
 
     def create_court_reminders(
         self,

@@ -293,11 +293,17 @@ class KDocsAdapter:
         assert self.mcp is not None
         file_id = self.settings.kdocs_payment_file_id or ""
         worksheet_id = self.settings.kdocs_payment_worksheet_id
-        case_no = self._pick(row, "案号", "case_no")
         with _MCP_WRITE_LOCK:
             sheet = self.mcp.get_sheet_info(file_id, worksheet_id)
             last_row = int(sheet.get("rowTo", 0))
-            target_row = self._mcp_find_row(file_id, worksheet_id, str(case_no), last_row, 3) if case_no else None
+            requested_row = row.get("_target_row_index")
+            target_row = int(requested_row) if requested_row is not None else None
+            is_receipt = row.get("事件类型") == "payment_screenshot"
+            payment_info = self._pick(row, "缴费信息", "payment_info")
+            if target_row is None and (not is_receipt or payment_info):
+                target_row = self._mcp_find_payment_notice_row(file_id, worksheet_id, row, last_row)
+            if target_row is None and is_receipt:
+                raise ValueError("付款凭证无法唯一匹配原缴费通知行，已阻止新增或覆盖")
             created = target_row is None
             if target_row is None:
                 target_row = last_row + 1
@@ -314,6 +320,38 @@ class KDocsAdapter:
             "created": created,
             "write": write_result,
         }
+
+    def _mcp_find_payment_notice_row(
+        self,
+        file_id: str,
+        worksheet_id: int,
+        row: dict[str, Any],
+        last_row: int,
+    ) -> int | None:
+        case_no = str(self._pick(row, "案号", "case_no") or "").strip()
+        payment_info = str(self._pick(row, "缴费信息", "payment_info") or "").strip()
+        if not case_no or last_row < 1:
+            return None
+        cells = self.mcp.get_range_data(
+            file_id,
+            worksheet_id,
+            row_from=1,
+            row_to=last_row,
+            col_from=3,
+            col_to=4,
+        )
+        by_row: dict[int, dict[int, str]] = {}
+        for cell in cells:
+            row_index = int(cell.get("rowFrom", cell.get("originRow", -1)))
+            col_index = int(cell.get("colFrom", cell.get("originCol", -1)))
+            value = cell.get("cellText") or cell.get("originalCellValue") or cell.get("formula")
+            by_row.setdefault(row_index, {})[col_index] = str(value or "").strip()
+        matches = [
+            row_index
+            for row_index, values in by_row.items()
+            if values.get(3) == case_no and (not payment_info or values.get(4) == payment_info)
+        ]
+        return matches[0] if len(matches) == 1 else None
 
     def _mcp_find_row(
         self,

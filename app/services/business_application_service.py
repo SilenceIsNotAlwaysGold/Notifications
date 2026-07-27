@@ -10,10 +10,11 @@ from app.models.group_message import GroupMessage
 from app.services.document_sync_service import DocumentSyncService
 from app.services.media_file_service import MediaFileService
 from app.services.payment_service import PaymentService
+from app.services.payment_tracking_service import PaymentTrackingService
 from app.services.reminder_service import ReminderService
 from app.services.tenant_settings_service import TenantSettingsService
 from app.services.wecom_archive_group_service import WeComArchiveGroupService
-from app.utils.datetime_utils import now_tz
+from app.utils.datetime_utils import ensure_aware, now_tz
 
 
 class BusinessApplicationService:
@@ -51,29 +52,48 @@ class BusinessApplicationService:
         group_id = message.group_id if message else legal_case.group_id
         if WeComArchiveGroupService(self.db).feature_enabled(group_id, "document_sync"):
             DocumentSyncService(self.db).sync_archive_event(event)
-        if event.event_type == "payment_screenshot" and event.amount is not None:
+        if event.event_type == "payment_screenshot":
             installment_sequence = metadata.get("structured_fields", {}).get("installment_sequence")
-            _record, created = PaymentService(self.db).create(
+            is_repayment = bool(metadata.get("repayment_annotation"))
+            payment_service = PaymentService(self.db)
+            matched_notice = None if is_repayment else payment_service.single_open_notice(legal_case.id)
+            amount = event.amount or (matched_notice[1] if matched_notice else None)
+            if amount is None:
+                raise ValueError("付款确认缺少金额，且无法唯一匹配待缴费通知，请人工补充或关联")
+            _record, created = payment_service.create(
                 legal_case,
-                amount=event.amount,
+                amount=amount,
+                record_type="repayment" if is_repayment else "fee_payment",
                 source_event=event,
+                applies_to_event_id=matched_notice[0].id if matched_notice else None,
                 status="approved",
                 operator=event.approved_by or "system:outbox",
                 payment_date=event.event_time.date() if event.event_time else None,
                 payer_name=metadata.get("repayment_annotation", {}).get("defendant"),
                 note=f"第 {installment_sequence} 期还款" if installment_sequence else None,
             )
-            if created:
+            if created and is_repayment:
                 DocumentSyncService(self.db).sync_paid_amount(legal_case)
         elif event.event_type == "payment_notice":
             effective = TenantSettingsService(self.db).get_effective_settings(legal_case.tenant_id)
             enabled = bool(effective["feature_flags"].get("enable_payment_tracking", True))
             if enabled and WeComArchiveGroupService(self.db).feature_enabled(group_id, "payment_tracking"):
+                start_date = (event.event_time or now_tz()).date()
+                structured = metadata.get("structured_fields") if isinstance(metadata.get("structured_fields"), dict) else {}
                 ReminderService(self.db).create_payment_tracking(
                     legal_case.id,
-                    start_date=(event.event_time or now_tz()).date(),
+                    start_date=start_date,
                     days=7,
                     source_event_id=event.id,
+                    payment_amount=event.amount,
+                    deadline_date=PaymentTrackingService._deadline(structured, start_date, []),
+                )
+                source_message_time = ensure_aware(message.received_at) if message else event.created_at
+                ReminderService(self.db).create_payment_confirmation_followups(
+                    legal_case.id,
+                    source_event_id=event.id,
+                    start_at=source_message_time,
+                    payment_type=structured.get("payment_type"),
                     payment_amount=event.amount,
                 )
         elif event.event_type == "repayment_agreement":
