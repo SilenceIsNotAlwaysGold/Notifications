@@ -997,6 +997,11 @@ class MediaFileService:
         if existing:
             return 0
         source_event = self.db.get(LegalEvent, event_id)
+        reminder_group_id, reminder_target = (
+            PaymentTrackingService(self.db).reminder_destination(source_event, legal_case)
+            if source_event
+            else (media_file.group_id, None)
+        )
         reminders = self.reminder_service.create_payment_tracking(
             legal_case.id,
             start_date=(source_event.event_time or now_tz()).date() if source_event else now_tz().date(),
@@ -1016,6 +1021,8 @@ class MediaFileService:
                 if source_event
                 else None
             ),
+            destination_group_id=reminder_group_id,
+            target_userid=reminder_target,
         )
         marker = f" OCR:{media_file.group_message_id}:payment_notice:event:{event_id}"
         for reminder in reminders:
@@ -1029,6 +1036,8 @@ class MediaFileService:
             start_at=ensure_aware(source_message.received_at) if source_message else now_tz(),
             payment_type=structured.get("payment_type"),
             payment_amount=source_event.amount if source_event else None,
+            destination_group_id=reminder_group_id,
+            target_userid=reminder_target,
         )
         return len(reminders) + len(immediate)
 

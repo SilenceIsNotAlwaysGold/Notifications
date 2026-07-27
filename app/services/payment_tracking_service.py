@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.models.legal_case import LegalCase
 from app.models.legal_event import LegalEvent
-from app.models.contact import Contact
+from app.models.contact import Contact, ContactGroup
 from app.models.payment_record import PaymentRecord
 from app.models.reminder import Reminder
 from app.models.wecom_archive_group import WeComArchiveGroup
@@ -24,6 +24,33 @@ class PaymentTrackingService:
 
     def __init__(self, db: Session) -> None:
         self.db = db
+
+    def reminder_destination(self, event: LegalEvent, legal_case: LegalCase) -> tuple[str, str | None]:
+        """Resolve payment reminders to the source group and source sender."""
+        message = event.group_message
+        if message is None and event.group_message_id is not None:
+            from app.models.group_message import GroupMessage
+
+            message = self.db.get(GroupMessage, event.group_message_id)
+        if message is None:
+            return legal_case.group_id, legal_case.debtor_wecom_userid or legal_case.lawyer_wecom_userid
+
+        sender_id = (message.sender_id or "").strip()
+        if not sender_id:
+            return message.group_id, None
+        contact = self.db.scalar(
+            select(Contact)
+            .join(ContactGroup, ContactGroup.contact_id == Contact.id)
+            .where(
+                ContactGroup.group_id == message.group_id,
+                ContactGroup.membership_status != "left",
+                Contact.is_active.is_(True),
+                (Contact.archive_user_id == sender_id) | (Contact.wecomapi_user_id == sender_id),
+            )
+            .order_by(Contact.wecomapi_user_id.is_(None), Contact.last_confirmed_at.desc(), Contact.id.desc())
+            .limit(1)
+        )
+        return message.group_id, (contact.wecomapi_user_id if contact and contact.wecomapi_user_id else sender_id)
 
     def list_rows(
         self,

@@ -6,6 +6,7 @@ from sqlalchemy import select
 
 from app.models.legal_case import LegalCase
 from app.models.legal_event import LegalEvent
+from app.models.contact import Contact, ContactGroup
 from app.models.group_message import GroupMessage
 from app.models.payment_record import PaymentRecord
 from app.models.reminder import Reminder
@@ -199,6 +200,80 @@ def test_payment_notice_creates_30_and_90_minute_confirmation_followups(db_sessi
     assert {round((item.remind_at - started_at).total_seconds() / 60) for item in reminders} == {30, 90}
     assert {item.target_userid for item in reminders} == {"merchant-user-001"}
     assert all("已缴费/已代缴/已收款" in item.content for item in reminders)
+
+
+def test_payment_reminders_return_to_source_group_and_mention_source_sender(db_session):
+    legal_case = _case(db_session)
+    legal_case.group_id = "case-primary-group"
+    legal_case.debtor_wecom_userid = "case-debtor"
+    legal_case.lawyer_wecom_userid = "case-lawyer"
+    message = GroupMessage(
+        group_id="payment-source-group",
+        sender_id="archive-sender",
+        msg_type="text",
+        content="案件受理费25元，请安排缴费",
+        raw_payload_json="{}",
+        received_at=now_tz(),
+    )
+    contact = Contact(
+        display_name="原消息发送人",
+        archive_user_id="archive-sender",
+        wecomapi_user_id="wecomapi-sender",
+        source="test",
+    )
+    db_session.add_all([message, contact])
+    db_session.flush()
+    db_session.add(ContactGroup(contact_id=contact.id, group_id=message.group_id, membership_status="observed"))
+    notice = LegalEvent(
+        case_id=legal_case.id,
+        group_message_id=message.id,
+        event_type="payment_notice",
+        event_time=message.received_at,
+        amount=Decimal("25.00"),
+        extracted_text=message.content,
+        attribution_status="confirmed",
+        business_status="approved",
+        approved_by="tester",
+    )
+    db_session.add(notice)
+    db_session.flush()
+
+    BusinessApplicationService(db_session).apply_event(notice.id)
+
+    reminders = list(
+        db_session.scalars(select(Reminder).where(Reminder.source_event_id == notice.id)).all()
+    )
+    assert len(reminders) == 5
+    assert {item.group_id for item in reminders} == {"payment-source-group"}
+    assert {item.target_userid for item in reminders} == {"wecomapi-sender"}
+    assert {item.reminder_type for item in reminders} == {"payment_confirmation", "payment_tracking"}
+
+
+def test_source_sender_id_is_used_when_contact_mapping_is_missing(db_session):
+    legal_case = _case(db_session)
+    message = GroupMessage(
+        group_id="payment-source-group",
+        sender_id="source-sender-id",
+        msg_type="text",
+        content="公告费400元",
+        raw_payload_json="{}",
+        received_at=now_tz(),
+    )
+    notice = LegalEvent(
+        case_id=legal_case.id,
+        group_message_id=None,
+        event_type="payment_notice",
+        attribution_status="confirmed",
+        business_status="approved",
+    )
+    db_session.add_all([message, notice])
+    db_session.flush()
+    notice.group_message_id = message.id
+
+    group_id, target_userid = PaymentTrackingService(db_session).reminder_destination(notice, legal_case)
+
+    assert group_id == "payment-source-group"
+    assert target_userid == "source-sender-id"
 
 
 def test_explicit_text_confirmation_closes_single_open_notice(db_session):

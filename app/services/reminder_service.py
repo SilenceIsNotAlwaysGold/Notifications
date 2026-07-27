@@ -146,6 +146,8 @@ class ReminderService:
         source_event_id: int | None = None,
         payment_amount: object = None,
         deadline_date: date | None = None,
+        destination_group_id: str | None = None,
+        target_userid: str | None = None,
     ) -> list[Reminder]:
         legal_case = self.db.get(LegalCase, case_id) if case_id else None
         if case_id and not legal_case:
@@ -160,6 +162,8 @@ class ReminderService:
             source_event=source_event,
             payment_amount=payment_amount,
             deadline_date=deadline_date,
+            destination_group_id=destination_group_id,
+            target_userid=target_userid,
         )
 
     def create_payment_confirmation_followups(
@@ -170,6 +174,8 @@ class ReminderService:
         start_at: datetime,
         payment_type: str | None,
         payment_amount: object = None,
+        destination_group_id: str | None = None,
+        target_userid: str | None = None,
     ) -> list[Reminder]:
         legal_case = self.db.get(LegalCase, case_id)
         if not legal_case:
@@ -177,7 +183,7 @@ class ReminderService:
         source_event = self.db.get(LegalEvent, source_event_id)
         if not source_event or source_event.case_id != legal_case.id:
             raise ValueError("缴费通知不存在或不属于该案件")
-        target_userid = legal_case.debtor_wecom_userid or legal_case.lawyer_wecom_userid
+        resolved_target = target_userid or legal_case.debtor_wecom_userid or legal_case.lawyer_wecom_userid
         amount_text = f"{payment_amount}元" if payment_amount is not None else "金额待确认"
         fee_text = payment_type or "缴费"
         content = (
@@ -193,11 +199,11 @@ class ReminderService:
                 self._create(
                     case_id=legal_case.id,
                     tenant_id=legal_case.tenant_id,
-                    group_id=legal_case.group_id,
+                    group_id=destination_group_id or legal_case.group_id,
                     reminder_type="payment_confirmation",
                     remind_at=ensure_aware(start_at) + timedelta(minutes=minutes),
                     content=content,
-                    target_userid=target_userid,
+                    target_userid=resolved_target,
                     source_event_id=source_event_id,
                     dedupe_key=dedupe_key,
                     flush=False,

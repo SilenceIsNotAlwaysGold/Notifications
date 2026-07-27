@@ -188,8 +188,13 @@ class ReminderRuleService:
         source_event: LegalEvent | None = None,
         payment_amount: Any = None,
         deadline_date: date | None = None,
+        destination_group_id: str | None = None,
+        target_userid: str | None = None,
     ) -> list[Reminder]:
-        if not WeComArchiveGroupService(self.db).feature_enabled(legal_case.group_id, "payment_tracking"):
+        if not WeComArchiveGroupService(self.db).feature_enabled(
+            destination_group_id or legal_case.group_id,
+            "payment_tracking",
+        ):
             return []
         created: list[Reminder] = []
         rules = self.effective_rules(legal_case.tenant_id, "payment_tracking")
@@ -198,11 +203,31 @@ class ReminderRuleService:
             target_date = self._target_date(rule, start_date)
             if deadline_date and target_date > deadline_date:
                 continue
-            created.extend(self._create_for_rule(rule, legal_case, target_date, source_event, payment_amount))
+            created.extend(
+                self._create_for_rule(
+                    rule,
+                    legal_case,
+                    target_date,
+                    source_event,
+                    payment_amount,
+                    destination_group_id=destination_group_id,
+                    target_userids=[target_userid] if target_userid else None,
+                )
+            )
             created_dates.add(target_date)
         if deadline_date and deadline_date not in created_dates and rules:
             final_rule = max(rules, key=lambda item: item.offset_days)
-            created.extend(self._create_for_rule(final_rule, legal_case, deadline_date, source_event, payment_amount))
+            created.extend(
+                self._create_for_rule(
+                    final_rule,
+                    legal_case,
+                    deadline_date,
+                    source_event,
+                    payment_amount,
+                    destination_group_id=destination_group_id,
+                    target_userids=[target_userid] if target_userid else None,
+                )
+            )
         return created
 
     def rebuild_pending_for_rule(self, rule: ReminderRule) -> int:
@@ -231,7 +256,8 @@ class ReminderRuleService:
                 continue
             reminder.remind_at = self._at_send_time(self._target_date(rule, reference_date), rule.send_time)
             reminder.content = self.render_template(rule.template, legal_case, source_event.amount if source_event else None)
-            reminder.target_userid = self._targets(rule.target_role, legal_case)[0]
+            if rule.rule_type != "payment_tracking" or not source_event or source_event.group_message_id is None:
+                reminder.target_userid = self._targets(rule.target_role, legal_case)[0]
             reminder.cancelled_at = None
             reminder.cancel_reason = None
             changed += 1
@@ -245,9 +271,11 @@ class ReminderRuleService:
         target_date: date,
         source_event: LegalEvent | None,
         payment_amount: Any,
+        destination_group_id: str | None = None,
+        target_userids: list[str | None] | None = None,
     ) -> list[Reminder]:
         reminders: list[Reminder] = []
-        targets = self._targets(rule.target_role, legal_case)
+        targets = target_userids if target_userids is not None else self._targets(rule.target_role, legal_case)
         for target_index, target_userid in enumerate(targets):
             source_key = f"event:{source_event.id}" if source_event else f"case:{legal_case.id}"
             dedupe_key = f"rule:{rule.id}:{source_key}:{target_date.isoformat()}:{target_index}"
@@ -256,7 +284,7 @@ class ReminderRuleService:
             reminder = Reminder(
                 case_id=legal_case.id,
                 tenant_id=legal_case.tenant_id,
-                group_id=legal_case.group_id,
+                group_id=destination_group_id or legal_case.group_id,
                 reminder_type=self._reminder_type(rule.rule_type),
                 remind_at=self._at_send_time(target_date, rule.send_time),
                 content=self.render_template(rule.template, legal_case, payment_amount),

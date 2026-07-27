@@ -80,6 +80,7 @@ class BusinessApplicationService:
             if enabled and WeComArchiveGroupService(self.db).feature_enabled(group_id, "payment_tracking"):
                 start_date = (event.event_time or now_tz()).date()
                 structured = metadata.get("structured_fields") if isinstance(metadata.get("structured_fields"), dict) else {}
+                reminder_group_id, reminder_target = PaymentTrackingService(self.db).reminder_destination(event, legal_case)
                 ReminderService(self.db).create_payment_tracking(
                     legal_case.id,
                     start_date=start_date,
@@ -87,6 +88,8 @@ class BusinessApplicationService:
                     source_event_id=event.id,
                     payment_amount=event.amount,
                     deadline_date=PaymentTrackingService._deadline(structured, start_date, []),
+                    destination_group_id=reminder_group_id,
+                    target_userid=reminder_target,
                 )
                 source_message_time = ensure_aware(message.received_at) if message else event.created_at
                 ReminderService(self.db).create_payment_confirmation_followups(
@@ -95,6 +98,8 @@ class BusinessApplicationService:
                     start_at=source_message_time,
                     payment_type=structured.get("payment_type"),
                     payment_amount=event.amount,
+                    destination_group_id=reminder_group_id,
+                    target_userid=reminder_target,
                 )
         elif event.event_type == "repayment_agreement":
             plan = metadata.get("structured_fields", {}).get("repayment_plan") or {}
