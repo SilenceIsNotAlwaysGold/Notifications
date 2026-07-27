@@ -101,6 +101,11 @@ class WeComArchiveGroupService:
         for field, value in values.items():
             setattr(group, field, value)
         self._apply_name_classification(group)
+        # Explicit admin choices must win over name-based onboarding defaults.
+        if "group_type" in values:
+            group.group_type = values["group_type"]
+        if "status" in values and group.access_policy == "auto":
+            group.status = values["status"]
         group.updated_at = now_tz()
         self.db.flush()
         return group

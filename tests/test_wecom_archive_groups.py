@@ -224,3 +224,21 @@ def test_matching_group_names_auto_onboard_with_policy_overrides(db_session):
         WeComArchiveGroupUpdate(access_policy="whitelist"),
     )
     assert blocked.status == "enabled"
+
+
+def test_explicit_group_type_update_overrides_name_classification(db_session):
+    service = WeComArchiveGroupService(db_session)
+    group = service.create_group(
+        WeComArchiveGroupCreate(
+            room_id="wr_manual_type",
+            display_name="一号法务起诉沟通群",
+        )
+    )
+    assert group.group_type == "merchant"
+
+    service.update_group(
+        group.room_id,
+        WeComArchiveGroupUpdate(group_type="other"),
+    )
+
+    assert group.group_type == "other"
