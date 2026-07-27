@@ -11,6 +11,7 @@ from app.models.legal_case import LegalCase
 from app.models.legal_event import LegalEvent
 from app.models.media_file import MediaFile
 from app.models.reminder import Reminder
+from app.models.wecom_archive_group import WeComArchiveGroup
 
 
 def _create_case(client):
@@ -215,3 +216,48 @@ def test_review_detail_returns_current_context_without_changing_ai_snapshot(clie
     assert data["context_messages"] == []
     assert len(data["available_context_messages"]) == 1
     assert "9001号" in data["available_context_messages"][0]["content"]
+
+
+def test_court_summons_queue_includes_layout_fallback_and_excludes_generic_ocr(client, db_session):
+    group = WeComArchiveGroup(room_id="summons_group", display_name="传票接收群")
+    suspected = MediaFile(
+        group_id="summons_group",
+        msg_id="summons-fallback",
+        media_type="image",
+        mime_type="image/jpeg",
+        ocr_status="processed",
+        review_status="pending",
+        extracted_text="人民法院\n传\n票\n被传唤人\n应到时间\n应到处所",
+        ocr_result_json=json.dumps({"event_type": "unknown", "metadata": {}}, ensure_ascii=False),
+        source="test",
+    )
+    generic = MediaFile(
+        group_id="summons_group",
+        msg_id="generic-image",
+        media_type="image",
+        ocr_status="processed",
+        review_status="pending",
+        extracted_text="普通聊天截图",
+        ocr_result_json=json.dumps({"event_type": "unknown", "metadata": {}}, ensure_ascii=False),
+        source="test",
+    )
+    db_session.add_all([group, suspected, generic])
+    db_session.commit()
+
+    response = client.get("/api/v1/legal/ocr-reviews/court-summons")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["total"] == 1
+    assert data["items"][0]["media_file_id"] == suspected.id
+    assert data["items"][0]["group_name"] == "传票接收群"
+    assert data["items"][0]["detection_status"] == "suspected"
+    assert data["items"][0]["workflow_status"] == "incomplete"
+
+
+def test_admin_has_dedicated_court_summons_workspace():
+    content = Path("app/static/admin/admin.js").read_text(encoding="utf-8")
+
+    assert '{ view: "court-summons", label: "开庭传票" }' in content
+    assert "保存修正并写入" in content
+    assert "重试金山写入" in content

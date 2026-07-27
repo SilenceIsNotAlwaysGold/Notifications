@@ -98,6 +98,7 @@ def preview_media_file(
 @router.post("/{media_file_id}/ocr")
 def process_media_ocr(
     media_file_id: int,
+    force_reprocess: bool = False,
     db: Session = Depends(get_db),
     operator_info: dict[str, str] = Depends(get_current_operator),
 ):
@@ -105,7 +106,12 @@ def process_media_ocr(
     if media_file and not has_media_access(db, operator_info, media_file):
         raise_fail("无权限访问该资源", code=403, status_code=403)
     try:
-        result = MediaFileService(db).process_ocr(media_file_id, trigger_type="api", operator=operator_info["operator"])
+        result = MediaFileService(db).process_ocr(
+            media_file_id,
+            trigger_type="api",
+            operator=operator_info["operator"],
+            force_reprocess=force_reprocess,
+        )
         data = MediaOCRResultOut(
             media_file_id=result["media_file_id"],
             ocr_status=result["ocr_status"],

@@ -6,6 +6,8 @@ const state = {
   editingCandidateId: null,
   selectedReviewId: null,
   reviewStatusFilter: "pending",
+  selectedSummonsId: null,
+  summonsStatusFilter: "incomplete",
   reviewPreviewUrl: null,
   editingReminderId: null,
   kdocsTarget: "enforcement",
@@ -42,6 +44,7 @@ const titles = {
   messages: ["来源消息", "查看进入自动化链路的企业微信消息"],
   "archive-groups": ["企业微信群", "管理会话发现、案件识别和发送目标映射"],
   "ocr-reviews": ["人工复核", "核对识别结果并控制业务同步"],
+  "court-summons": ["开庭传票", "补全传票信息并写入金山开庭时间表"],
   "recognition-settings": ["识别与 AI", "配置腾讯 OCR 和法律文书结构化模型"],
   reminders: ["提醒任务", "查看、编辑和执行企业微信提醒"],
   "payment-trackings": ["缴费信息跟踪", "按缴费通知汇总支付状态、催促进度和凭证"],
@@ -74,6 +77,7 @@ const sections = {
     defaultView: "ocr-reviews",
     views: [
       { view: "attribution", label: "待归属" },
+      { view: "court-summons", label: "开庭传票" },
       { view: "ocr-reviews", label: "人工复核" },
       { view: "media", label: "附件记录" },
       { view: "messages", label: "来源消息" },
@@ -1599,6 +1603,111 @@ async function renderOCRReviews() {
   if (selected) await loadReviewPreview(selected);
 }
 
+const summonsWorkflowLabels = {
+  incomplete: "待补全",
+  pending_review: "待复核",
+  pending_write: "待写入",
+  written: "已写入",
+  write_failed: "写入失败",
+  rejected: "非传票",
+};
+
+function courtSummonsDetail(review) {
+  const result = review.final_result || review.ocr_result || {};
+  const structured = (result.metadata || {}).structured_fields || {};
+  const editable = review.review_status === "pending";
+  const canRetry = review.workflow_status === "write_failed";
+  return `
+    <div class="review-detail-header">
+      <div>
+        <span class="eyebrow">${escapeHtml(review.group_name || "未命名群")}</span>
+        <strong>${escapeHtml(review.original_filename || `传票 ${review.media_file_id}`)}</strong>
+        <div class="muted mono">${escapeHtml(review.group_id)} · ${escapeHtml(review.msg_id || "无消息 ID")}</div>
+      </div>
+      <div class="review-header-actions">
+        ${review.detection_status === "suspected" ? '<span class="status pending">版式兜底识别</span>' : '<span class="status applied">已识别传票</span>'}
+        ${badge(summonsWorkflowLabels[review.workflow_status] || review.workflow_status)}
+      </div>
+    </div>
+    <div class="review-detail-grid">
+      <section class="review-preview"><div id="review-preview" class="preview-placeholder">加载预览中...</div></section>
+      <section class="review-fields">
+        <form id="summons-form" data-media-id="${review.media_file_id}">
+          <div class="summons-callout">传票不要求匹配案件。被告和准确开庭时间补全后，才会写入金山“开庭时间”表。</div>
+          <div class="form-grid review-form-grid">
+            <div class="field"><label>法院</label><input name="court_name" value="${escapeHtml(structured.court_name || "")}" ${editable ? "" : "disabled"} /></div>
+            <div class="field"><label>法庭</label><input name="court_room" value="${escapeHtml(structured.court_room || "")}" ${editable ? "" : "disabled"} /></div>
+            <div class="field"><label>案号（选填）</label><input name="case_no" value="${escapeHtml(reviewFieldValue(result, "case_no"))}" ${editable ? "" : "disabled"} /></div>
+            <div class="field"><label>原告（选填）</label><input name="plaintiff" value="${escapeHtml(reviewFieldValue(result, "plaintiff"))}" ${editable ? "" : "disabled"} /></div>
+            <div class="field"><label>被告 <span class="required">必填</span></label><input name="defendant" required value="${escapeHtml(reviewFieldValue(result, "defendant"))}" ${editable ? "" : "disabled"} /></div>
+            <div class="field"><label>开庭时间 <span class="required">必填</span></label><input name="court_time" required type="datetime-local" value="${escapeHtml(reviewFieldValue(result, "court_time"))}" ${editable ? "" : "disabled"} /></div>
+            <div class="field"><label>开庭方式</label><select name="hearing_mode" ${editable ? "" : "disabled"}><option value="">待确认</option>${["现场开庭", "线上开庭"].map((value) => `<option value="${value}" ${structured.hearing_mode === value ? "selected" : ""}>${value}</option>`).join("")}</select></div>
+            <div class="field"><label>法官电话</label><input name="judge_phone" value="${escapeHtml(structured.judge_phone || "")}" ${editable ? "" : "disabled"} /></div>
+            <div class="field wide"><label>复核备注</label><textarea name="note" ${editable ? "" : "disabled"}>${escapeHtml(review.review_note || "")}</textarea></div>
+          </div>
+          <div class="review-actions">
+            ${editable ? '<button type="button" data-summons-save>保存修正并写入</button><button type="button" class="ghost" data-summons-reanalyze>重新识别</button><button type="button" class="danger-button" data-summons-reject>非传票</button>' : ""}
+            ${canRetry ? '<button type="button" data-summons-retry>重试金山写入</button>' : ""}
+          </div>
+        </form>
+        <div class="summons-sync-summary">
+          <div><span>金山状态</span><strong>${escapeHtml(review.sync_status || "尚未写入")}</strong></div>
+          <div><span>表格行号</span><strong>${escapeHtml(review.external_row_index || "-")}</strong></div>
+          <div><span>错误</span><strong>${escapeHtml(review.sync_error || "-")}</strong></div>
+        </div>
+        <div class="review-context-block"><div class="context-heading"><div><div class="field-label">相邻群聊上下文</div><span>${(review.context_messages || review.available_context_messages || []).length} 条消息</span></div></div>${reviewContextTimeline(review)}</div>
+        <div class="ocr-text-block"><div class="field-label">OCR 原文</div><pre>${escapeHtml(review.extracted_text || "无识别文本")}</pre></div>
+      </section>
+    </div>`;
+}
+
+async function submitCourtSummons(review, decision) {
+  const values = Object.fromEntries(new FormData($("#summons-form")).entries());
+  if (decision === "corrected" && (!values.defendant.trim() || !values.court_time)) {
+    showAlert("请先补全被告姓名和准确开庭时间", "error");
+    return;
+  }
+  if (decision === "rejected" && !values.note.trim()) {
+    showAlert("标记为非传票时请填写原因", "error");
+    return;
+  }
+  const payload = decision === "rejected"
+    ? { decision, note: values.note.trim() }
+    : { ...values, event_type: "court_notice", document_type: "开庭传票", decision, note: values.note.trim() || null };
+  await api(`/api/v1/legal/ocr-reviews/${review.media_file_id}/decision`, { method: "POST", body: JSON.stringify(payload) });
+  showAlert(decision === "rejected" ? "已标记为非传票" : "已保存，正在进入金山写入队列");
+  await renderCourtSummons();
+}
+
+async function renderCourtSummons() {
+  const query = state.summonsStatusFilter ? `?workflow_status=${encodeURIComponent(state.summonsStatusFilter)}&page_size=100` : "?page_size=100";
+  const data = await api(`/api/v1/legal/ocr-reviews/court-summons${query}`);
+  const items = data.items || [];
+  if (!items.some((item) => item.media_file_id === state.selectedSummonsId)) state.selectedSummonsId = items[0]?.media_file_id || null;
+  const summary = items.find((item) => item.media_file_id === state.selectedSummonsId);
+  const selected = summary ? { ...summary, ...(await api(`/api/v1/legal/ocr-reviews/${summary.media_file_id}`)) } : null;
+  $("#content").innerHTML = `
+    <div class="review-toolbar">
+      <label for="summons-status-filter">处理状态</label>
+      <select id="summons-status-filter">
+        ${[["incomplete","待识别 / 待补全"],["pending_review","待复核"],["pending_write","待写入"],["written","已写入"],["write_failed","写入失败"],["rejected","非传票"],["","全部"]].map(([value,label]) => `<option value="${value}" ${state.summonsStatusFilter === value ? "selected" : ""}>${label}</option>`).join("")}
+      </select>
+      <span class="muted">${data.total} 条</span>
+    </div>
+    <div class="review-workspace court-summons-workspace">
+      <aside class="review-list-pane">${items.length ? items.map((item) => `<button class="review-list-item ${item.media_file_id === state.selectedSummonsId ? "active" : ""}" data-summons-id="${item.media_file_id}"><span>${escapeHtml(item.original_filename || `传票 ${item.media_file_id}`)}</span><small>${escapeHtml(item.group_name || item.group_id)} · ${escapeHtml(summonsWorkflowLabels[item.workflow_status] || item.workflow_status)}</small></button>`).join("") : '<div class="empty-state">当前状态暂无传票</div>'}</aside>
+      <main class="review-detail-pane">${selected ? courtSummonsDetail(selected) : '<div class="empty-state">请选择开庭传票</div>'}</main>
+    </div>`;
+  $("#summons-status-filter").addEventListener("change", (event) => { state.summonsStatusFilter = event.target.value; state.selectedSummonsId = null; renderCourtSummons(); });
+  document.querySelectorAll("[data-summons-id]").forEach((button) => button.addEventListener("click", () => { state.selectedSummonsId = Number(button.dataset.summonsId); renderCourtSummons(); }));
+  if (!selected) return;
+  document.querySelector("[data-summons-save]")?.addEventListener("click", () => submitCourtSummons(selected, "corrected"));
+  document.querySelector("[data-summons-reject]")?.addEventListener("click", () => submitCourtSummons(selected, "rejected"));
+  document.querySelector("[data-summons-reanalyze]")?.addEventListener("click", async () => { await api(`/api/v1/legal/media-files/${selected.media_file_id}/ocr?force_reprocess=true`, { method: "POST" }); showAlert("已重新识别传票"); await renderCourtSummons(); });
+  document.querySelector("[data-summons-retry]")?.addEventListener("click", async () => { await api(`/api/v1/legal/ocr-reviews/court-summons/${selected.media_file_id}/retry`, { method: "POST" }); showAlert("金山写入重试完成"); await renderCourtSummons(); });
+  await loadReviewPreview(selected);
+}
+
 async function renderReminders() {
   const [data, rulesData, groupsData] = await Promise.all([
     api("/api/v1/legal/reminders?limit=100"),
@@ -2455,6 +2564,7 @@ async function loadView() {
     if (state.view === "messages") await renderMessages();
     if (state.view === "archive-groups") await renderArchiveGroups();
     if (state.view === "ocr-reviews") await renderOCRReviews();
+    if (state.view === "court-summons") await renderCourtSummons();
     if (state.view === "recognition-settings") await renderRecognitionSettings();
     if (state.view === "payment-trackings") await renderPaymentTrackings();
     if (state.view === "reminders") await renderReminders();

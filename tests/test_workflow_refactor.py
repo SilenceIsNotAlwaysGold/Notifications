@@ -502,6 +502,69 @@ def test_court_notice_ocr_without_case_is_auto_approved(db_session, tmp_path, mo
     assert db_session.scalar(select(BusinessOutbox).where(BusinessOutbox.aggregate_id == event.id)) is not None
 
 
+def test_summons_layout_fallback_stages_unknown_ai_result_for_review(db_session, tmp_path, monkeypatch):
+    image_path = tmp_path / "fallback-summons.jpg"
+    image_path.write_bytes(b"court-image")
+    message = GroupMessage(
+        group_id="fallback_court_group",
+        sender_id="operator",
+        msg_type="image",
+        raw_payload_json="{}",
+        received_at=now_tz(),
+    )
+    db_session.add(message)
+    db_session.flush()
+    media = MediaFile(
+        group_message_id=message.id,
+        group_id=message.group_id,
+        msg_id="fallback-court-msg",
+        media_type="image",
+        local_path=str(image_path),
+        download_status="downloaded",
+        ocr_status="pending",
+        source="test",
+    )
+    db_session.add(media)
+    db_session.flush()
+    service = MediaFileService(db_session)
+    monkeypatch.setattr(
+        service.ocr_service,
+        "extract_from_file",
+        lambda *_args, **_kwargs: {
+            "success": True,
+            "raw_text": "尉犁县人民法院\n传\n票\n被传唤人\n被传事由 开庭\n应到时间 2026年8月3日\n应到处所 第7号审判庭",
+            "event_type": "unknown",
+            "document_type": None,
+            "defendant": None,
+            "court_time": None,
+            "requires_review": False,
+            "review_reasons": [],
+            "metadata": {},
+        },
+    )
+
+    summary = service.process_ocr(media.id)
+
+    stored = json.loads(media.ocr_result_json)
+    event = db_session.get(LegalEvent, media.review_event_id)
+    assert summary["event_type"] == "court_notice"
+    assert stored["document_type"] == "开庭传票"
+    assert stored["metadata"]["court_summons_fallback"] is True
+    assert media.review_status == "pending"
+    assert event.attribution_status == "not_required"
+    assert event.business_status == "staged"
+    assert db_session.scalar(select(BusinessOutbox).where(BusinessOutbox.aggregate_id == event.id)) is None
+
+
+def test_non_summons_unknown_result_is_not_promoted():
+    result = {"event_type": "unknown", "metadata": {}}
+
+    promoted = MediaFileService._promote_suspected_court_notice(result, "普通付款截图，金额 500 元")
+
+    assert promoted is False
+    assert result["event_type"] == "unknown"
+
+
 def test_corrected_court_notice_without_case_exits_attribution_queue(db_session, tmp_path):
     image_path = tmp_path / "corrected-court.jpg"
     image_path.write_bytes(b"court-image")
@@ -540,7 +603,13 @@ def test_corrected_court_notice_without_case_exits_attribution_queue(db_session,
         media.id,
         "corrected",
         "reviewer",
-        corrections={"defendant": "张三"},
+        corrections={
+            "defendant": "张三",
+            "court_name": "尉犁县人民法院",
+            "court_room": "第7号审判庭",
+            "hearing_mode": "现场开庭",
+            "judge_phone": "0996-1234567",
+        },
     )
 
     assert media.review_status == "corrected"
@@ -548,6 +617,13 @@ def test_corrected_court_notice_without_case_exits_attribution_queue(db_session,
     assert event.attribution_status == "not_required"
     assert event.business_status == "approved"
     assert item.status == "superseded"
+    stored = json.loads(media.review_result_json)
+    assert stored["metadata"]["structured_fields"] == {
+        "court_name": "尉犁县人民法院",
+        "court_room": "第7号审判庭",
+        "hearing_mode": "现场开庭",
+        "judge_phone": "0996-1234567",
+    }
     assert db_session.scalar(select(BusinessOutbox).where(BusinessOutbox.aggregate_id == event.id)) is not None
 
 

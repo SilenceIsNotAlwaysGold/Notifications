@@ -7,7 +7,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.adapters.wecom_media import WeComMediaAdapter
@@ -186,6 +186,7 @@ class MediaFileService:
                 return summary
 
             extracted_text = result.get("raw_text") or result.get("extracted_text") or ""
+            self._promote_suspected_court_notice(result, extracted_text)
             result["requires_review"] = self._result_requires_review(result) or stage_only
             if stage_only:
                 result.setdefault("review_reasons", []).append("上下文重新分析结果必须人工确认")
@@ -303,6 +304,56 @@ class MediaFileService:
         items = list(self.db.scalars(query.order_by(MediaFile.updated_at.desc(), MediaFile.id.desc())).all())
         start = (page - 1) * page_size
         return len(items), items[start : start + page_size]
+
+    def list_court_summons(
+        self,
+        page: int = 1,
+        page_size: int = 100,
+    ) -> tuple[int, list[MediaFile]]:
+        normalized_text = func.replace(func.replace(MediaFile.extracted_text, "\n", ""), " ", "")
+        summons_layout = or_(
+            and_(normalized_text.like("%被传唤人%"), normalized_text.like("%应到时间%")),
+            and_(
+                or_(normalized_text.like("%传唤事由%"), normalized_text.like("%被传事由%")),
+                normalized_text.like("%开庭%"),
+            ),
+            and_(normalized_text.like("%传票%"), normalized_text.like("%应到处所%")),
+        )
+        query = select(MediaFile).where(
+            MediaFile.ocr_result_json.is_not(None),
+            or_(
+                MediaFile.ocr_result_json.like('%"event_type": "court_notice"%'),
+                MediaFile.ocr_result_json.like('%"document_type": "开庭传票"%'),
+                summons_layout,
+            ),
+        )
+        total = int(self.db.scalar(select(func.count()).select_from(query.subquery())) or 0)
+        items = list(
+            self.db.scalars(
+                query.order_by(MediaFile.updated_at.desc(), MediaFile.id.desc())
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            ).all()
+        )
+        return total, items
+
+    def retry_court_summons(self, media_file_id: int) -> MediaFile:
+        media_file = self._get_media_file(media_file_id)
+        result = self._load_result(media_file.review_result_json or media_file.ocr_result_json)
+        if result.get("event_type") != "court_notice":
+            raise ValueError("该资料不是已确认的开庭传票")
+        if media_file.review_status not in {"approved", "corrected", "not_required"}:
+            raise ValueError("请先补全并复核开庭传票")
+        if media_file.business_applied_at is not None:
+            return media_file
+        event = self.db.get(LegalEvent, media_file.review_event_id) if media_file.review_event_id else None
+        if not event or event.business_status != "approved":
+            raise ValueError("开庭传票业务事件尚未批准")
+        from app.services.business_application_service import BusinessApplicationService
+
+        BusinessApplicationService(self.db).apply_event(event.id)
+        self.db.flush()
+        return media_file
 
     def reanalyze_recent_pending_with_context(
         self,
@@ -554,8 +605,17 @@ class MediaFileService:
             }
 
         if decision == "corrected":
-            for key, value in (corrections or {}).items():
+            corrections = dict(corrections or {})
+            structured_corrections = {
+                key: corrections.pop(key)
+                for key in ("court_name", "court_room", "hearing_mode", "judge_phone")
+                if key in corrections
+            }
+            for key, value in corrections.items():
                 result[key] = value
+            if structured_corrections:
+                structured = result.setdefault("metadata", {}).setdefault("structured_fields", {})
+                structured.update(structured_corrections)
         if result.get("event_type") == "court_notice":
             if not result.get("court_time"):
                 raise ValueError("开庭传票缺少开庭时间，请修正后再确认")
@@ -784,6 +844,35 @@ class MediaFileService:
         return bool(result.get("requires_review")) or event_type == "unknown" or (
             event_type == "payment_screenshot" and not repayment_annotation
         )
+
+    @staticmethod
+    def _promote_suspected_court_notice(result: dict[str, Any], extracted_text: str) -> bool:
+        if result.get("event_type") == "court_notice":
+            return False
+        normalized = re.sub(r"[\s:：_—-]+", "", extracted_text or "")
+        strong_layout = (
+            ("被传唤人" in normalized and "应到时间" in normalized)
+            or (("传唤事由" in normalized or "被传事由" in normalized) and "开庭" in normalized)
+            or ("传票" in normalized and "应到处所" in normalized)
+        )
+        if not strong_layout:
+            return False
+        result["event_type"] = "court_notice"
+        result["document_type"] = "开庭传票"
+        result["requires_review"] = True
+        reasons = result.get("review_reasons")
+        if not isinstance(reasons, list):
+            reasons = []
+            result["review_reasons"] = reasons
+        reason = "疑似开庭传票，关键字段需人工确认"
+        if reason not in reasons:
+            reasons.append(reason)
+        metadata = result.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+            result["metadata"] = metadata
+        metadata["court_summons_fallback"] = True
+        return True
 
     @staticmethod
     def _dump_result(result: dict[str, Any]) -> str:

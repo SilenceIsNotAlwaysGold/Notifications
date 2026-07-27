@@ -570,6 +570,10 @@ class OCRReviewDecision(BaseModel):
     defendant: str | None = Field(default=None, max_length=255)
     amount: Decimal | None = Field(default=None, ge=0)
     court_time: datetime | None = None
+    court_name: str | None = Field(default=None, max_length=255)
+    court_room: str | None = Field(default=None, max_length=255)
+    hearing_mode: str | None = Field(default=None, max_length=64)
+    judge_phone: str | None = Field(default=None, max_length=64)
 
     @model_validator(mode="after")
     def validate_decision(self):
@@ -581,6 +585,10 @@ class OCRReviewDecision(BaseModel):
             "defendant",
             "amount",
             "court_time",
+            "court_name",
+            "court_room",
+            "hearing_mode",
+            "judge_phone",
         }
         if self.decision == "corrected" and not (self.model_fields_set & correction_fields):
             raise ValueError("修正复核至少需要修改一个识别字段")
@@ -618,6 +626,21 @@ class OCRReviewOut(BaseModel):
 class OCRReviewListOut(BaseModel):
     total: int
     items: list[OCRReviewOut]
+
+
+class CourtSummonsOut(OCRReviewOut):
+    group_name: str | None = None
+    detection_status: Literal["confirmed", "suspected"]
+    workflow_status: Literal["incomplete", "pending_review", "pending_write", "written", "write_failed", "rejected"]
+    sync_log_id: int | None = None
+    sync_status: str | None = None
+    external_row_index: int | None = None
+    sync_error: str | None = None
+
+
+class CourtSummonsListOut(BaseModel):
+    total: int
+    items: list[CourtSummonsOut]
 
 
 class OCRReviewDecisionOut(BaseModel):

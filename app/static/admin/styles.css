@@ -1982,6 +1982,49 @@ tr:hover td {
   overflow-y: auto;
 }
 
+.summons-callout {
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--accent);
+  background: #eef8f6;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.required {
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.summons-sync-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  margin-top: 16px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--line);
+}
+
+.summons-sync-summary > div {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 10px;
+  background: var(--panel);
+}
+
+.summons-sync-summary span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.summons-sync-summary strong {
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+
 .review-detail-header {
   display: flex;
   align-items: flex-start;
