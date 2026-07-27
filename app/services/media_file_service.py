@@ -879,10 +879,14 @@ class MediaFileService:
 
         if event_type == "court_notice":
             upload_url = self._upload_court_notice(media_file, result, legal_case)
-            self.document_sync.sync_court_time(
+            court_log = self.document_sync.sync_court_time(
                 event,
                 self._court_time_row(result, legal_case, media_file, upload_url=upload_url),
             )
+            if court_log.status == "failed":
+                court_log = self.document_sync.retry_failed_sync(court_log.id, operator="system:court-notice")
+            if court_log.status != "applied":
+                raise ValueError(f"开庭时间表写入失败：{court_log.error_message or court_log.status}")
             return
 
         if event_type in {"payment_notice", "payment_screenshot"}:

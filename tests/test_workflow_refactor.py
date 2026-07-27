@@ -2,6 +2,7 @@ import json
 from datetime import date, timedelta
 from decimal import Decimal
 
+import pytest
 from sqlalchemy import select
 
 from app.models.business_outbox import BusinessOutbox
@@ -393,6 +394,59 @@ def test_court_notice_without_case_uploads_summons_and_writes_court_sheet(db_ses
     assert row["开庭时间"] == "2026-08-03T09:30:00+08:00"
     assert row["传票"].startswith("kdocs://")
     assert db_session.scalar(select(Reminder)) is None
+
+
+def test_court_notice_sheet_failure_keeps_business_unapplied(db_session, tmp_path, monkeypatch):
+    image_path = tmp_path / "failed-summons.jpg"
+    image_path.write_bytes(b"summons-image")
+    result = {
+        "event_type": "court_notice",
+        "document_type": "开庭传票",
+        "defendant": "张三",
+        "court_time": "2026-08-03T09:30:00+08:00",
+        "requires_review": False,
+        "metadata": {},
+    }
+    media = MediaFile(
+        group_id="court_group",
+        msg_id="court-msg-failed",
+        media_type="image",
+        original_filename="failed-summons.jpg",
+        file_ext=".jpg",
+        local_path=str(image_path),
+        download_status="downloaded",
+        ocr_status="processed",
+        review_status="not_required",
+        ocr_result_json=json.dumps(result, ensure_ascii=False),
+        source="test",
+    )
+    db_session.add(media)
+    db_session.flush()
+    event = LegalEvent(
+        event_type="court_notice",
+        attribution_status="not_required",
+        business_status="approved",
+        metadata_json=json.dumps({"media_file_id": media.id}),
+    )
+    db_session.add(event)
+    db_session.flush()
+    media.review_event_id = event.id
+    service = MediaFileService(db_session)
+    monkeypatch.setattr(service, "_upload_court_notice", lambda *_args: "https://kdocs.test/summons.jpg")
+
+    class FailedLog:
+        id = 999
+        status = "failed"
+        error_message = "cell too large"
+
+    monkeypatch.setattr(service.document_sync, "sync_court_time", lambda *_args, **_kwargs: FailedLog())
+    monkeypatch.setattr(service.document_sync, "retry_failed_sync", lambda *_args, **_kwargs: FailedLog())
+
+    with pytest.raises(ValueError, match="开庭时间表写入失败"):
+        service._apply_ocr_business(media, event, result, None)
+
+    assert event.business_status == "approved"
+    assert media.business_applied_at is None
 
 
 def test_court_notice_ocr_without_case_is_auto_approved(db_session, tmp_path, monkeypatch):

@@ -178,6 +178,7 @@ def test_real_mcp_maps_enforcement_and_court_rows_by_fixed_column(monkeypatch):
             "被告": "张三",
             "开庭时间": "2026-07-22T09:30:00+08:00",
             "文件链接": "https://kdocs.test/summons.pdf",
+            "识别摘要": "传票识别内容" * 200,
         }
     )
 
@@ -203,6 +204,7 @@ def test_real_mcp_maps_enforcement_and_court_rows_by_fixed_column(monkeypatch):
     assert court_cells[4] == "(2026)黔0281民初3118号"
     assert court_cells[5] == "张三"
     assert court_cells[16] == "https://kdocs.test/summons.pdf"
+    assert len(court_cells[14].encode("utf-8")) <= 900
     sort_call = next(item for item in tool_calls if item["name"] == "sheet.range_sort")
     assert sort_call["arguments"]["range"] == "A1:R444"
     assert sort_call["arguments"]["key"] == "B"

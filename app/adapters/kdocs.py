@@ -608,8 +608,15 @@ class KDocsAdapter:
             17: self._pick(row, "核对") or ("待人工复核" if self._pick(row, "需人工复核") else "已识别"),
         }
         for index, value in assignments.items():
-            values[index] = value
+            values[index] = self._bounded_cell_value(value)
         return values
+
+    @staticmethod
+    def _bounded_cell_value(value: Any, max_bytes: int = 900) -> Any:
+        if not isinstance(value, str) or len(value.encode("utf-8")) <= max_bytes:
+            return value
+        encoded = value.encode("utf-8")[:max_bytes]
+        return encoded.decode("utf-8", errors="ignore")
 
     def _payment_values(self, row: dict[str, Any]) -> list[Any]:
         event_type = self._pick(row, "事件类型", "event_type")
