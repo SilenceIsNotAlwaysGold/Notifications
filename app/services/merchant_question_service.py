@@ -109,6 +109,8 @@ ISSUE_SIGNALS = (
 
 INSTRUCTION_SIGNALS = ("不要", "不用", "不需要", "取消", "停止", "撤回", "作废", "修改", "更正", "补充")
 
+NO_REPLY_PHRASES = ("请谅解", "敬请谅解", "请知悉", "仅供参考", "无需回复", "不用回复")
+
 
 class MerchantQuestionService:
     def __init__(self, db: Session) -> None:
@@ -397,10 +399,13 @@ class MerchantQuestionService:
             return False
         if not re.search(r"[A-Za-z0-9\u4e00-\u9fff]", body):
             return False
-        if "?" in body or "？" in body:
+        actionable_body = body
+        for phrase in NO_REPLY_PHRASES:
+            actionable_body = actionable_body.replace(phrase, "")
+        if "?" in actionable_body or "？" in actionable_body:
             return True
         return any(
-            signal in body
+            signal in actionable_body
             for signals in (
                 PAYMENT_SIGNALS,
                 DEADLINE_SIGNALS,

@@ -255,6 +255,8 @@ def test_plain_status_update_without_requested_action_does_not_create_question(c
     now = datetime(2026, 7, 20, 10, 0, tzinfo=app_timezone())
 
     _text(client, "merchant_group", "merchant_001", "资料发群里了", now)
+    _text(client, "merchant_group", "merchant_002", "这个技术在调试中，信息多重复请谅解", now)
+    _text(client, "merchant_group", "merchant_003", "是用AI", now)
 
     assert db_session.scalar(select(MerchantQuestion)) is None
 
