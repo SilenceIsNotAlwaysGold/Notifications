@@ -16,20 +16,98 @@ from app.utils.datetime_utils import ensure_aware, now_tz
 SYSTEM_MESSAGE_PREFIXES = (
     "【致和法务】",
     "【商家待回复】",
+    "【缴费信息待核实】",
     "商家消息超过",
     "商家消息超时",
 )
 
 CONVERSATION_CLOSING_PATTERN = re.compile(
     r"^(?:"
-    r"好(?:的|嘞)?|可以(?:的)?|行|没问题|嗯+|收到|已收到|知悉|明白|了解|"
+    r"好(?:的|嘞|了)?|可以(?:的|了)?|行|没问题|嗯+|收到(?:了)?|已收到|知悉|明白|了解|"
     r"ok|okay|谢谢(?:你)?|感谢|辛苦了|多谢|"
     r"不用了|暂时不用了|不需要了|已解决|已经解决了?|"
     r"处理好了?|已处理好了?|已经处理好了?|没事了|"
-    r"先这样|那就这样|后续再联系|回头再联系"
+    r"先这样|那就这样|这样就可以了|就这样就可以了|后续再联系|回头再联系"
     r")+$",
     re.IGNORECASE,
 )
+
+TEXT_PLACEHOLDER_PATTERN = re.compile(
+    r"^[\[【](?:表情|动画表情|图片|语音|视频|文件|位置|链接|聊天记录)[\]】]$",
+    re.IGNORECASE,
+)
+
+PAYMENT_SIGNALS = (
+    "缴费",
+    "诉讼费",
+    "公告费",
+    "保全费",
+    "执行费",
+    "付款",
+    "支付",
+    "转账",
+    "还款",
+    "回款",
+    "到账",
+    "退款",
+    "金额",
+    "费用",
+    "收款",
+    "欠款",
+    "二维码",
+    "付款码",
+    "缴费码",
+    "￥",
+    "¥",
+)
+
+DEADLINE_SIGNALS = ("截止", "到期", "逾期", "超期", "尽快", "马上", "几点", "日期")
+
+REQUEST_SIGNALS = (
+    "麻烦",
+    "请",
+    "帮忙",
+    "帮我",
+    "能否",
+    "可否",
+    "是否",
+    "是不是",
+    "为什么",
+    "怎么",
+    "如何",
+    "需要",
+    "回复",
+    "答复",
+    "核实",
+    "确认",
+    "处理",
+    "安排",
+    "提供",
+    "发一下",
+    "查一下",
+    "看一下",
+    "看下",
+    "码出一下",
+    "多少钱",
+    "多少",
+)
+
+ISSUE_SIGNALS = (
+    "有问题",
+    "不对",
+    "错误",
+    "弄错",
+    "遗漏",
+    "漏了",
+    "重复起诉",
+    "重复提交",
+    "未收到",
+    "没收到",
+    "无法",
+    "不能",
+)
+
+INSTRUCTION_SIGNALS = ("不要", "不用", "不需要", "取消", "停止", "撤回", "作废", "修改", "更正", "补充")
 
 
 class MerchantQuestionService:
@@ -56,6 +134,8 @@ class MerchantQuestionService:
         if self._is_conversation_closing(message.content or ""):
             closed = self._close_sender_question(message)
             return {"created": 0, "closed": closed}
+        if not self._requires_business_reply(message.content or ""):
+            return {"created": 0, "closed": 0}
 
         existing = self.db.scalar(
             select(MerchantQuestion).where(MerchantQuestion.group_message_id == message.id)
@@ -306,15 +386,49 @@ class MerchantQuestionService:
 
     @staticmethod
     def _is_conversation_closing(content: str) -> bool:
-        body = content.rsplit("------", 1)[-1].strip()
-        body = re.sub(r"^(?:@\S+\s*)+", "", body)
+        body = MerchantQuestionService._message_body(content)
         normalized = re.sub(r"[\s,，。.!！?？~～、;；:：\"'“”‘’()（）]+", "", body)
         return bool(normalized and CONVERSATION_CLOSING_PATTERN.fullmatch(normalized))
 
     @staticmethod
+    def _requires_business_reply(content: str) -> bool:
+        body = MerchantQuestionService._message_body(content)
+        if not body or TEXT_PLACEHOLDER_PATTERN.fullmatch(body):
+            return False
+        if not re.search(r"[A-Za-z0-9\u4e00-\u9fff]", body):
+            return False
+        if "?" in body or "？" in body:
+            return True
+        return any(
+            signal in body
+            for signals in (
+                PAYMENT_SIGNALS,
+                DEADLINE_SIGNALS,
+                REQUEST_SIGNALS,
+                ISSUE_SIGNALS,
+                INSTRUCTION_SIGNALS,
+            )
+            for signal in signals
+        )
+
+    @staticmethod
+    def _message_body(content: str) -> str:
+        body = content.rsplit("------", 1)[-1].strip()
+        return re.sub(r"^(?:@\S+\s*)+", "", body).strip()
+
+    @staticmethod
     def _stage_content(minutes: int, content: str, escalated: bool = False) -> str:
         action = "已升级，请立即处理" if escalated else "请尽快回复"
-        return f"【商家待回复】消息已等待 {minutes} 分钟，{action}：{content[:200]}"
+        prefix = (
+            "【缴费信息待核实】"
+            if MerchantQuestionService._contains_payment_signal(content)
+            else "【商家待回复】"
+        )
+        return f"{prefix}消息已等待 {minutes} 分钟，{action}：{content[:200]}"
+
+    @staticmethod
+    def _contains_payment_signal(content: str) -> bool:
+        return any(signal in content for signal in PAYMENT_SIGNALS)
 
     @staticmethod
     def _referenced_message_ids(raw_payload_json: str) -> set[int]:

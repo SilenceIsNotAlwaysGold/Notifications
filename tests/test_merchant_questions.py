@@ -62,6 +62,7 @@ def test_external_question_times_out_once_and_internal_reply_closes_it(client, d
     reminders = list(db_session.scalars(select(Reminder).where(Reminder.reminder_type == "merchant_question_timeout")).all())
     assert len(reminders) == 1
     assert reminders[0].target_userid == "manager_001"
+    assert reminders[0].content.startswith("【缴费信息待核实】")
 
     _text(client, "merchant_group", "staff_001", "需要，今天下班前完成。", asked_at + timedelta(minutes=8))
     db_session.expire_all()
@@ -76,9 +77,9 @@ def test_one_internal_reply_closes_only_latest_question_in_same_group(client, db
     _create_group(client, "merchant_a")
     _create_group(client, "merchant_b")
     now = datetime(2026, 7, 20, 10, 0, tzinfo=app_timezone())
-    _text(client, "merchant_a", "merchant_1", "问题一", now)
-    _text(client, "merchant_a", "merchant_2", "问题二", now + timedelta(minutes=1))
-    _text(client, "merchant_b", "merchant_3", "另一个群的问题", now + timedelta(minutes=1))
+    _text(client, "merchant_a", "merchant_1", "问题一怎么处理？", now)
+    _text(client, "merchant_a", "merchant_2", "问题二怎么处理？", now + timedelta(minutes=1))
+    _text(client, "merchant_b", "merchant_3", "另一个群的问题怎么处理？", now + timedelta(minutes=1))
 
     _text(client, "merchant_a", "staff_001", "统一回复", now + timedelta(minutes=2))
     db_session.expire_all()
@@ -109,7 +110,7 @@ def test_question_deadline_uses_business_hours_and_escalates(client, db_session,
     get_settings.cache_clear()
     _create_group(client, alerts=["owner_001", "supervisor_001"])
     friday_evening = datetime(2026, 7, 24, 19, 0, tzinfo=app_timezone())
-    _text(client, "merchant_group", "merchant_001", "周末前的问题", friday_evening)
+    _text(client, "merchant_group", "merchant_001", "周末前的问题麻烦处理一下", friday_evening)
     question = db_session.scalar(select(MerchantQuestion))
 
     assert question.deadline_at == datetime(2026, 7, 27, 9, 5, tzinfo=app_timezone())
@@ -147,6 +148,7 @@ def test_system_generated_messages_do_not_create_questions(client, db_session):
         (
             "【致和法务】企业微信发送通道测试成功。",
             "【商家待回复】消息已等待 5 分钟，请尽快回复。",
+            "【缴费信息待核实】消息已等待 5 分钟，请尽快核实。",
             "商家消息超过 5 分钟未回复：旧提醒",
             "商家消息超时后仍未回复，已升级：旧提醒",
         )
@@ -159,7 +161,7 @@ def test_system_generated_messages_do_not_create_questions(client, db_session):
 def test_system_generated_internal_message_does_not_close_real_question(client, db_session):
     _create_group(client, internal=["system_sender"])
     asked_at = datetime(2026, 7, 20, 10, 0, tzinfo=app_timezone())
-    _text(client, "merchant_group", "merchant_001", "真实商家问题", asked_at)
+    _text(client, "merchant_group", "merchant_001", "真实商家问题，请处理", asked_at)
 
     _text(
         client,
@@ -177,7 +179,9 @@ def test_conversation_closing_messages_do_not_create_questions(client, db_sessio
     _create_group(client)
     now = datetime(2026, 7, 20, 10, 0, tzinfo=app_timezone())
 
-    for index, content in enumerate(("好的，谢谢", "收到，辛苦了", "已经解决了", "暂时不用了")):
+    for index, content in enumerate(
+        ("好的，谢谢", "收到了，辛苦了", "已经解决了", "暂时不用了", "就这样就可以了")
+    ):
         _text(client, "merchant_group", f"merchant_{index}", content, now + timedelta(seconds=index))
 
     assert db_session.scalar(select(MerchantQuestion)) is None
@@ -213,6 +217,46 @@ def test_action_request_is_not_misclassified_as_conversation_closing(client, db_
     question = db_session.scalar(select(MerchantQuestion))
     assert question is not None
     assert question.status == "open"
+
+
+def test_stickers_emoji_and_chitchat_do_not_create_questions(client, db_session):
+    _create_group(client)
+    now = datetime(2026, 7, 20, 10, 0, tzinfo=app_timezone())
+
+    noise_messages = ("[表情]", "[动画表情]", "[图片]", "[OK]", "👍🏻", "哈哈哈", "今天天气不错", "元旦快乐")
+    for index, content in enumerate(noise_messages):
+        _text(client, "merchant_group", f"merchant_{index}", content, now + timedelta(seconds=index))
+
+    assert db_session.scalar(select(MerchantQuestion)) is None
+
+
+def test_payment_deadline_and_explicit_requests_create_questions(client, db_session):
+    _create_group(client)
+    now = datetime(2026, 7, 20, 10, 0, tzinfo=app_timezone())
+    contents = (
+        "诉讼费500元已经转账",
+        "这个明天下午截止",
+        "麻烦核实一下资料",
+        "这个应该怎么处理？",
+        "杨帅这个案件好像重复起诉了",
+        "付款码出一下",
+        "这个多少钱",
+    )
+
+    for index, content in enumerate(contents):
+        _text(client, "merchant_group", f"merchant_{index}", content, now + timedelta(seconds=index))
+
+    questions = list(db_session.scalars(select(MerchantQuestion).order_by(MerchantQuestion.id)).all())
+    assert [item.content for item in questions] == list(contents)
+
+
+def test_plain_status_update_without_requested_action_does_not_create_question(client, db_session):
+    _create_group(client)
+    now = datetime(2026, 7, 20, 10, 0, tzinfo=app_timezone())
+
+    _text(client, "merchant_group", "merchant_001", "资料发群里了", now)
+
+    assert db_session.scalar(select(MerchantQuestion)) is None
 
 
 def test_internal_reply_cancels_all_pending_timeout_stages(client, db_session, monkeypatch):
