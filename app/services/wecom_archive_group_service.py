@@ -18,7 +18,7 @@ GROUP_FEATURE_DEFAULTS = {
     "document_sync": True,
     "payment_tracking": True,
     "case_reminders": True,
-    "question_timeout": True,
+    "question_timeout": False,
 }
 
 

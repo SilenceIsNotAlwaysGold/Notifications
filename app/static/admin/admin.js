@@ -1152,7 +1152,7 @@ function groupFeatureInputs(features = {}) {
     ["document_sync", "文书同步"],
     ["payment_tracking", "缴费跟踪"],
     ["case_reminders", "案件提醒"],
-    ["question_timeout", "提问超时"],
+    ["question_timeout", "提问超时（需配置@人员）"],
   ];
   return `<div class="feature-checks">${options.map(([key, label]) => `<label><input type="checkbox" data-feature="${key}" ${features[key] !== false ? "checked" : ""} />${label}</label>`).join("")}</div>`;
 }
@@ -1201,9 +1201,9 @@ async function renderArchiveGroups() {
           <div class="field"><label>状态</label><select name="status">${archiveGroupStatusOptions("enabled")}</select></div>
           <div class="field"><label>群类型</label><select name="group_type">${archiveGroupTypeOptions("other")}</select></div>
           <div class="field"><label>接入策略</label><select name="access_policy">${archiveGroupPolicyOptions("auto")}</select></div>
-          <div class="field"><label>内部人员 ID</label><input name="internal_userids" placeholder="多个 ID 用逗号分隔" /></div>
-          <div class="field"><label>告警人员 ID</label><input name="alert_userids" placeholder="多个 ID 用逗号分隔" /></div>
-          <div class="field"><label>提问超时（分钟）</label><input name="question_timeout_minutes" type="number" min="1" max="1440" value="5" /></div>
+          <div class="field"><label>归档内部人员 ID</label><input name="internal_userids" placeholder="用于识别内部回复，多个 ID 用逗号分隔" /></div>
+          <div class="field"><label>提醒 @ 人员 ID</label><input name="alert_userids" placeholder="wecomapi 群成员 ID，多个用逗号分隔" /></div>
+          <div class="field"><label>首次提醒（分钟）</label><input name="question_timeout_minutes" type="number" min="1" max="1440" value="5" /></div>
           <div class="field field-command"><button type="submit">登记</button></div>
         </form>
         `,
@@ -1264,8 +1264,8 @@ async function renderArchiveGroups() {
               render: (row) => `<select class="compact-input" data-field="access_policy">${archiveGroupPolicyOptions(row.access_policy || "auto")}</select>`,
             },
             {
-              label: "内部/告警人员",
-              render: (row) => `<input class="compact-input" data-field="internal_userids" value="${escapeHtml((row.internal_userids || []).join(","))}" placeholder="内部人员" /><input class="compact-input compact-stack" data-field="alert_userids" value="${escapeHtml((row.alert_userids || []).join(","))}" placeholder="告警人员" />`,
+              label: "归档内部 / 提醒 @ 人员",
+              render: (row) => `<input class="compact-input" data-field="internal_userids" value="${escapeHtml((row.internal_userids || []).join(","))}" placeholder="归档内部人员 ID" /><input class="compact-input compact-stack" data-field="alert_userids" value="${escapeHtml((row.alert_userids || []).join(","))}" placeholder="wecomapi @ 人员 ID" />`,
             },
             {
               label: "超时",
@@ -1354,6 +1354,11 @@ async function renderArchiveGroups() {
       row.querySelectorAll("[data-feature]").forEach((field) => {
         payload.features[field.dataset.feature] = field.checked;
       });
+      if (payload.features.question_timeout && !payload.alert_userids.length) {
+        showAlert("开启提问超时前，必须配置至少一个提醒 @ 人员 ID", "error");
+        row.querySelector('[data-field="alert_userids"]')?.focus();
+        return;
+      }
       await api(`/api/v1/legal/wecom-archive/groups/${encodeURIComponent(button.dataset.saveArchiveGroup)}`, {
         method: "PATCH",
         body: JSON.stringify(payload),

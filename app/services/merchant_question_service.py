@@ -12,6 +12,13 @@ from app.services.reminder_service import ReminderService
 from app.services.wecom_archive_group_service import WeComArchiveGroupService
 from app.utils.datetime_utils import ensure_aware, now_tz
 
+SYSTEM_MESSAGE_PREFIXES = (
+    "【致和法务】",
+    "【商家待回复】",
+    "商家消息超过",
+    "商家消息超时",
+)
+
 
 class MerchantQuestionService:
     def __init__(self, db: Session) -> None:
@@ -21,6 +28,8 @@ class MerchantQuestionService:
 
     def handle_message(self, message: GroupMessage) -> dict[str, int]:
         if message.msg_type != "text" or not (message.content or "").strip():
+            return {"created": 0, "closed": 0}
+        if self._is_system_generated(message.content or ""):
             return {"created": 0, "closed": 0}
         group = self.group_service.get_group(message.group_id)
         if not group or group.group_type != "merchant":
@@ -67,62 +76,91 @@ class MerchantQuestionService:
         )
         created = 0
         for question in questions:
+            group = self.group_service.get_group(question.group_id)
+            if not group or not self.group_service.feature_enabled(question.group_id, "question_timeout"):
+                continue
             dedupe_key = f"merchant-question:{question.id}:timeout"
             reminder = self.db.scalar(select(Reminder).where(Reminder.dedupe_key == dedupe_key))
-            if reminder is None:
+            alert_userids = self.group_service.alert_userids(group)
+            target_userid = question.assigned_userid or (alert_userids[0] if alert_userids else None)
+            if target_userid and question.assigned_userid is None:
+                question.assigned_userid = target_userid
+            if reminder is None and target_userid:
                 reminder = Reminder(
                     tenant_id=question.tenant_id,
                     case_id=None,
                     group_id=question.group_id,
                     reminder_type="merchant_question_timeout",
                     remind_at=now,
-                    content=f"商家消息超过 5 分钟未回复：{question.content[:200]}",
-                    target_userid=question.assigned_userid,
+                    content=self._stage_content(group.question_timeout_minutes, question.content),
+                    target_userid=target_userid,
                     dedupe_key=dedupe_key,
                     status="pending",
                 )
                 self.db.add(reminder)
                 self.db.flush()
                 created += 1
-            question.reminder_id = reminder.id
+            if reminder is not None:
+                question.reminder_id = reminder.id
             question.status = "timed_out"
             question.updated_at = now_tz()
+        self.db.flush()
         escalated = self._create_escalations(now)
         self.db.flush()
         return {"checked": len(questions), "created_reminders": created, "created_escalations": escalated}
 
     def _create_escalations(self, now: datetime) -> int:
-        cutoff = now - timedelta(minutes=self.settings.merchant_question_escalation_minutes)
         questions = list(
             self.db.scalars(
                 select(MerchantQuestion)
                 .where(MerchantQuestion.status == "timed_out")
-                .where(MerchantQuestion.deadline_at <= cutoff)
                 .order_by(MerchantQuestion.deadline_at.asc(), MerchantQuestion.id.asc())
             ).all()
         )
         created = 0
         for question in questions:
-            dedupe_key = f"merchant-question:{question.id}:escalation"
-            if self.db.scalar(select(Reminder.id).where(Reminder.dedupe_key == dedupe_key)) is not None:
-                continue
             group = self.group_service.get_group(question.group_id)
-            alert_userids = self.group_service.alert_userids(group) if group else []
-            target_userid = alert_userids[1] if len(alert_userids) > 1 else question.assigned_userid
-            self.db.add(
-                Reminder(
-                    tenant_id=question.tenant_id,
-                    case_id=None,
-                    group_id=question.group_id,
-                    reminder_type="merchant_question_escalation",
-                    remind_at=now,
-                    content=f"商家消息超时后仍未回复，已升级：{question.content[:200]}",
-                    target_userid=target_userid,
-                    dedupe_key=dedupe_key,
-                    status="pending",
+            if not group or not self.group_service.feature_enabled(question.group_id, "question_timeout"):
+                continue
+            alert_userids = self.group_service.alert_userids(group)
+            assigned = question.assigned_userid or (alert_userids[0] if alert_userids else None)
+            if assigned and question.assigned_userid is None:
+                question.assigned_userid = assigned
+            escalation_target = alert_userids[1] if len(alert_userids) > 1 else assigned
+            first_minutes = group.question_timeout_minutes
+            followup_minutes = max(first_minutes + 1, self.settings.merchant_question_escalation_minutes)
+            stages = [
+                (followup_minutes, "merchant_question_followup", assigned, f"followup-{followup_minutes}"),
+                (max(followup_minutes + 1, 60), "merchant_question_escalation", escalation_target, "escalation-60"),
+            ]
+            for minutes, reminder_type, target_userid, stage_key in stages:
+                if not target_userid or self._business_deadline(question.asked_at, minutes) > now:
+                    continue
+                dedupe_key = f"merchant-question:{question.id}:{stage_key}"
+                if self.db.scalar(select(Reminder.id).where(Reminder.dedupe_key == dedupe_key)) is not None:
+                    if reminder_type == "merchant_question_escalation":
+                        question.status = "escalated"
+                    continue
+                self.db.add(
+                    Reminder(
+                        tenant_id=question.tenant_id,
+                        case_id=None,
+                        group_id=question.group_id,
+                        reminder_type=reminder_type,
+                        remind_at=now,
+                        content=self._stage_content(
+                            minutes,
+                            question.content,
+                            escalated=reminder_type == "merchant_question_escalation",
+                        ),
+                        target_userid=target_userid,
+                        dedupe_key=dedupe_key,
+                        status="pending",
+                    )
                 )
-            )
-            created += 1
+                created += 1
+                if reminder_type == "merchant_question_escalation":
+                    question.status = "escalated"
         return created
 
     def _business_deadline(self, asked_at: datetime, timeout_minutes: int) -> datetime:
@@ -189,10 +227,7 @@ class MerchantQuestionService:
         question.closed_by = operator
         question.closed_at = now_tz()
         question.close_reason = reason
-        if question.reminder_id:
-            reminder = self.db.get(Reminder, question.reminder_id)
-            if reminder and reminder.status == "pending":
-                ReminderService(self.db).cancel_reminder(reminder, "关联商家提问已关闭", operator)
+        self._cancel_pending_question_reminders(question, "关联商家提问已关闭", operator)
         self.db.flush()
         return question
 
@@ -201,7 +236,7 @@ class MerchantQuestionService:
             self.db.scalars(
                 select(MerchantQuestion)
                 .where(MerchantQuestion.group_id == reply.group_id)
-                .where(MerchantQuestion.status.in_(["open", "timed_out"]))
+                .where(MerchantQuestion.status.in_(["open", "timed_out", "escalated"]))
                 .where(MerchantQuestion.asked_at <= ensure_aware(reply.received_at))
                 .order_by(MerchantQuestion.asked_at.desc(), MerchantQuestion.id.desc())
             ).all()
@@ -214,12 +249,30 @@ class MerchantQuestionService:
         question.reply_message_id = reply.id
         question.replied_at = ensure_aware(reply.received_at)
         question.updated_at = now_tz()
-        if question.reminder_id:
-            reminder = self.db.get(Reminder, question.reminder_id)
-            if reminder and reminder.status == "pending":
-                ReminderService(self.db).cancel_reminder(reminder, "内部人员已回复商家提问", reply.sender_id)
+        self._cancel_pending_question_reminders(question, "内部人员已回复商家提问", reply.sender_id)
         self.db.flush()
         return 1
+
+    def _cancel_pending_question_reminders(self, question: MerchantQuestion, reason: str, operator: str) -> None:
+        reminders = list(
+            self.db.scalars(
+                select(Reminder)
+                .where(Reminder.dedupe_key.like(f"merchant-question:{question.id}:%"))
+                .where(Reminder.status == "pending")
+            ).all()
+        )
+        for reminder in reminders:
+            ReminderService(self.db).cancel_reminder(reminder, reason, operator)
+
+    @staticmethod
+    def _is_system_generated(content: str) -> bool:
+        cleaned = content.strip()
+        return any(cleaned.startswith(prefix) for prefix in SYSTEM_MESSAGE_PREFIXES)
+
+    @staticmethod
+    def _stage_content(minutes: int, content: str, escalated: bool = False) -> str:
+        action = "已升级，请立即处理" if escalated else "请尽快回复"
+        return f"【商家待回复】消息已等待 {minutes} 分钟，{action}：{content[:200]}"
 
     @staticmethod
     def _referenced_message_ids(raw_payload_json: str) -> set[int]:
