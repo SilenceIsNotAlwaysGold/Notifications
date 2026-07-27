@@ -1859,6 +1859,31 @@ tr:hover td {
   width: 160px;
 }
 
+.sync-filter-bar {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(130px, 1fr)) auto;
+  gap: 10px;
+  align-items: end;
+  padding: 0 0 16px;
+}
+
+.sync-filter-bar label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.sync-filter-bar label span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.sync-filter-bar select,
+.sync-filter-bar button {
+  min-height: 40px;
+}
+
 .review-workspace {
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr);
@@ -2284,6 +2309,10 @@ tr:hover td {
     flex: 1 1 140px;
   }
 
+  .sync-filter-bar {
+    grid-template-columns: repeat(3, minmax(130px, 1fr));
+  }
+
   .section-tabs {
     margin-right: -14px;
     margin-left: -14px;
@@ -2520,5 +2549,9 @@ tr:hover td {
 
   .candidate-form-actions {
     grid-column: span 1;
+  }
+
+  .sync-filter-bar {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

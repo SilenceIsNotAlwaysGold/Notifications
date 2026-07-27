@@ -13,6 +13,12 @@ const state = {
   kdocsQuery: "判决书",
   kdocsDocumentToken: null,
   kdocsDocumentTokenStack: [],
+  syncPage: 1,
+  syncPageSize: 50,
+  syncStatus: "",
+  syncType: "",
+  syncTarget: "",
+  syncSortOrder: "desc",
   wecomPlatformGroups: [],
   selectedCaseId: null,
   attributionPage: 1,
@@ -1893,21 +1899,112 @@ async function renderMedia() {
 }
 
 async function renderSync() {
-  const data = await api("/api/v1/legal/document-sync-logs?page_size=50");
+  const query = new URLSearchParams({
+    page: String(state.syncPage),
+    page_size: String(state.syncPageSize),
+    sort_order: state.syncSortOrder,
+  });
+  if (state.syncStatus) query.set("status", state.syncStatus);
+  if (state.syncType) query.set("sync_type", state.syncType);
+  if (state.syncTarget) query.set("sync_target", state.syncTarget);
+  const data = await api(`/api/v1/legal/document-sync-logs?${query.toString()}`);
+  const totalPages = Math.max(1, Math.ceil((data.total || 0) / state.syncPageSize));
+  if (state.syncPage > totalPages) {
+    state.syncPage = totalPages;
+    return renderSync();
+  }
+  const option = (value, label, selected) => `<option value="${escapeHtml(value)}" ${selected === value ? "selected" : ""}>${escapeHtml(label)}</option>`;
+  const filters = `
+    <form id="sync-filter-form" class="sync-filter-bar">
+      <label><span>写入状态</span><select name="status">
+        ${option("", "全部状态", state.syncStatus)}
+        ${option("applied", "已写入", state.syncStatus)}
+        ${option("failed", "写入失败", state.syncStatus)}
+        ${option("skipped", "已跳过", state.syncStatus)}
+        ${option("superseded", "已失效", state.syncStatus)}
+        ${option("success", "历史成功", state.syncStatus)}
+      </select></label>
+      <label><span>业务类型</span><select name="sync_type">
+        ${option("", "全部类型", state.syncType)}
+        ${option("court_time", "开庭时间", state.syncType)}
+        ${option("legal_document_upload", "法律文书", state.syncType)}
+        ${option("payment_registration", "缴费登记", state.syncType)}
+        ${option("enforcement_progress", "执行进展", state.syncType)}
+        ${option("case_snapshot", "案件快照", state.syncType)}
+        ${option("archive", "归档事件", state.syncType)}
+        ${option("status", "案件状态", state.syncType)}
+        ${option("paid_amount", "已付金额", state.syncType)}
+      </select></label>
+      <label><span>写入目标</span><select name="sync_target">
+        ${option("", "全部目标", state.syncTarget)}
+        ${option("kdocs", "金山文档", state.syncTarget)}
+        ${option("tencent_doc", "历史腾讯文档", state.syncTarget)}
+      </select></label>
+      <label><span>排序</span><select name="sort_order">
+        ${option("desc", "最新优先", state.syncSortOrder)}
+        ${option("asc", "最早优先", state.syncSortOrder)}
+      </select></label>
+      <label><span>每页</span><select name="page_size">
+        ${option("20", "20 条", String(state.syncPageSize))}
+        ${option("50", "50 条", String(state.syncPageSize))}
+        ${option("100", "100 条", String(state.syncPageSize))}
+      </select></label>
+      <button type="button" class="ghost" id="sync-refresh">刷新</button>
+    </form>`;
+  const resultTable = table(
+    [
+      { label: "ID", key: "id" },
+      { label: "写入时间", render: (row) => fmt(row.created_at ? new Date(row.created_at).toLocaleString("zh-CN", { hour12: false }) : null) },
+      { label: "类型", key: "sync_type" },
+      { label: "状态", render: (row) => badge(row.status) },
+      { label: "目标", key: "sync_target" },
+      { label: "Sheet", key: "external_sheet_name" },
+      { label: "行", key: "external_row_index" },
+      { label: "错误", key: "error_message" },
+      { label: "操作", render: (row) => row.status === "failed" ? `<button type="button" class="ghost small" data-sync-retry="${row.id}">重试</button>` : '<span class="muted">-</span>' },
+    ],
+    data.items || [],
+  );
   $("#content").innerHTML = panel(
     "同步日志",
-    table(
-      [
-        { label: "ID", key: "id" },
-        { label: "类型", key: "sync_type" },
-        { label: "状态", render: (row) => badge(row.status) },
-        { label: "目标", key: "sync_target" },
-        { label: "Sheet", key: "external_sheet_name" },
-        { label: "错误", key: "error_message" },
-      ],
-      data.items || [],
-    ),
+    `${filters}${resultTable}
+      <div class="kdocs-pagination">
+        <span class="attribution-page-summary">共 ${escapeHtml(data.total || 0)} 条，第 ${escapeHtml(state.syncPage)} / ${escapeHtml(totalPages)} 页 · ${state.syncSortOrder === "desc" ? "最新优先" : "最早优先"}</span>
+        <button type="button" class="ghost small" id="sync-prev" ${state.syncPage <= 1 ? "disabled" : ""}>上一页</button>
+        <button type="button" class="ghost small" id="sync-next" ${state.syncPage >= totalPages ? "disabled" : ""}>下一页</button>
+      </div>`,
   );
+  const filterForm = $("#sync-filter-form");
+  filterForm.addEventListener("change", async () => {
+    const formData = new FormData(filterForm);
+    state.syncStatus = String(formData.get("status") || "");
+    state.syncType = String(formData.get("sync_type") || "");
+    state.syncTarget = String(formData.get("sync_target") || "");
+    state.syncSortOrder = String(formData.get("sort_order") || "desc");
+    state.syncPageSize = Number(formData.get("page_size") || 50);
+    state.syncPage = 1;
+    await renderSync();
+  });
+  $("#sync-refresh").addEventListener("click", renderSync);
+  $("#sync-prev").addEventListener("click", async () => {
+    if (state.syncPage > 1) state.syncPage -= 1;
+    await renderSync();
+  });
+  $("#sync-next").addEventListener("click", async () => {
+    if (state.syncPage < totalPages) state.syncPage += 1;
+    await renderSync();
+  });
+  document.querySelectorAll("[data-sync-retry]").forEach((button) => button.addEventListener("click", async () => {
+    button.disabled = true;
+    try {
+      await api(`/api/v1/legal/document-sync-logs/${button.dataset.syncRetry}/retry`, { method: "POST" });
+      showAlert("金山写入重试完成");
+      await renderSync();
+    } catch (error) {
+      showAlert(error.message, "error");
+      button.disabled = false;
+    }
+  }));
 }
 
 const kdocsVisibleColumns = {

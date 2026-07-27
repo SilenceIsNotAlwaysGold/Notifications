@@ -40,6 +40,18 @@ def test_admin_queries_cases_within_api_page_limit():
     assert '/api/v1/legal/cases?limit=100' in content
 
 
+def test_admin_sync_results_have_filters_sort_and_pagination():
+    content = (ROOT / "app/static/admin/admin.js").read_text(encoding="utf-8")
+
+    assert 'id="sync-filter-form"' in content
+    assert 'option("desc", "最新优先"' in content
+    assert 'query.set("status", state.syncStatus)' in content
+    assert 'query.set("sync_type", state.syncType)' in content
+    assert 'id="sync-prev"' in content
+    assert 'id="sync-next"' in content
+    assert 'data-sync-retry=' in content
+
+
 def test_unmapped_group_test_send_explains_required_mapping():
     content = (ROOT / "app/static/admin/admin.js").read_text(encoding="utf-8")
 

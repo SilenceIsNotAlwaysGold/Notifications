@@ -271,7 +271,9 @@ class DocumentSyncService:
         status: str | None = None,
         sync_type: str | None = None,
         case_id: int | None = None,
+        tenant_id: str | None = None,
         sync_target: str | None = None,
+        sort_order: str = "desc",
         page: int = 1,
         page_size: int = 20,
     ) -> tuple[int, list[DocumentSyncLog]]:
@@ -282,10 +284,13 @@ class DocumentSyncService:
             query = query.where(DocumentSyncLog.sync_type == sync_type)
         if case_id is not None:
             query = query.where(DocumentSyncLog.case_id == case_id)
+        if tenant_id:
+            query = query.where(DocumentSyncLog.tenant_id == tenant_id)
         if sync_target:
             query = query.where(DocumentSyncLog.sync_target == sync_target)
         total = int(self.db.scalar(select(func.count()).select_from(query.subquery())) or 0)
-        items = list(self.db.scalars(query.order_by(DocumentSyncLog.id.desc()).offset((page - 1) * page_size).limit(page_size)).all())
+        order_by = DocumentSyncLog.id.asc() if sort_order == "asc" else DocumentSyncLog.id.desc()
+        items = list(self.db.scalars(query.order_by(order_by).offset((page - 1) * page_size).limit(page_size)).all())
         return total, items
 
     def _retry_operation(self, operation: str | None, payload: dict[str, Any], log: DocumentSyncLog) -> dict[str, Any]:

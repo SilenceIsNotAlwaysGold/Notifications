@@ -155,6 +155,44 @@ def test_document_sync_logs_query_api(client):
     assert response.json()["data"]["total"] == 0
 
 
+def test_document_sync_logs_are_filterable_paginated_and_sorted(client, db_session):
+    logs = [
+        DocumentSyncLog(sync_type="court_time", sync_target="kdocs", status="applied", request_payload_json="{}", response_payload_json="{}"),
+        DocumentSyncLog(sync_type="court_time", sync_target="kdocs", status="failed", request_payload_json="{}", response_payload_json="{}"),
+        DocumentSyncLog(sync_type="payment_registration", sync_target="kdocs", status="applied", request_payload_json="{}", response_payload_json="{}"),
+        DocumentSyncLog(sync_type="archive", sync_target="tencent_doc", status="success", request_payload_json="{}", response_payload_json="{}"),
+        DocumentSyncLog(sync_type="case_snapshot", sync_target="kdocs", status="skipped", request_payload_json="{}", response_payload_json="{}"),
+    ]
+    db_session.add_all(logs)
+    db_session.commit()
+
+    latest = client.get(
+        "/api/v1/legal/document-sync-logs",
+        params={"page": 1, "page_size": 2, "sort_order": "desc"},
+    ).json()["data"]
+    assert latest["total"] == 5
+    assert [item["id"] for item in latest["items"]] == [logs[4].id, logs[3].id]
+
+    oldest = client.get(
+        "/api/v1/legal/document-sync-logs",
+        params={"page": 1, "page_size": 2, "sort_order": "asc"},
+    ).json()["data"]
+    assert [item["id"] for item in oldest["items"]] == [logs[0].id, logs[1].id]
+
+    filtered = client.get(
+        "/api/v1/legal/document-sync-logs",
+        params={"status": "applied", "sync_type": "court_time", "sync_target": "kdocs"},
+    ).json()["data"]
+    assert filtered["total"] == 1
+    assert filtered["items"][0]["id"] == logs[0].id
+
+
+def test_document_sync_logs_reject_invalid_sort_order(client):
+    response = client.get("/api/v1/legal/document-sync-logs", params={"sort_order": "newest"})
+
+    assert response.status_code == 422
+
+
 def test_failed_sync_log_can_retry(client, db_session):
     log = DocumentSyncLog(
         case_id=None,
