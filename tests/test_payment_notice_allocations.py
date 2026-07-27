@@ -276,6 +276,61 @@ def test_source_sender_id_is_used_when_contact_mapping_is_missing(db_session):
     assert target_userid == "source-sender-id"
 
 
+def test_pending_payment_reminders_can_be_repaired_to_source_destination(db_session):
+    legal_case = _case(db_session)
+    message = GroupMessage(
+        group_id="actual-source-group",
+        sender_id="actual-source-sender",
+        msg_type="text",
+        content="诉讼费100元",
+        raw_payload_json="{}",
+        received_at=now_tz(),
+    )
+    db_session.add(message)
+    db_session.flush()
+    notice = LegalEvent(
+        case_id=legal_case.id,
+        group_message_id=message.id,
+        event_type="payment_notice",
+        attribution_status="confirmed",
+        business_status="applied",
+    )
+    db_session.add(notice)
+    db_session.flush()
+    pending = Reminder(
+        case_id=legal_case.id,
+        group_id="old-case-group",
+        reminder_type="payment_confirmation",
+        remind_at=now_tz() + timedelta(minutes=30),
+        content="待确认",
+        target_userid="old-case-owner",
+        source_event_id=notice.id,
+        status="pending",
+    )
+    sent = Reminder(
+        case_id=legal_case.id,
+        group_id="old-case-group",
+        reminder_type="payment_tracking",
+        remind_at=now_tz(),
+        content="已发送",
+        target_userid="old-case-owner",
+        source_event_id=notice.id,
+        status="sent",
+    )
+    db_session.add_all([pending, sent])
+    db_session.flush()
+    service = PaymentTrackingService(db_session)
+
+    assert service.repair_pending_reminder_destinations(dry_run=True) == {"checked": 1, "changed": 1}
+    assert pending.group_id == "old-case-group"
+    assert service.repair_pending_reminder_destinations(dry_run=False) == {"checked": 1, "changed": 1}
+
+    assert pending.group_id == "actual-source-group"
+    assert pending.target_userid == "actual-source-sender"
+    assert sent.group_id == "old-case-group"
+    assert sent.target_userid == "old-case-owner"
+
+
 def test_explicit_text_confirmation_closes_single_open_notice(db_session):
     legal_case = _case(db_session)
     notice = _notice(db_session, legal_case, "25.00", "案件受理费25元")

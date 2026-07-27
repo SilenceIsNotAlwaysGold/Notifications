@@ -52,6 +52,32 @@ class PaymentTrackingService:
         )
         return message.group_id, (contact.wecomapi_user_id if contact and contact.wecomapi_user_id else sender_id)
 
+    def repair_pending_reminder_destinations(self, *, dry_run: bool = True) -> dict[str, int]:
+        rows = self.db.execute(
+            select(Reminder, LegalEvent, LegalCase)
+            .join(LegalEvent, LegalEvent.id == Reminder.source_event_id)
+            .join(LegalCase, LegalCase.id == Reminder.case_id)
+            .where(
+                Reminder.status == "pending",
+                Reminder.reminder_type.in_(("payment_tracking", "payment_confirmation")),
+                LegalEvent.event_type == "payment_notice",
+                LegalEvent.group_message_id.is_not(None),
+            )
+            .order_by(Reminder.id.asc())
+        ).all()
+        changed = 0
+        for reminder, event, legal_case in rows:
+            group_id, target_userid = self.reminder_destination(event, legal_case)
+            if reminder.group_id == group_id and reminder.target_userid == target_userid:
+                continue
+            changed += 1
+            if not dry_run:
+                reminder.group_id = group_id
+                reminder.target_userid = target_userid
+        if not dry_run:
+            self.db.flush()
+        return {"checked": len(rows), "changed": changed}
+
     def list_rows(
         self,
         *,
