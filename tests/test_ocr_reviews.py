@@ -228,7 +228,15 @@ def test_court_summons_queue_includes_layout_fallback_and_excludes_generic_ocr(c
         ocr_status="processed",
         review_status="pending",
         extracted_text="人民法院\n传\n票\n被传唤人\n应到时间\n应到处所",
-        ocr_result_json=json.dumps({"event_type": "unknown", "metadata": {}}, ensure_ascii=False),
+        ocr_result_json=json.dumps(
+            {
+                "event_type": "unknown",
+                "defendant": "OCR 误识别姓名",
+                "court_time": "2026-08-03T09:00:00+08:00",
+                "metadata": {},
+            },
+            ensure_ascii=False,
+        ),
         source="test",
     )
     generic = MediaFile(

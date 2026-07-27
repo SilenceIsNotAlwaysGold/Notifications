@@ -107,8 +107,9 @@ def _court_summons_out(
         workflow_status = "write_failed"
     elif media_file.business_applied_at is not None:
         workflow_status = "written"
-    elif media_file.review_status == "pending" and not (
-        (result.get("defendant") or "").strip() and result.get("court_time")
+    elif media_file.review_status == "pending" and (
+        detection_status == "suspected"
+        or not ((result.get("defendant") or "").strip() and result.get("court_time"))
     ):
         workflow_status = "incomplete"
     elif media_file.review_status == "pending":
