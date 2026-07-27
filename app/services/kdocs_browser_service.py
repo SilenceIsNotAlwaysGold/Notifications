@@ -1,5 +1,6 @@
+import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from app.adapters.kdocs_mcp import KDocsMcpClient
@@ -79,7 +80,18 @@ class KDocsBrowserService:
             targets=targets,
         )
 
-    def list_rows(self, target: KDocsTarget, page: int, page_size: int) -> KDocsRowPageOut:
+    def list_rows(
+        self,
+        target: KDocsTarget,
+        page: int,
+        page_size: int,
+        *,
+        query: str = "",
+        court_mode: str = "",
+        date_from: str | None = None,
+        date_to: str | None = None,
+        sort_order: str = "asc",
+    ) -> KDocsRowPageOut:
         self._ensure_real_mcp()
         definition = TARGETS[target]
         file_id = str(getattr(self.settings, definition.file_id_setting) or "")
@@ -88,20 +100,29 @@ class KDocsBrowserService:
             raise ValueError(f"{definition.name}尚未配置 file_id")
         sheet = self.client.get_sheet_info(file_id, worksheet_id)
         last_row = max(int(sheet.get("rowTo") or 0), 0)
-        total = last_row
-        row_from = (page - 1) * page_size + 1
-        row_to = min(row_from + page_size - 1, last_row)
-        cells = []
-        if row_from <= row_to:
-            cells = self.client.get_range_data(
-                file_id,
-                worksheet_id,
-                row_from=row_from,
-                row_to=row_to,
-                col_from=0,
-                col_to=len(definition.headers) - 1,
-            )
-        rows = self._rows(cells, definition.headers, row_from, row_to)
+        needs_full_scan = bool(query or court_mode or date_from or date_to or (target == "court" and sort_order in {"asc", "desc"}))
+        if needs_full_scan:
+            rows = self._all_rows(file_id, worksheet_id, definition.headers, last_row)
+            rows = self._filter_rows(rows, target, query, court_mode, date_from, date_to)
+            rows = self._sort_rows(rows, target, sort_order)
+            total = len(rows)
+            start = (page - 1) * page_size
+            rows = rows[start:start + page_size]
+        else:
+            total = last_row
+            row_from = (page - 1) * page_size + 1
+            row_to = min(row_from + page_size - 1, last_row)
+            cells = []
+            if row_from <= row_to:
+                cells = self.client.get_range_data(
+                    file_id,
+                    worksheet_id,
+                    row_from=row_from,
+                    row_to=row_to,
+                    col_from=0,
+                    col_to=len(definition.headers) - 1,
+                )
+            rows = self._rows(cells, definition.headers, row_from, row_to)
         return KDocsRowPageOut(
             target=target,
             target_name=definition.name,
@@ -113,8 +134,87 @@ class KDocsBrowserService:
             total=total,
             page=page,
             page_size=page_size,
+            query=query,
+            court_mode=court_mode,
+            date_from=date_from,
+            date_to=date_to,
+            sort_order=sort_order,
             items=rows,
         )
+
+    def _all_rows(
+        self,
+        file_id: str,
+        worksheet_id: int,
+        headers: tuple[str, ...],
+        last_row: int,
+    ) -> list[KDocsRowOut]:
+        rows: list[KDocsRowOut] = []
+        for row_from in range(1, last_row + 1, 100):
+            row_to = min(row_from + 99, last_row)
+            cells = self.client.get_range_data(
+                file_id,
+                worksheet_id,
+                row_from=row_from,
+                row_to=row_to,
+                col_from=0,
+                col_to=len(headers) - 1,
+            )
+            rows.extend(self._rows(cells, headers, row_from, row_to))
+        return rows
+
+    @classmethod
+    def _filter_rows(
+        cls,
+        rows: list[KDocsRowOut],
+        target: KDocsTarget,
+        query: str,
+        court_mode: str,
+        date_from: str | None,
+        date_to: str | None,
+    ) -> list[KDocsRowOut]:
+        query_normalized = query.casefold()
+        start = date.fromisoformat(date_from) if date_from else None
+        end = date.fromisoformat(date_to) if date_to else None
+        result = []
+        for row in rows:
+            values = row.values
+            if query_normalized and not any(query_normalized in str(value).casefold() for value in values.values()):
+                continue
+            if target == "court" and court_mode and court_mode not in str(values.get("开庭方式") or ""):
+                continue
+            if target == "court" and (start or end):
+                hearing_date = cls._court_datetime(values.get("开庭时间"))
+                if hearing_date is None or (start and hearing_date.date() < start) or (end and hearing_date.date() > end):
+                    continue
+            result.append(row)
+        return result
+
+    @classmethod
+    def _sort_rows(cls, rows: list[KDocsRowOut], target: KDocsTarget, sort_order: str) -> list[KDocsRowOut]:
+        reverse = sort_order == "desc"
+        if target != "court":
+            return sorted(rows, key=lambda row: row.row_index, reverse=reverse)
+        dated = []
+        undated = []
+        for row in rows:
+            hearing_time = cls._court_datetime(row.values.get("开庭时间"))
+            (dated if hearing_time else undated).append((hearing_time, row))
+        dated.sort(key=lambda item: (item[0], item[1].row_index), reverse=reverse)
+        undated.sort(key=lambda item: item[1].row_index, reverse=reverse)
+        return [row for _, row in dated] + [row for _, row in undated]
+
+    @staticmethod
+    def _court_datetime(value: Any) -> datetime | None:
+        text = str(value or "").strip()
+        match = re.search(r"(\d{4})[年./-](\d{1,2})[月./-](\d{1,2})(?:日)?(?:\s+|T)?(\d{1,2})?(?::|时)?(\d{1,2})?", text)
+        if not match:
+            return None
+        try:
+            year, month, day, hour, minute = match.groups()
+            return datetime(int(year), int(month), int(day), int(hour or 0), int(minute or 0), tzinfo=app_timezone())
+        except ValueError:
+            return None
 
     def list_documents(self, query: str, page_size: int, page_token: str | None = None) -> KDocsDocumentPageOut:
         self._ensure_real_mcp()

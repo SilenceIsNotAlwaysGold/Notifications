@@ -40,6 +40,11 @@ class KDocsRowPageOut(BaseModel):
     total: int
     page: int
     page_size: int
+    query: str = ""
+    court_mode: str = ""
+    date_from: str | None = None
+    date_to: str | None = None
+    sort_order: str = "asc"
     items: list[KDocsRowOut]
 
 

@@ -10,6 +10,12 @@ const state = {
   editingReminderId: null,
   kdocsTarget: "enforcement",
   kdocsPage: 1,
+  kdocsPageSize: 30,
+  kdocsTableQuery: "",
+  kdocsCourtMode: "",
+  kdocsDateFrom: "",
+  kdocsDateTo: "",
+  kdocsSortOrder: "desc",
   kdocsQuery: "判决书",
   kdocsDocumentToken: null,
   kdocsDocumentTokenStack: [],
@@ -2042,14 +2048,32 @@ function kdocsTableContent(data) {
   const columns = kdocsVisibleColumns[data.target] || data.headers || [];
   const rows = data.items || [];
   const totalPages = Math.max(1, Math.ceil((data.total || 0) / data.page_size));
+  const courtFilters = data.target === "court" ? `
+    <form id="kdocs-table-filter" class="kdocs-table-filter">
+      <label><span>关键词</span><input name="query" maxlength="100" value="${escapeHtml(state.kdocsTableQuery)}" placeholder="被告、原告、案号、跟进人" /></label>
+      <label><span>开庭方式</span><select name="court_mode">
+        <option value="" ${state.kdocsCourtMode ? "" : "selected"}>全部方式</option>
+        <option value="线上" ${state.kdocsCourtMode === "线上" ? "selected" : ""}>线上</option>
+        <option value="线下" ${state.kdocsCourtMode === "线下" ? "selected" : ""}>线下</option>
+        <option value="待确认" ${state.kdocsCourtMode === "待确认" ? "selected" : ""}>待确认</option>
+      </select></label>
+      <label><span>开始日期</span><input name="date_from" type="date" value="${escapeHtml(state.kdocsDateFrom)}" /></label>
+      <label><span>结束日期</span><input name="date_to" type="date" value="${escapeHtml(state.kdocsDateTo)}" /></label>
+      <label><span>开庭时间排序</span><select name="sort_order">
+        <option value="desc" ${state.kdocsSortOrder === "desc" ? "selected" : ""}>从晚到早</option>
+        <option value="asc" ${state.kdocsSortOrder === "asc" ? "selected" : ""}>从早到晚</option>
+      </select></label>
+      <div class="kdocs-filter-actions"><button type="submit">筛选</button><button type="button" class="ghost" id="kdocs-filter-reset">重置</button></div>
+    </form>` : "";
   return `
     <div class="kdocs-content-head">
       <div>
         <h3>${escapeHtml(data.sheet_name || data.target_name)}</h3>
-        <span>共 ${escapeHtml(data.total)} 条，第 ${escapeHtml(data.page)} / ${escapeHtml(totalPages)} 页</span>
+        <span>共 ${escapeHtml(data.total)} 条，第 ${escapeHtml(data.page)} / ${escapeHtml(totalPages)} 页${data.target === "court" ? ` · 开庭时间${state.kdocsSortOrder === "desc" ? "从晚到早" : "从早到晚"}` : ""}</span>
       </div>
       ${safeExternalUrl(data.file_url) ? `<a class="button-like ghost" href="${escapeHtml(data.file_url)}" target="_blank" rel="noreferrer">在金山中打开</a>` : ""}
     </div>
+    ${courtFilters}
     <div class="table-wrap kdocs-table-wrap">
       <table class="kdocs-table">
         <thead><tr><th class="kdocs-row-number">行</th>${columns.map((column) => `<th>${escapeHtml(column)}</th>`).join("")}</tr></thead>
@@ -2059,8 +2083,10 @@ function kdocsTableContent(data) {
       </table>
     </div>
     <div class="kdocs-pagination">
+      <label class="kdocs-page-size">每页 <select id="kdocs-page-size"><option value="20" ${data.page_size === 20 ? "selected" : ""}>20</option><option value="30" ${data.page_size === 30 ? "selected" : ""}>30</option><option value="50" ${data.page_size === 50 ? "selected" : ""}>50</option><option value="100" ${data.page_size === 100 ? "selected" : ""}>100</option></select> 条</label>
       <button type="button" class="ghost" data-kdocs-page="prev" ${data.page <= 1 ? "disabled" : ""}>&larr; 上一页</button>
       <button type="button" class="ghost" data-kdocs-page="next" ${data.page >= totalPages ? "disabled" : ""}>下一页 &rarr;</button>
+      <form id="kdocs-page-jump" class="kdocs-page-jump"><span>跳至</span><input name="page" type="number" min="1" max="${totalPages}" value="${data.page}" aria-label="页码" /><span>页</span><button type="submit" class="ghost">跳转</button></form>
     </div>
   `;
 }
@@ -2111,7 +2137,23 @@ async function renderKDocsBrowser({ refreshOverview = false } = {}) {
     if (state.kdocsDocumentToken) params.set("page_token", state.kdocsDocumentToken);
     contentData = await api(`/api/v1/legal/kdocs-browser/documents?${params}`);
   } else {
-    contentData = await api(`/api/v1/legal/kdocs-browser/tables/${state.kdocsTarget}?page=${state.kdocsPage}&page_size=30`);
+    const params = new URLSearchParams({
+      page: String(state.kdocsPage),
+      page_size: String(state.kdocsPageSize),
+      sort_order: state.kdocsTarget === "court" ? state.kdocsSortOrder : "asc",
+    });
+    if (state.kdocsTarget === "court") {
+      if (state.kdocsTableQuery) params.set("query", state.kdocsTableQuery);
+      if (state.kdocsCourtMode) params.set("court_mode", state.kdocsCourtMode);
+      if (state.kdocsDateFrom) params.set("date_from", state.kdocsDateFrom);
+      if (state.kdocsDateTo) params.set("date_to", state.kdocsDateTo);
+    }
+    contentData = await api(`/api/v1/legal/kdocs-browser/tables/${state.kdocsTarget}?${params}`);
+    const totalPages = Math.max(1, Math.ceil((contentData.total || 0) / state.kdocsPageSize));
+    if (state.kdocsPage > totalPages) {
+      state.kdocsPage = totalPages;
+      return renderKDocsBrowser();
+    }
   }
   $("#content").innerHTML = `
     <section class="kdocs-browser">
@@ -2145,6 +2187,42 @@ async function renderKDocsBrowser({ refreshOverview = false } = {}) {
       state.kdocsPage += button.dataset.kdocsPage === "next" ? 1 : -1;
       await renderKDocsBrowser();
     });
+  });
+  const pageSize = $("#kdocs-page-size");
+  if (pageSize) pageSize.addEventListener("change", async () => {
+    state.kdocsPageSize = Number(pageSize.value || 30);
+    state.kdocsPage = 1;
+    await renderKDocsBrowser();
+  });
+  const pageJump = $("#kdocs-page-jump");
+  if (pageJump) pageJump.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const totalPages = Math.max(1, Math.ceil((contentData.total || 0) / state.kdocsPageSize));
+    const requestedPage = Number(new FormData(pageJump).get("page") || 1);
+    state.kdocsPage = Math.min(totalPages, Math.max(1, requestedPage));
+    await renderKDocsBrowser();
+  });
+  const tableFilter = $("#kdocs-table-filter");
+  if (tableFilter) tableFilter.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const formData = new FormData(tableFilter);
+    state.kdocsTableQuery = String(formData.get("query") || "").trim();
+    state.kdocsCourtMode = String(formData.get("court_mode") || "");
+    state.kdocsDateFrom = String(formData.get("date_from") || "");
+    state.kdocsDateTo = String(formData.get("date_to") || "");
+    state.kdocsSortOrder = String(formData.get("sort_order") || "desc");
+    state.kdocsPage = 1;
+    await renderKDocsBrowser();
+  });
+  const filterReset = $("#kdocs-filter-reset");
+  if (filterReset) filterReset.addEventListener("click", async () => {
+    state.kdocsTableQuery = "";
+    state.kdocsCourtMode = "";
+    state.kdocsDateFrom = "";
+    state.kdocsDateTo = "";
+    state.kdocsSortOrder = "desc";
+    state.kdocsPage = 1;
+    await renderKDocsBrowser();
   });
   const searchForm = $("#kdocs-document-search");
   if (searchForm) {

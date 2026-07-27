@@ -1177,6 +1177,33 @@ button.danger-button {
   overflow: auto;
 }
 
+.kdocs-table-filter {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.4fr) repeat(4, minmax(140px, 1fr)) auto;
+  gap: 10px;
+  align-items: end;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--line);
+  background: #f8fafc;
+}
+
+.kdocs-table-filter label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.kdocs-table-filter label span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.kdocs-filter-actions {
+  display: flex;
+  gap: 8px;
+}
+
 .kdocs-table {
   min-width: 1280px;
 }
@@ -1225,6 +1252,29 @@ button.danger-button {
   padding: 12px 18px;
   border-top: 1px solid var(--line);
   background: #f8fafc;
+}
+
+.kdocs-page-size,
+.kdocs-page-jump {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.kdocs-page-size {
+  margin-right: auto;
+}
+
+.kdocs-page-size select {
+  width: 70px;
+  padding: 8px;
+}
+
+.kdocs-page-jump input {
+  width: 72px;
+  padding: 8px;
 }
 
 .attribution-page-summary {
@@ -2254,6 +2304,7 @@ tr:hover td {
 }
 
 @media (max-width: 1100px) {
+  .kdocs-table-filter { grid-template-columns: repeat(3, minmax(150px, 1fr)); }
   .workspace-columns { grid-template-columns: minmax(0, 1fr); }
   .workspace-side { position: static; max-height: none; overflow: visible; }
   .workspace-stat-grid { grid-template-columns: repeat(4, minmax(80px, 1fr)); }
@@ -2311,6 +2362,14 @@ tr:hover td {
 
   .sync-filter-bar {
     grid-template-columns: repeat(3, minmax(130px, 1fr));
+  }
+
+  .kdocs-table-filter {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .kdocs-pagination {
+    flex-wrap: wrap;
   }
 
   .section-tabs {

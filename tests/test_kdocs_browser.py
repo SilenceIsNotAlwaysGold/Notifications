@@ -50,6 +50,33 @@ class FakeKDocsClient:
         }
 
 
+class CourtRowsFakeKDocsClient(FakeKDocsClient):
+    def get_sheet_info(self, file_id, worksheet_id):
+        if file_id == "court-file":
+            return {"sheetId": worksheet_id, "sheetName": "开庭时间", "rowTo": 4}
+        return super().get_sheet_info(file_id, worksheet_id)
+
+    def get_range_data(self, file_id, worksheet_id, *, row_from, row_to, col_from, col_to):
+        self.range_calls.append((file_id, worksheet_id, row_from, row_to, col_from, col_to))
+        source = {
+            1: ("2026-07-01 09:00", "张三", "线上"),
+            2: ("2026-09-01 14:00", "李四", "线下"),
+            3: ("待确认", "王五", "线上"),
+            4: ("2026-08-01 10:30", "张六", "线上"),
+        }
+        cells = []
+        for row in range(row_from, row_to + 1):
+            hearing_time, defendant, court_mode = source[row]
+            cells.extend(
+                [
+                    {"rowFrom": row, "colFrom": 1, "cellText": hearing_time},
+                    {"rowFrom": row, "colFrom": 5, "cellText": defendant},
+                    {"rowFrom": row, "colFrom": 6, "cellText": court_mode},
+                ]
+            )
+        return cells
+
+
 def kdocs_settings(monkeypatch):
     monkeypatch.setenv("KDOCS_MODE", "real")
     monkeypatch.setenv("KDOCS_TRANSPORT", "mcp")
@@ -95,6 +122,49 @@ def test_kdocs_browser_maps_sparse_cells_and_paginates(monkeypatch):
     assert result.items[1].values["总金额"] == 5000
     assert result.file_url == "https://www.kdocs.cn/l/enforcement-file"
     assert client.range_calls == [("enforcement-file", 10, 31, 60, 0, 24)]
+
+
+def test_kdocs_court_rows_filter_sort_and_paginate_across_full_sheet(monkeypatch):
+    client = CourtRowsFakeKDocsClient()
+    service = KDocsBrowserService(kdocs_settings(monkeypatch), client)
+
+    first_page = service.list_rows(
+        "court",
+        page=1,
+        page_size=1,
+        query="张",
+        court_mode="线上",
+        sort_order="desc",
+    )
+    second_page = service.list_rows(
+        "court",
+        page=2,
+        page_size=1,
+        query="张",
+        court_mode="线上",
+        sort_order="desc",
+    )
+
+    assert first_page.total == 2
+    assert first_page.items[0].values["被告"] == "张六"
+    assert second_page.items[0].values["被告"] == "张三"
+    assert first_page.sort_order == "desc"
+
+
+def test_kdocs_court_rows_filter_by_date_range_and_sort_ascending(monkeypatch):
+    service = KDocsBrowserService(kdocs_settings(monkeypatch), CourtRowsFakeKDocsClient())
+
+    result = service.list_rows(
+        "court",
+        page=1,
+        page_size=30,
+        date_from="2026-08-01",
+        date_to="2026-09-30",
+        sort_order="asc",
+    )
+
+    assert result.total == 2
+    assert [item.values["被告"] for item in result.items] == ["张六", "李四"]
 
 
 def test_kdocs_browser_documents_only_returns_display_fields(monkeypatch):
