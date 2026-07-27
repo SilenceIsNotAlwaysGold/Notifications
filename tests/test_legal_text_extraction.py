@@ -274,6 +274,8 @@ def test_llm_adapter_calls_openai_compatible_endpoint(monkeypatch):
     assert captured["url"] == "https://llm.example.test/v1/chat/completions"
     assert captured["headers"]["Authorization"] == "Bearer test-key"
     assert captured["json"]["response_format"] == {"type": "json_object"}
+    system_prompt = captured["json"]["messages"][0]["content"]
+    assert "公司=原告、被传唤人=被告" in system_prompt
     assert result["event_type"] == "court_notice"
     assert result["_response_metadata"]["finish_reason"] == "stop"
 

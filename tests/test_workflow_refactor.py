@@ -565,6 +565,47 @@ def test_non_summons_unknown_result_is_not_promoted():
     assert result["event_type"] == "unknown"
 
 
+def test_court_party_defaults_swap_company_and_summoned_person():
+    result = {
+        "event_type": "court_notice",
+        "plaintiff": "张三",
+        "defendant": "杭州测试科技有限公司",
+        "metadata": {},
+    }
+
+    changed = MediaFileService._apply_court_party_defaults(result)
+
+    assert changed is True
+    assert result["plaintiff"] == "杭州测试科技有限公司"
+    assert result["defendant"] == "张三"
+    assert result["metadata"]["court_party_default_applied"] is True
+
+
+def test_court_party_defaults_move_business_to_plaintiff_and_require_person():
+    result = {
+        "event_type": "court_notice",
+        "plaintiff": None,
+        "defendant": "可可店经营部（个体工商户）",
+        "requires_review": False,
+        "metadata": {},
+    }
+
+    changed = MediaFileService._apply_court_party_defaults(result)
+
+    assert changed is True
+    assert result["plaintiff"] == "可可店经营部（个体工商户）"
+    assert result["defendant"] is None
+    assert result["requires_review"] is True
+    assert "请确认被传唤人姓名" in result["review_reasons"][0]
+
+
+def test_court_party_defaults_do_not_change_non_summons():
+    result = {"event_type": "judgment", "plaintiff": "张三", "defendant": "测试公司"}
+
+    assert MediaFileService._apply_court_party_defaults(result) is False
+    assert result == {"event_type": "judgment", "plaintiff": "张三", "defendant": "测试公司"}
+
+
 def test_corrected_court_notice_without_case_exits_attribution_queue(db_session, tmp_path):
     image_path = tmp_path / "corrected-court.jpg"
     image_path.write_bytes(b"court-image")
@@ -604,7 +645,8 @@ def test_corrected_court_notice_without_case_exits_attribution_queue(db_session,
         "corrected",
         "reviewer",
         corrections={
-            "defendant": "张三",
+            "plaintiff": "张三",
+            "defendant": "测试科技有限公司",
             "court_name": "尉犁县人民法院",
             "court_room": "第7号审判庭",
             "hearing_mode": "现场开庭",
@@ -618,6 +660,8 @@ def test_corrected_court_notice_without_case_exits_attribution_queue(db_session,
     assert event.business_status == "approved"
     assert item.status == "superseded"
     stored = json.loads(media.review_result_json)
+    assert stored["plaintiff"] == "测试科技有限公司"
+    assert stored["defendant"] == "张三"
     assert stored["metadata"]["structured_fields"] == {
         "court_name": "尉犁县人民法院",
         "court_room": "第7号审判庭",

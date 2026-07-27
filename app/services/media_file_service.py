@@ -187,6 +187,7 @@ class MediaFileService:
 
             extracted_text = result.get("raw_text") or result.get("extracted_text") or ""
             self._promote_suspected_court_notice(result, extracted_text)
+            self._apply_court_party_defaults(result)
             result["requires_review"] = self._result_requires_review(result) or stage_only
             if stage_only:
                 result.setdefault("review_reasons", []).append("上下文重新分析结果必须人工确认")
@@ -616,6 +617,7 @@ class MediaFileService:
             if structured_corrections:
                 structured = result.setdefault("metadata", {}).setdefault("structured_fields", {})
                 structured.update(structured_corrections)
+        self._apply_court_party_defaults(result)
         if result.get("event_type") == "court_notice":
             if not result.get("court_time"):
                 raise ValueError("开庭传票缺少开庭时间，请修正后再确认")
@@ -873,6 +875,75 @@ class MediaFileService:
             result["metadata"] = metadata
         metadata["court_summons_fallback"] = True
         return True
+
+    @staticmethod
+    def _apply_court_party_defaults(result: dict[str, Any]) -> bool:
+        if result.get("event_type") != "court_notice":
+            return False
+        plaintiff = str(result.get("plaintiff") or "").strip()
+        defendant = str(result.get("defendant") or "").strip()
+        plaintiff_is_org = MediaFileService._is_business_name(plaintiff)
+        defendant_is_org = MediaFileService._is_business_name(defendant)
+        plaintiff_is_person = MediaFileService._is_person_name(plaintiff)
+        defendant_is_person = MediaFileService._is_person_name(defendant)
+        changed = False
+
+        if plaintiff_is_person and defendant_is_org:
+            plaintiff, defendant = defendant, plaintiff
+            changed = True
+        elif defendant_is_org and not plaintiff_is_org:
+            plaintiff, defendant = defendant, ""
+            changed = True
+        elif plaintiff_is_person and not defendant:
+            plaintiff, defendant = "", plaintiff
+            changed = True
+
+        if not changed:
+            return False
+        result["plaintiff"] = plaintiff or None
+        result["defendant"] = defendant or None
+        metadata = result.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+            result["metadata"] = metadata
+        metadata["court_party_default_applied"] = True
+        metadata["court_party_default_rule"] = "公司名称=原告；被传唤人/自然人姓名=被告"
+        field_sources = metadata.get("field_sources")
+        if not isinstance(field_sources, dict):
+            field_sources = {}
+            metadata["field_sources"] = field_sources
+        field_sources["plaintiff"] = "开庭传票默认角色规则"
+        if defendant:
+            field_sources["defendant"] = "开庭传票默认角色规则"
+        reasons = result.get("review_reasons")
+        if not isinstance(reasons, list):
+            reasons = []
+            result["review_reasons"] = reasons
+        if not defendant_is_person and not defendant:
+            reason = "已将公司名称归为原告，请确认被传唤人姓名"
+            if reason not in reasons:
+                reasons.append(reason)
+        result["requires_review"] = True
+        return True
+
+    @staticmethod
+    def _is_business_name(value: str) -> bool:
+        if not value or "法院" in value:
+            return False
+        return bool(
+            re.search(
+                r"(有限责任公司|股份有限公司|有限公司|公司|集团|企业|个体工商户|经营部|商行|合作社|工作室|事务所|工厂|厂|门店|店)(?:[（(][^）)]{1,20}[）)])?$",
+                value,
+            )
+        )
+
+    @staticmethod
+    def _is_person_name(value: str) -> bool:
+        if not value or MediaFileService._is_business_name(value):
+            return False
+        if value in {"被传唤人", "当事人", "原告", "被告", "法定代表人", "负责人"}:
+            return False
+        return re.fullmatch(r"[\u4e00-\u9fa5·]{2,6}", value) is not None
 
     @staticmethod
     def _dump_result(result: dict[str, Any]) -> str:

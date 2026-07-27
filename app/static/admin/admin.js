@@ -1633,13 +1633,13 @@ function courtSummonsDetail(review) {
       <section class="review-preview"><div id="review-preview" class="preview-placeholder">加载预览中...</div></section>
       <section class="review-fields">
         <form id="summons-form" data-media-id="${review.media_file_id}">
-          <div class="summons-callout">传票不要求匹配案件。被告和准确开庭时间补全后，才会写入金山“开庭时间”表。</div>
+          <div class="summons-callout">默认规则：公司名称作为原告，被传唤人或自然人姓名作为被告。被告和准确开庭时间补全后，才会写入金山“开庭时间”表。</div>
           <div class="form-grid review-form-grid">
             <div class="field"><label>法院</label><input name="court_name" value="${escapeHtml(structured.court_name || "")}" ${editable ? "" : "disabled"} /></div>
             <div class="field"><label>法庭</label><input name="court_room" value="${escapeHtml(structured.court_room || "")}" ${editable ? "" : "disabled"} /></div>
             <div class="field"><label>案号（选填）</label><input name="case_no" value="${escapeHtml(reviewFieldValue(result, "case_no"))}" ${editable ? "" : "disabled"} /></div>
-            <div class="field"><label>原告（选填）</label><input name="plaintiff" value="${escapeHtml(reviewFieldValue(result, "plaintiff"))}" ${editable ? "" : "disabled"} /></div>
-            <div class="field"><label>被告 <span class="required">必填</span></label><input name="defendant" required value="${escapeHtml(reviewFieldValue(result, "defendant"))}" ${editable ? "" : "disabled"} /></div>
+            <div class="field"><label>原告公司（选填）</label><input name="plaintiff" value="${escapeHtml(reviewFieldValue(result, "plaintiff"))}" ${editable ? "" : "disabled"} /></div>
+            <div class="field"><label>被传唤人 / 被告 <span class="required">必填</span></label><input name="defendant" required value="${escapeHtml(reviewFieldValue(result, "defendant"))}" ${editable ? "" : "disabled"} /></div>
             <div class="field"><label>开庭时间 <span class="required">必填</span></label><input name="court_time" required type="datetime-local" value="${escapeHtml(reviewFieldValue(result, "court_time"))}" ${editable ? "" : "disabled"} /></div>
             <div class="field"><label>开庭方式</label><select name="hearing_mode" ${editable ? "" : "disabled"}><option value="">待确认</option>${["现场开庭", "线上开庭"].map((value) => `<option value="${value}" ${structured.hearing_mode === value ? "selected" : ""}>${value}</option>`).join("")}</select></div>
             <div class="field"><label>法官电话</label><input name="judge_phone" value="${escapeHtml(structured.judge_phone || "")}" ${editable ? "" : "disabled"} /></div>
