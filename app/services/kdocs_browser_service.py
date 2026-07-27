@@ -1,3 +1,5 @@
+import hashlib
+import json
 import re
 import threading
 import time
@@ -13,6 +15,7 @@ from app.schemas.kdocs_browser import (
     KDocsDocumentOut,
     KDocsDocumentPageOut,
     KDocsRowOut,
+    KDocsRowMutationOut,
     KDocsRowPageOut,
     KDocsTarget,
     KDocsTargetOut,
@@ -170,6 +173,101 @@ class KDocsBrowserService:
             sort_order=sort_order,
             items=rows,
         )
+
+    def update_row(
+        self,
+        target: KDocsTarget,
+        row_index: int,
+        values: dict[str, Any],
+        row_version: str,
+    ) -> KDocsRowMutationOut:
+        definition, file_id, worksheet_id, last_row = self._mutation_target(target, row_index)
+        unknown_columns = set(values) - set(definition.headers)
+        if unknown_columns:
+            raise ValueError(f"字段不存在：{', '.join(sorted(unknown_columns))}")
+        current = self._read_row(file_id, worksheet_id, definition.headers, row_index)
+        if current.row_version != row_version:
+            raise ValueError("该行内容已发生变化，请刷新后重试")
+        merged = {header: current.values.get(header, "") for header in definition.headers}
+        merged.update(values)
+        self.client.update_row(
+            file_id,
+            worksheet_id,
+            row_index,
+            [merged[header] for header in definition.headers],
+        )
+        updated = self._read_row(file_id, worksheet_id, definition.headers, row_index)
+        mismatched = [
+            header
+            for header, value in values.items()
+            if self._comparable_cell(updated.values.get(header)) != self._comparable_cell(value)
+        ]
+        if mismatched:
+            self._invalidate_cache(file_id, worksheet_id)
+            raise RuntimeError(f"金山文档写后校验失败：{', '.join(mismatched)}")
+        self._invalidate_cache(file_id, worksheet_id)
+        return KDocsRowMutationOut(
+            target=target,
+            target_name=definition.name,
+            row_index=row_index,
+            row_number=row_index + 1,
+            values=updated.values,
+            row_version=updated.row_version,
+        )
+
+    def delete_row(self, target: KDocsTarget, row_index: int, row_version: str) -> KDocsRowMutationOut:
+        definition, file_id, worksheet_id, _ = self._mutation_target(target, row_index)
+        current = self._read_row(file_id, worksheet_id, definition.headers, row_index)
+        if current.row_version != row_version:
+            raise ValueError("该行内容已发生变化，请刷新后重试")
+        self.client.delete_row(file_id, worksheet_id, row_index, len(definition.headers) - 1)
+        self._invalidate_cache(file_id, worksheet_id)
+        return KDocsRowMutationOut(
+            target=target,
+            target_name=definition.name,
+            row_index=row_index,
+            row_number=row_index + 1,
+            values=current.values,
+        )
+
+    def _mutation_target(
+        self,
+        target: KDocsTarget,
+        row_index: int,
+    ) -> tuple[TargetDefinition, str, int, int]:
+        self._ensure_real_mcp()
+        definition = TARGETS[target]
+        file_id = str(getattr(self.settings, definition.file_id_setting) or "")
+        worksheet_id = int(getattr(self.settings, definition.worksheet_id_setting))
+        if not file_id:
+            raise ValueError(f"{definition.name}尚未配置 file_id")
+        sheet = self.client.get_sheet_info(file_id, worksheet_id)
+        last_row = max(int(sheet.get("rowTo") or 0), 0)
+        if row_index < 1 or row_index > last_row:
+            raise ValueError("表格行不存在，请刷新后重试")
+        return definition, file_id, worksheet_id, last_row
+
+    def _read_row(
+        self,
+        file_id: str,
+        worksheet_id: int,
+        headers: tuple[str, ...],
+        row_index: int,
+    ) -> KDocsRowOut:
+        cells = self.client.get_range_data(
+            file_id,
+            worksheet_id,
+            row_from=row_index,
+            row_to=row_index,
+            col_from=0,
+            col_to=len(headers) - 1,
+        )
+        return self._rows(cells, headers, row_index, row_index)[0]
+
+    @classmethod
+    def _invalidate_cache(cls, file_id: str, worksheet_id: int) -> None:
+        with cls._cache_lock:
+            cls._rows_cache.pop((file_id, worksheet_id), None)
 
     def _all_rows(
         self,
@@ -377,7 +475,29 @@ class KDocsBrowserService:
             value = cls._cell_value(cell)
             if value not in (None, ""):
                 values_by_row.setdefault(row, {})[headers[col]] = value
-        return [KDocsRowOut(row_index=row, values=values_by_row.get(row, {})) for row in range(row_from, row_to + 1)]
+        return [
+            KDocsRowOut(
+                row_index=row,
+                values=values_by_row.get(row, {}),
+                row_version=cls._row_version(row, values_by_row.get(row, {})),
+            )
+            for row in range(row_from, row_to + 1)
+        ]
+
+    @staticmethod
+    def _row_version(row_index: int, values: dict[str, Any]) -> str:
+        payload = json.dumps(
+            {"row_index": row_index, "values": values},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _comparable_cell(value: Any) -> str:
+        return "" if value is None else str(value)
 
     @staticmethod
     def _cell_value(cell: dict[str, Any]) -> Any:

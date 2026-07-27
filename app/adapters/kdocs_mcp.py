@@ -89,6 +89,47 @@ class KDocsMcpClient:
             },
         )
 
+    def update_row(self, file_id: str, worksheet_id: int, row_index: int, values: list[Any]) -> dict[str, Any]:
+        range_data = [
+            {
+                "opType": "formula",
+                "rowFrom": row_index,
+                "rowTo": row_index,
+                "colFrom": col_index,
+                "colTo": col_index,
+                "formula": self._cell_text("" if value is None else value),
+            }
+            for col_index, value in enumerate(values)
+        ]
+        if not range_data:
+            raise KDocsMcpError("金山文档更新行为空")
+        return self.call_tool(
+            "sheet.update_range_data",
+            {
+                "file_id": file_id,
+                "worksheet_id": worksheet_id,
+                "rangeData": range_data,
+            },
+        )
+
+    def delete_row(self, file_id: str, worksheet_id: int, row_index: int, col_to: int) -> dict[str, Any]:
+        return self.call_tool(
+            "sheet.delete_range_data",
+            {
+                "file_id": file_id,
+                "worksheet_id": worksheet_id,
+                "range_data": [
+                    {
+                        "row_from": row_index,
+                        "row_to": row_index,
+                        "col_from": 0,
+                        "col_to": col_to,
+                    }
+                ],
+                "shift_type": "shift_up",
+            },
+        )
+
     def sort_range(
         self,
         file_id: str,

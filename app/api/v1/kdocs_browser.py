@@ -2,7 +2,7 @@ from fastapi import APIRouter, Query
 
 from app.api.v1.response import ok, raise_fail
 from app.core.config import get_settings
-from app.schemas.kdocs_browser import KDocsTarget
+from app.schemas.kdocs_browser import KDocsRowUpdate, KDocsTarget
 from app.services.kdocs_browser_service import KDocsBrowserService
 
 
@@ -49,6 +49,37 @@ def list_kdocs_rows(
     except Exception:
         raise_fail("读取金山文档失败，请稍后重试", code=1502, status_code=502)
     return ok("金山表格内容查询成功", data)
+
+
+@router.patch("/tables/{target}/rows/{row_index}")
+def update_kdocs_row(target: KDocsTarget, row_index: int, payload: KDocsRowUpdate):
+    try:
+        data = KDocsBrowserService(get_settings()).update_row(
+            target,
+            row_index,
+            payload.values,
+            payload.row_version,
+        )
+    except ValueError as exc:
+        raise_fail(str(exc), code=1400)
+    except Exception:
+        raise_fail("更新金山表格失败，请刷新后重试", code=1502, status_code=502)
+    return ok("金山表格行更新成功", data)
+
+
+@router.delete("/tables/{target}/rows/{row_index}")
+def delete_kdocs_row(
+    target: KDocsTarget,
+    row_index: int,
+    row_version: str = Query(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"),
+):
+    try:
+        data = KDocsBrowserService(get_settings()).delete_row(target, row_index, row_version)
+    except ValueError as exc:
+        raise_fail(str(exc), code=1400)
+    except Exception:
+        raise_fail("删除金山表格行失败，请刷新后重试", code=1502, status_code=502)
+    return ok("金山表格行删除成功", data)
 
 
 @router.get("/documents")

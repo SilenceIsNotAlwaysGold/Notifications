@@ -269,3 +269,6 @@ def test_admin_has_dedicated_court_summons_workspace():
     assert '{ view: "court-summons", label: "开庭传票" }' in content
     assert "保存修正并写入" in content
     assert "重试金山写入" in content
+    assert 'aria-label="向左旋转 90 度"' in content
+    assert 'aria-label="向右旋转 90 度"' in content
+    assert "reviewPreviewRotation" in content

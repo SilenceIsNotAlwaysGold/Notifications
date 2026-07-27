@@ -1,6 +1,6 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 KDocsTarget = Literal["enforcement", "court", "payment"]
@@ -26,7 +26,33 @@ class KDocsBrowserOverviewOut(BaseModel):
 
 class KDocsRowOut(BaseModel):
     row_index: int
+    row_version: str
     values: dict[str, Any]
+
+
+class KDocsRowUpdate(BaseModel):
+    row_version: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+    values: dict[str, Any] = Field(min_length=1, max_length=25)
+
+    @model_validator(mode="after")
+    def validate_cell_values(self):
+        for key, value in self.values.items():
+            if len(key) > 64:
+                raise ValueError("字段名过长")
+            if isinstance(value, (dict, list, tuple, set)):
+                raise ValueError(f"{key} 只支持单元格值")
+            if len(str(value or "")) > 5000:
+                raise ValueError(f"{key} 内容不能超过 5000 字")
+        return self
+
+
+class KDocsRowMutationOut(BaseModel):
+    target: KDocsTarget
+    target_name: str
+    row_index: int
+    row_number: int
+    values: dict[str, Any]
+    row_version: str | None = None
 
 
 class KDocsRowPageOut(BaseModel):

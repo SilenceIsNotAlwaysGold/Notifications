@@ -1,5 +1,6 @@
 from app.core.config import get_settings
 from app.core.permissions import has_permission
+from app.adapters.kdocs_mcp import KDocsMcpClient
 from app.services.kdocs_browser_service import KDocsBrowserService
 
 
@@ -75,6 +76,50 @@ class CourtRowsFakeKDocsClient(FakeKDocsClient):
                 ]
             )
         return cells
+
+
+class MutableKDocsClient(FakeKDocsClient):
+    def __init__(self):
+        super().__init__()
+        self.rows = {
+            1: ["代理人A", "提交人A", "甲公司", "张三"] + [""] * 20 + ["订单-1"],
+            2: ["代理人B", "提交人B", "乙公司", "李四"] + [""] * 20 + ["订单-2"],
+        }
+        self.updated = []
+        self.deleted = []
+
+    def get_sheet_info(self, file_id, worksheet_id):
+        if file_id == "enforcement-file":
+            return {"sheetId": worksheet_id, "sheetName": "强制执行进度", "rowTo": len(self.rows)}
+        return super().get_sheet_info(file_id, worksheet_id)
+
+    def get_range_data(self, file_id, worksheet_id, *, row_from, row_to, col_from, col_to):
+        self.range_calls.append((file_id, worksheet_id, row_from, row_to, col_from, col_to))
+        cells = []
+        for row_index in range(row_from, row_to + 1):
+            for col_index, value in enumerate(self.rows.get(row_index, [])):
+                if col_from <= col_index <= col_to and value != "":
+                    cells.append({"rowFrom": row_index, "colFrom": col_index, "cellText": value})
+        return cells
+
+    def update_row(self, file_id, worksheet_id, row_index, values):
+        self.updated.append((file_id, worksheet_id, row_index, list(values)))
+        self.rows[row_index] = list(values)
+        return {"code": 0}
+
+    def delete_row(self, file_id, worksheet_id, row_index, col_to):
+        self.deleted.append((file_id, worksheet_id, row_index, col_to))
+        last_row = len(self.rows)
+        for current in range(row_index, last_row):
+            self.rows[current] = self.rows[current + 1]
+        self.rows.pop(last_row, None)
+        return {"code": 0}
+
+
+class ReadbackMismatchKDocsClient(MutableKDocsClient):
+    def update_row(self, file_id, worksheet_id, row_index, values):
+        self.updated.append((file_id, worksheet_id, row_index, list(values)))
+        return {"code": 0}
 
 
 def kdocs_settings(monkeypatch):
@@ -194,6 +239,99 @@ def test_kdocs_generic_filter_and_sort_reject_unknown_columns(monkeypatch):
         raise AssertionError("unknown sort columns must be rejected")
 
 
+def test_kdocs_row_update_preserves_other_columns_and_can_clear_cells(monkeypatch):
+    KDocsBrowserService._rows_cache.clear()
+    client = MutableKDocsClient()
+    service = KDocsBrowserService(kdocs_settings(monkeypatch), client)
+    current = service._read_row("enforcement-file", 10, tuple(service.list_rows("enforcement", 1, 30).headers), 1)
+    service._rows_cache[("enforcement-file", 10)] = (float("inf"), 2, [current])
+
+    result = service.update_row(
+        "enforcement",
+        1,
+        {"原告主体": "新原告", "被告": ""},
+        current.row_version,
+    )
+
+    written = client.updated[0][3]
+    assert written[0] == "代理人A"
+    assert written[2] == "新原告"
+    assert written[3] == ""
+    assert result.values["原告主体"] == "新原告"
+    assert "被告" not in result.values
+    assert ("enforcement-file", 10) not in service._rows_cache
+
+
+def test_kdocs_row_update_rejects_unknown_column_and_stale_version(monkeypatch):
+    client = MutableKDocsClient()
+    service = KDocsBrowserService(kdocs_settings(monkeypatch), client)
+    headers = tuple(service.list_rows("enforcement", 1, 30).headers)
+    current = service._read_row("enforcement-file", 10, headers, 1)
+
+    try:
+        service.update_row("enforcement", 1, {"不存在": "值"}, current.row_version)
+    except ValueError as exc:
+        assert "字段不存在" in str(exc)
+    else:
+        raise AssertionError("unknown columns must be rejected")
+
+    try:
+        service.update_row("enforcement", 1, {"原告主体": "新原告"}, "0" * 64)
+    except ValueError as exc:
+        assert "内容已发生变化" in str(exc)
+    else:
+        raise AssertionError("stale rows must be rejected")
+
+
+def test_kdocs_row_update_reports_readback_mismatch(monkeypatch):
+    client = ReadbackMismatchKDocsClient()
+    service = KDocsBrowserService(kdocs_settings(monkeypatch), client)
+    headers = tuple(service.list_rows("enforcement", 1, 30).headers)
+    current = service._read_row("enforcement-file", 10, headers, 1)
+
+    try:
+        service.update_row("enforcement", 1, {"原告主体": "未生效"}, current.row_version)
+    except RuntimeError as exc:
+        assert "写后校验失败" in str(exc)
+    else:
+        raise AssertionError("readback mismatches must fail")
+
+
+def test_kdocs_row_delete_uses_full_range_and_invalidates_cache(monkeypatch):
+    KDocsBrowserService._rows_cache.clear()
+    client = MutableKDocsClient()
+    service = KDocsBrowserService(kdocs_settings(monkeypatch), client)
+    headers = tuple(service.list_rows("enforcement", 1, 30).headers)
+    current = service._read_row("enforcement-file", 10, headers, 1)
+
+    result = service.delete_row("enforcement", 1, current.row_version)
+
+    assert client.deleted == [("enforcement-file", 10, 1, 24)]
+    assert result.values["原告主体"] == "甲公司"
+    assert client.rows[1][2] == "乙公司"
+    assert ("enforcement-file", 10) not in service._rows_cache
+
+
+def test_kdocs_mcp_delete_row_calls_shift_up_tool():
+    client = object.__new__(KDocsMcpClient)
+    calls = []
+    client.call_tool = lambda name, arguments: calls.append((name, arguments)) or {"code": 0}
+
+    client.delete_row("file-1", 3, 7, 17)
+
+    assert calls == [
+        (
+            "sheet.delete_range_data",
+            {
+                "file_id": "file-1",
+                "worksheet_id": 3,
+                "range_data": [{"row_from": 7, "row_to": 7, "col_from": 0, "col_to": 17}],
+                "shift_type": "shift_up",
+            },
+        )
+    ]
+
+
 def test_kdocs_browser_documents_only_returns_display_fields(monkeypatch):
     service = KDocsBrowserService(kdocs_settings(monkeypatch), FakeKDocsClient())
 
@@ -217,6 +355,21 @@ def test_kdocs_browser_routes_are_readable_by_legal_and_auditor():
     assert all(has_permission("legal", "GET", path) for path in paths)
     assert all(has_permission("auditor", "GET", path) for path in paths)
     assert not has_permission("legal", "POST", "/api/v1/legal/kdocs-browser")
+    row_path = "/api/v1/legal/kdocs-browser/tables/court/rows/8"
+    assert has_permission("legal", "PATCH", row_path)
+    assert has_permission("legal", "DELETE", row_path)
+    assert not has_permission("auditor", "PATCH", row_path)
+    assert not has_permission("auditor", "DELETE", row_path)
+
+
+def test_kdocs_admin_supports_edit_and_delete_controls():
+    source = open("app/static/admin/admin.js", encoding="utf-8").read()
+
+    assert "data-kdocs-edit-row" in source
+    assert "data-kdocs-delete-row" in source
+    assert 'method: "PATCH"' in source
+    assert 'method: "DELETE"' in source
+    assert "删除后下方行会自动上移" in source
 
 
 def test_kdocs_browser_api_reports_mock_mode_without_calling_mcp(client):

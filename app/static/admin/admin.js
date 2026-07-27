@@ -9,6 +9,7 @@ const state = {
   selectedSummonsId: null,
   summonsStatusFilter: "incomplete",
   reviewPreviewUrl: null,
+  reviewPreviewRotation: 0,
   editingReminderId: null,
   kdocsTarget: "enforcement",
   kdocsPage: 1,
@@ -1459,7 +1460,14 @@ function reviewDetail(review) {
       </div>
     </div>
     <div class="review-detail-grid">
-      <section class="review-preview"><div id="review-preview" class="preview-placeholder">加载预览中...</div></section>
+      <section class="review-preview">
+        <div class="preview-toolbar" aria-label="原图旋转工具">
+          <button type="button" class="preview-tool-button" data-preview-rotate="-90" title="向左旋转 90 度" aria-label="向左旋转 90 度">↶</button>
+          <span id="preview-rotation-label">0°</span>
+          <button type="button" class="preview-tool-button" data-preview-rotate="90" title="向右旋转 90 度" aria-label="向右旋转 90 度">↷</button>
+        </div>
+        <div id="review-preview" class="preview-placeholder">加载预览中...</div>
+      </section>
       <section class="review-fields">
         <form id="review-form" data-media-id="${review.media_file_id}">
           <div class="form-grid review-form-grid">
@@ -1504,8 +1512,27 @@ async function loadReviewPreview(review) {
   state.reviewPreviewUrl = URL.createObjectURL(await response.blob());
   if ((review.mime_type || "").startsWith("image/")) {
     container.innerHTML = `<img src="${state.reviewPreviewUrl}" alt="待复核原图" />`;
+    state.reviewPreviewRotation = 0;
+    const image = container.querySelector("img");
+    const applyRotation = () => {
+      const normalized = ((state.reviewPreviewRotation % 360) + 360) % 360;
+      const quarterTurn = normalized === 90 || normalized === 270;
+      image.style.width = quarterTurn ? `${container.clientHeight}px` : "100%";
+      image.style.height = quarterTurn ? `${container.clientWidth}px` : "100%";
+      image.style.transform = `rotate(${state.reviewPreviewRotation}deg)`;
+      const label = $("#preview-rotation-label");
+      if (label) label.textContent = `${normalized}°`;
+    };
+    image.addEventListener("load", applyRotation, { once: true });
+    document.querySelectorAll("[data-preview-rotate]").forEach((button) => {
+      button.addEventListener("click", () => {
+        state.reviewPreviewRotation += Number(button.dataset.previewRotate);
+        applyRotation();
+      });
+    });
   } else {
     container.innerHTML = `<iframe src="${state.reviewPreviewUrl}" title="待复核 PDF"></iframe>`;
+    document.querySelector(".preview-toolbar")?.classList.add("hidden");
   }
 }
 
@@ -1630,7 +1657,14 @@ function courtSummonsDetail(review) {
       </div>
     </div>
     <div class="review-detail-grid">
-      <section class="review-preview"><div id="review-preview" class="preview-placeholder">加载预览中...</div></section>
+      <section class="review-preview">
+        <div class="preview-toolbar" aria-label="原图旋转工具">
+          <button type="button" class="preview-tool-button" data-preview-rotate="-90" title="向左旋转 90 度" aria-label="向左旋转 90 度">↶</button>
+          <span id="preview-rotation-label">0°</span>
+          <button type="button" class="preview-tool-button" data-preview-rotate="90" title="向右旋转 90 度" aria-label="向右旋转 90 度">↷</button>
+        </div>
+        <div id="review-preview" class="preview-placeholder">加载预览中...</div>
+      </section>
       <section class="review-fields">
         <form id="summons-form" data-media-id="${review.media_file_id}">
           <div class="summons-callout">默认规则：公司名称作为原告，被传唤人或自然人姓名作为被告。被告和准确开庭时间补全后，才会写入金山“开庭时间”表。</div>
@@ -2153,6 +2187,82 @@ function kdocsTargetTabs(overview) {
     .join("");
 }
 
+function kdocsRowIdentity(row, headers) {
+  return headers
+    .map((header) => [header, (row.values || {})[header]])
+    .filter(([, value]) => value !== null && value !== undefined && value !== "")
+    .slice(0, 3)
+    .map(([header, value]) => `${header}：${String(value).slice(0, 40)}`)
+    .join("；") || "该行暂无识别内容";
+}
+
+function openKDocsRowEditor(data, row) {
+  document.querySelector("#kdocs-row-dialog")?.remove();
+  const dialog = document.createElement("dialog");
+  dialog.id = "kdocs-row-dialog";
+  dialog.className = "kdocs-row-dialog";
+  dialog.innerHTML = `
+    <form method="dialog" class="kdocs-row-dialog-shell" id="kdocs-row-form">
+      <header>
+        <div><h3>编辑${escapeHtml(data.target_name)}第 ${escapeHtml(row.row_index + 1)} 行</h3><p>保存后将直接更新金山文档，并自动读回校验。</p></div>
+        <button type="button" class="ghost kdocs-dialog-close" aria-label="关闭" title="关闭">&times;</button>
+      </header>
+      <div class="kdocs-row-fields">
+        ${(data.headers || []).map((header) => `
+          <label>
+            <span>${escapeHtml(header)}</span>
+            <textarea name="${escapeHtml(header)}" maxlength="5000" rows="2">${escapeHtml((row.values || {})[header] ?? "")}</textarea>
+          </label>
+        `).join("")}
+      </div>
+      <footer><button type="button" class="ghost kdocs-dialog-cancel">取消</button><button type="submit">保存修改</button></footer>
+    </form>`;
+  document.body.append(dialog);
+  const close = () => dialog.close();
+  dialog.querySelector(".kdocs-dialog-close").addEventListener("click", close);
+  dialog.querySelector(".kdocs-dialog-cancel").addEventListener("click", close);
+  dialog.addEventListener("close", () => dialog.remove(), { once: true });
+  dialog.addEventListener("click", (event) => {
+    if (event.target === dialog) close();
+  });
+  dialog.querySelector("#kdocs-row-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const submit = event.submitter;
+    if (submit) submit.disabled = true;
+    const formData = new FormData(event.currentTarget);
+    const values = Object.fromEntries((data.headers || []).map((header) => [header, String(formData.get(header) ?? "")]));
+    try {
+      await api(`/api/v1/legal/kdocs-browser/tables/${data.target}/rows/${row.row_index}`, {
+        method: "PATCH",
+        body: JSON.stringify({ row_version: row.row_version, values }),
+      });
+      close();
+      showAlert(`${data.target_name}第 ${row.row_index + 1} 行已更新`);
+      await renderKDocsBrowser({ refreshOverview: true, refreshRows: true });
+    } catch (error) {
+      showAlert(error.message, "error");
+      if (submit) submit.disabled = false;
+    }
+  });
+  dialog.showModal();
+}
+
+async function deleteKDocsRow(data, row, button) {
+  const identity = kdocsRowIdentity(row, data.headers || []);
+  const confirmed = window.confirm(`确定删除“${data.target_name}”第 ${row.row_index + 1} 行吗？\n${identity}\n\n删除后下方行会自动上移，此操作会直接修改金山文档。`);
+  if (!confirmed) return;
+  button.disabled = true;
+  try {
+    const params = new URLSearchParams({ row_version: row.row_version });
+    await api(`/api/v1/legal/kdocs-browser/tables/${data.target}/rows/${row.row_index}?${params}`, { method: "DELETE" });
+    showAlert(`${data.target_name}第 ${row.row_index + 1} 行已删除`);
+    await renderKDocsBrowser({ refreshOverview: true, refreshRows: true });
+  } catch (error) {
+    showAlert(error.message, "error");
+    button.disabled = false;
+  }
+}
+
 function kdocsTableContent(data) {
   const columns = kdocsVisibleColumns[data.target] || data.headers || [];
   const rows = data.items || [];
@@ -2182,9 +2292,9 @@ function kdocsTableContent(data) {
     ${tableFilters}
     <div class="table-wrap kdocs-table-wrap">
       <table class="kdocs-table">
-        <thead><tr><th class="kdocs-row-number">行</th>${columns.map((column) => `<th>${escapeHtml(column)}</th>`).join("")}</tr></thead>
+        <thead><tr><th class="kdocs-row-number">行</th>${columns.map((column) => `<th>${escapeHtml(column)}</th>`).join("")}<th class="kdocs-row-actions">操作</th></tr></thead>
         <tbody>
-          ${rows.length ? rows.map((row) => `<tr><td class="kdocs-row-number">${escapeHtml(row.row_index + 1)}</td>${columns.map((column) => `<td>${kdocsValue((row.values || {})[column])}</td>`).join("")}</tr>`).join("") : `<tr><td colspan="${columns.length + 1}"><div class="empty-state">当前页暂无数据</div></td></tr>`}
+          ${rows.length ? rows.map((row) => `<tr><td class="kdocs-row-number">${escapeHtml(row.row_index + 1)}</td>${columns.map((column) => `<td>${kdocsValue((row.values || {})[column])}</td>`).join("")}<td class="kdocs-row-actions"><button type="button" class="ghost small" data-kdocs-edit-row="${row.row_index}">编辑</button><button type="button" class="ghost small danger-text" data-kdocs-delete-row="${row.row_index}">删除</button></td></tr>`).join("") : `<tr><td colspan="${columns.length + 2}"><div class="empty-state">当前页暂无数据</div></td></tr>`}
         </tbody>
       </table>
     </div>
@@ -2337,6 +2447,18 @@ async function renderKDocsBrowser({ refreshOverview = false, refreshRows = false
     state.kdocsSortOrder = "desc";
     state.kdocsPage = 1;
     await renderKDocsBrowser();
+  });
+  document.querySelectorAll("[data-kdocs-edit-row]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const row = (contentData.items || []).find((item) => item.row_index === Number(button.dataset.kdocsEditRow));
+      if (row) openKDocsRowEditor(contentData, row);
+    });
+  });
+  document.querySelectorAll("[data-kdocs-delete-row]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const row = (contentData.items || []).find((item) => item.row_index === Number(button.dataset.kdocsDeleteRow));
+      if (row) await deleteKDocsRow(contentData, row, button);
+    });
   });
   const searchForm = $("#kdocs-document-search");
   if (searchForm) {

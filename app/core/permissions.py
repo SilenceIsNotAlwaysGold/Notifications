@@ -57,6 +57,8 @@ ROLE_PERMISSIONS: dict[str, list[PermissionRule]] = {
         PermissionRule("GET", r"/api/v1/legal/document-sync-logs"),
         PermissionRule("GET", r"/api/v1/legal/kdocs-browser"),
         PermissionRule("GET", r"/api/v1/legal/kdocs-browser/tables/(enforcement|court|payment)"),
+        PermissionRule("PATCH", r"/api/v1/legal/kdocs-browser/tables/(enforcement|court|payment)/rows/\d+"),
+        PermissionRule("DELETE", r"/api/v1/legal/kdocs-browser/tables/(enforcement|court|payment)/rows/\d+"),
         PermissionRule("GET", r"/api/v1/legal/kdocs-browser/documents"),
         PermissionRule("GET", r"/api/v1/legal/cases/\d+/status-histories"),
         PermissionRule("GET", r"/api/v1/legal/reminders/\d+/send-logs"),
