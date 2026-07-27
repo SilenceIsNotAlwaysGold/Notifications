@@ -52,14 +52,15 @@ def test_admin_sync_results_have_filters_sort_and_pagination():
     assert 'data-sync-retry=' in content
 
 
-def test_admin_kdocs_court_table_has_filters_sort_and_page_jump():
+def test_admin_kdocs_tables_have_generic_filters_sort_and_page_jump():
     content = (ROOT / "app/static/admin/admin.js").read_text(encoding="utf-8")
 
     assert 'id="kdocs-table-filter"' in content
-    assert 'name="court_mode"' in content
-    assert 'name="date_from"' in content
-    assert 'name="date_to"' in content
-    assert '开庭时间排序' in content
+    assert 'name="filter_column"' in content
+    assert 'name="filter_value"' in content
+    assert 'name="sort_column"' in content
+    assert 'name="sort_order"' in content
+    assert 'state.kdocsTarget === "court" ? state.kdocsSortOrder' not in content
     assert 'id="kdocs-page-jump"' in content
     assert 'id="kdocs-page-size"' in content
 

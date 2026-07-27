@@ -1,6 +1,9 @@
 import re
+import threading
+import time
 from dataclasses import dataclass
 from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from app.adapters.kdocs_mcp import KDocsMcpClient
@@ -60,6 +63,10 @@ TARGETS: dict[KDocsTarget, TargetDefinition] = {
 
 
 class KDocsBrowserService:
+    CACHE_TTL_SECONDS = 60.0
+    _rows_cache: dict[tuple[str, int], tuple[float, int, list[KDocsRowOut]]] = {}
+    _cache_lock = threading.RLock()
+
     def __init__(self, settings: Settings | None = None, client: KDocsMcpClient | None = None) -> None:
         self.settings = settings or get_settings()
         self.client = client or KDocsMcpClient(self.settings)
@@ -87,10 +94,14 @@ class KDocsBrowserService:
         page_size: int,
         *,
         query: str = "",
+        filter_column: str = "",
+        filter_value: str = "",
+        sort_column: str = "",
         court_mode: str = "",
         date_from: str | None = None,
         date_to: str | None = None,
         sort_order: str = "asc",
+        refresh: bool = False,
     ) -> KDocsRowPageOut:
         self._ensure_real_mcp()
         definition = TARGETS[target]
@@ -100,11 +111,26 @@ class KDocsBrowserService:
             raise ValueError(f"{definition.name}尚未配置 file_id")
         sheet = self.client.get_sheet_info(file_id, worksheet_id)
         last_row = max(int(sheet.get("rowTo") or 0), 0)
-        needs_full_scan = bool(query or court_mode or date_from or date_to or (target == "court" and sort_order in {"asc", "desc"}))
+        if filter_column and filter_column not in definition.headers:
+            raise ValueError("筛选字段不存在")
+        if filter_value and not filter_column:
+            raise ValueError("请选择筛选字段")
+        if sort_column and sort_column not in definition.headers:
+            raise ValueError("排序字段不存在")
+        needs_full_scan = bool(query or filter_value or sort_column or court_mode or date_from or date_to)
         if needs_full_scan:
-            rows = self._all_rows(file_id, worksheet_id, definition.headers, last_row)
-            rows = self._filter_rows(rows, target, query, court_mode, date_from, date_to)
-            rows = self._sort_rows(rows, target, sort_order)
+            rows = self._all_rows(file_id, worksheet_id, definition.headers, last_row, refresh=refresh)
+            rows = self._filter_rows(
+                rows,
+                target,
+                query,
+                filter_column,
+                filter_value,
+                court_mode,
+                date_from,
+                date_to,
+            )
+            rows = self._sort_rows(rows, sort_column, sort_order)
             total = len(rows)
             start = (page - 1) * page_size
             rows = rows[start:start + page_size]
@@ -135,6 +161,9 @@ class KDocsBrowserService:
             page=page,
             page_size=page_size,
             query=query,
+            filter_column=filter_column,
+            filter_value=filter_value,
+            sort_column=sort_column,
             court_mode=court_mode,
             date_from=date_from,
             date_to=date_to,
@@ -148,19 +177,28 @@ class KDocsBrowserService:
         worksheet_id: int,
         headers: tuple[str, ...],
         last_row: int,
+        *,
+        refresh: bool = False,
     ) -> list[KDocsRowOut]:
-        rows: list[KDocsRowOut] = []
-        for row_from in range(1, last_row + 1, 100):
-            row_to = min(row_from + 99, last_row)
+        cache_key = (file_id, worksheet_id)
+        now = time.monotonic()
+        with self._cache_lock:
+            cached = self._rows_cache.get(cache_key)
+            if not refresh and cached and cached[0] > now and cached[1] == last_row:
+                return cached[2]
+        cells = []
+        if last_row:
             cells = self.client.get_range_data(
                 file_id,
                 worksheet_id,
-                row_from=row_from,
-                row_to=row_to,
+                row_from=1,
+                row_to=last_row,
                 col_from=0,
                 col_to=len(headers) - 1,
             )
-            rows.extend(self._rows(cells, headers, row_from, row_to))
+        rows = self._rows(cells, headers, 1, last_row)
+        with self._cache_lock:
+            self._rows_cache[cache_key] = (now + self.CACHE_TTL_SECONDS, last_row, rows)
         return rows
 
     @classmethod
@@ -169,6 +207,8 @@ class KDocsBrowserService:
         rows: list[KDocsRowOut],
         target: KDocsTarget,
         query: str,
+        filter_column: str,
+        filter_value: str,
         court_mode: str,
         date_from: str | None,
         date_to: str | None,
@@ -181,6 +221,8 @@ class KDocsBrowserService:
             values = row.values
             if query_normalized and not any(query_normalized in str(value).casefold() for value in values.values()):
                 continue
+            if filter_value and filter_value.casefold() not in str(values.get(filter_column) or "").casefold():
+                continue
             if target == "court" and court_mode and court_mode not in str(values.get("开庭方式") or ""):
                 continue
             if target == "court" and (start or end):
@@ -191,18 +233,35 @@ class KDocsBrowserService:
         return result
 
     @classmethod
-    def _sort_rows(cls, rows: list[KDocsRowOut], target: KDocsTarget, sort_order: str) -> list[KDocsRowOut]:
+    def _sort_rows(cls, rows: list[KDocsRowOut], sort_column: str, sort_order: str) -> list[KDocsRowOut]:
+        if not sort_column:
+            return rows
         reverse = sort_order == "desc"
-        if target != "court":
-            return sorted(rows, key=lambda row: row.row_index, reverse=reverse)
-        dated = []
-        undated = []
+        populated = [row for row in rows if row.values.get(sort_column) not in (None, "")]
+        empty = [row for row in rows if row.values.get(sort_column) in (None, "")]
+        dated = [(cls._court_datetime(row.values.get(sort_column)), row) for row in populated]
+        if any(value is not None for value, _ in dated):
+            valid = [(value, row) for value, row in dated if value is not None]
+            invalid = [row for value, row in dated if value is None]
+            valid.sort(key=lambda item: (item[0], item[1].row_index), reverse=reverse)
+            invalid.sort(key=lambda row: str(row.values.get(sort_column)).casefold(), reverse=reverse)
+            return [row for _, row in valid] + invalid + empty
+        numeric = []
+        non_numeric = []
         for row in rows:
-            hearing_time = cls._court_datetime(row.values.get("开庭时间"))
-            (dated if hearing_time else undated).append((hearing_time, row))
-        dated.sort(key=lambda item: (item[0], item[1].row_index), reverse=reverse)
-        undated.sort(key=lambda item: item[1].row_index, reverse=reverse)
-        return [row for _, row in dated] + [row for _, row in undated]
+            value = row.values.get(sort_column)
+            if value in (None, ""):
+                continue
+            try:
+                normalized = str(value).replace(",", "").replace("¥", "").replace("￥", "").strip()
+                numeric.append((Decimal(normalized), row))
+            except (InvalidOperation, ValueError):
+                non_numeric.append(row)
+        if numeric and not non_numeric:
+            numeric.sort(key=lambda item: (item[0], item[1].row_index), reverse=reverse)
+            return [row for _, row in numeric] + empty
+        populated.sort(key=lambda row: (str(row.values.get(sort_column)).casefold(), row.row_index), reverse=reverse)
+        return populated + empty
 
     @staticmethod
     def _court_datetime(value: Any) -> datetime | None:

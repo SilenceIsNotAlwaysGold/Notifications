@@ -20,10 +20,14 @@ def list_kdocs_rows(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=30, ge=1, le=100),
     query: str = Query(default="", max_length=100),
+    filter_column: str = Query(default="", max_length=64),
+    filter_value: str = Query(default="", max_length=100),
+    sort_column: str = Query(default="", max_length=64),
     court_mode: str = Query(default="", max_length=32),
     date_from: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
     date_to: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
     sort_order: str = Query(default="asc", pattern="^(asc|desc)$"),
+    refresh: bool = Query(default=False),
 ):
     try:
         data = KDocsBrowserService(get_settings()).list_rows(
@@ -31,10 +35,14 @@ def list_kdocs_rows(
             page,
             page_size,
             query=query.strip(),
+            filter_column=filter_column.strip(),
+            filter_value=filter_value.strip(),
+            sort_column=sort_column.strip(),
             court_mode=court_mode.strip(),
             date_from=date_from,
             date_to=date_to,
             sort_order=sort_order,
+            refresh=refresh,
         )
     except ValueError as exc:
         raise_fail(str(exc), code=1400)

@@ -12,9 +12,9 @@ const state = {
   kdocsPage: 1,
   kdocsPageSize: 30,
   kdocsTableQuery: "",
-  kdocsCourtMode: "",
-  kdocsDateFrom: "",
-  kdocsDateTo: "",
+  kdocsFilterColumn: "",
+  kdocsFilterValue: "",
+  kdocsSortColumn: "",
   kdocsSortOrder: "desc",
   kdocsQuery: "判决书",
   kdocsDocumentToken: null,
@@ -2016,7 +2016,7 @@ async function renderSync() {
 const kdocsVisibleColumns = {
   enforcement: ["原告主体", "被告", "文书执行类型", "上传文件", "应还款时间", "民初案号", "总金额", "已还欠款", "案件状态", "备注"],
   court: ["开庭时间", "时间", "公司（原告）", "民初案号", "被告", "开庭方式", "跟进人", "金额", "传票", "核对"],
-  payment: ["案号", "被告", "缴费类型", "金额", "文件链接", "识别摘要", "需人工复核", "消息ID"],
+  payment: ["日期", "原告", "被告", "案号", "缴费信息", "支付情况", "跟踪情况", "剩余缴费时间", "缴费截图上传"],
 };
 
 function kdocsValue(value) {
@@ -2048,32 +2048,29 @@ function kdocsTableContent(data) {
   const columns = kdocsVisibleColumns[data.target] || data.headers || [];
   const rows = data.items || [];
   const totalPages = Math.max(1, Math.ceil((data.total || 0) / data.page_size));
-  const courtFilters = data.target === "court" ? `
+  const columnOptions = columns.map((column) => `<option value="${escapeHtml(column)}" ${state.kdocsFilterColumn === column ? "selected" : ""}>${escapeHtml(column)}</option>`).join("");
+  const sortColumnOptions = columns.map((column) => `<option value="${escapeHtml(column)}" ${state.kdocsSortColumn === column ? "selected" : ""}>${escapeHtml(column)}</option>`).join("");
+  const tableFilters = `
     <form id="kdocs-table-filter" class="kdocs-table-filter">
-      <label><span>关键词</span><input name="query" maxlength="100" value="${escapeHtml(state.kdocsTableQuery)}" placeholder="被告、原告、案号、跟进人" /></label>
-      <label><span>开庭方式</span><select name="court_mode">
-        <option value="" ${state.kdocsCourtMode ? "" : "selected"}>全部方式</option>
-        <option value="线上" ${state.kdocsCourtMode === "线上" ? "selected" : ""}>线上</option>
-        <option value="线下" ${state.kdocsCourtMode === "线下" ? "selected" : ""}>线下</option>
-        <option value="待确认" ${state.kdocsCourtMode === "待确认" ? "selected" : ""}>待确认</option>
-      </select></label>
-      <label><span>开始日期</span><input name="date_from" type="date" value="${escapeHtml(state.kdocsDateFrom)}" /></label>
-      <label><span>结束日期</span><input name="date_to" type="date" value="${escapeHtml(state.kdocsDateTo)}" /></label>
-      <label><span>开庭时间排序</span><select name="sort_order">
-        <option value="desc" ${state.kdocsSortOrder === "desc" ? "selected" : ""}>从晚到早</option>
-        <option value="asc" ${state.kdocsSortOrder === "asc" ? "selected" : ""}>从早到晚</option>
+      <label><span>全表搜索</span><input name="query" maxlength="100" value="${escapeHtml(state.kdocsTableQuery)}" placeholder="搜索任意列内容" /></label>
+      <label><span>筛选字段</span><select name="filter_column"><option value="">选择字段</option>${columnOptions}</select></label>
+      <label><span>筛选内容</span><input name="filter_value" maxlength="100" value="${escapeHtml(state.kdocsFilterValue)}" placeholder="包含此内容" /></label>
+      <label><span>排序字段</span><select name="sort_column"><option value="">不排序</option>${sortColumnOptions}</select></label>
+      <label><span>排序方式</span><select name="sort_order">
+        <option value="desc" ${state.kdocsSortOrder === "desc" ? "selected" : ""}>降序</option>
+        <option value="asc" ${state.kdocsSortOrder === "asc" ? "selected" : ""}>升序</option>
       </select></label>
       <div class="kdocs-filter-actions"><button type="submit">筛选</button><button type="button" class="ghost" id="kdocs-filter-reset">重置</button></div>
-    </form>` : "";
+    </form>`;
   return `
     <div class="kdocs-content-head">
       <div>
         <h3>${escapeHtml(data.sheet_name || data.target_name)}</h3>
-        <span>共 ${escapeHtml(data.total)} 条，第 ${escapeHtml(data.page)} / ${escapeHtml(totalPages)} 页${data.target === "court" ? ` · 开庭时间${state.kdocsSortOrder === "desc" ? "从晚到早" : "从早到晚"}` : ""}</span>
+        <span>共 ${escapeHtml(data.total)} 条，第 ${escapeHtml(data.page)} / ${escapeHtml(totalPages)} 页${state.kdocsSortColumn ? ` · ${escapeHtml(state.kdocsSortColumn)}${state.kdocsSortOrder === "desc" ? "降序" : "升序"}` : ""}</span>
       </div>
       ${safeExternalUrl(data.file_url) ? `<a class="button-like ghost" href="${escapeHtml(data.file_url)}" target="_blank" rel="noreferrer">在金山中打开</a>` : ""}
     </div>
-    ${courtFilters}
+    ${tableFilters}
     <div class="table-wrap kdocs-table-wrap">
       <table class="kdocs-table">
         <thead><tr><th class="kdocs-row-number">行</th>${columns.map((column) => `<th>${escapeHtml(column)}</th>`).join("")}</tr></thead>
@@ -2126,29 +2123,33 @@ function kdocsDocumentContent(data) {
   `;
 }
 
-async function renderKDocsBrowser({ refreshOverview = false } = {}) {
-  if (refreshOverview || !state.data.kdocsOverview) {
-    state.data.kdocsOverview = await api("/api/v1/legal/kdocs-browser");
-  }
-  const overview = state.data.kdocsOverview;
-  let contentData;
+async function renderKDocsBrowser({ refreshOverview = false, refreshRows = false } = {}) {
+  const overviewPromise = refreshOverview || !state.data.kdocsOverview
+    ? api("/api/v1/legal/kdocs-browser")
+    : Promise.resolve(state.data.kdocsOverview);
+  let contentPromise;
   if (state.kdocsTarget === "documents") {
     const params = new URLSearchParams({ query: state.kdocsQuery, page_size: "30" });
     if (state.kdocsDocumentToken) params.set("page_token", state.kdocsDocumentToken);
-    contentData = await api(`/api/v1/legal/kdocs-browser/documents?${params}`);
+    contentPromise = api(`/api/v1/legal/kdocs-browser/documents?${params}`);
   } else {
     const params = new URLSearchParams({
       page: String(state.kdocsPage),
       page_size: String(state.kdocsPageSize),
-      sort_order: state.kdocsTarget === "court" ? state.kdocsSortOrder : "asc",
+      sort_order: state.kdocsSortOrder,
     });
-    if (state.kdocsTarget === "court") {
-      if (state.kdocsTableQuery) params.set("query", state.kdocsTableQuery);
-      if (state.kdocsCourtMode) params.set("court_mode", state.kdocsCourtMode);
-      if (state.kdocsDateFrom) params.set("date_from", state.kdocsDateFrom);
-      if (state.kdocsDateTo) params.set("date_to", state.kdocsDateTo);
+    if (state.kdocsTableQuery) params.set("query", state.kdocsTableQuery);
+    if (state.kdocsFilterColumn && state.kdocsFilterValue) {
+      params.set("filter_column", state.kdocsFilterColumn);
+      params.set("filter_value", state.kdocsFilterValue);
     }
-    contentData = await api(`/api/v1/legal/kdocs-browser/tables/${state.kdocsTarget}?${params}`);
+    if (state.kdocsSortColumn) params.set("sort_column", state.kdocsSortColumn);
+    if (refreshRows) params.set("refresh", "true");
+    contentPromise = api(`/api/v1/legal/kdocs-browser/tables/${state.kdocsTarget}?${params}`);
+  }
+  const [overview, contentData] = await Promise.all([overviewPromise, contentPromise]);
+  state.data.kdocsOverview = overview;
+  if (state.kdocsTarget !== "documents") {
     const totalPages = Math.max(1, Math.ceil((contentData.total || 0) / state.kdocsPageSize));
     if (state.kdocsPage > totalPages) {
       state.kdocsPage = totalPages;
@@ -2176,12 +2177,16 @@ async function renderKDocsBrowser({ refreshOverview = false } = {}) {
     button.addEventListener("click", async () => {
       state.kdocsTarget = button.dataset.kdocsTarget;
       state.kdocsPage = 1;
+      state.kdocsTableQuery = "";
+      state.kdocsFilterColumn = "";
+      state.kdocsFilterValue = "";
+      state.kdocsSortColumn = "";
       state.kdocsDocumentToken = null;
       state.kdocsDocumentTokenStack = [];
       await renderKDocsBrowser();
     });
   });
-  $("#refresh-kdocs-btn").addEventListener("click", () => renderKDocsBrowser({ refreshOverview: true }));
+  $("#refresh-kdocs-btn").addEventListener("click", () => renderKDocsBrowser({ refreshOverview: true, refreshRows: true }));
   document.querySelectorAll("[data-kdocs-page]").forEach((button) => {
     button.addEventListener("click", async () => {
       state.kdocsPage += button.dataset.kdocsPage === "next" ? 1 : -1;
@@ -2207,9 +2212,9 @@ async function renderKDocsBrowser({ refreshOverview = false } = {}) {
     event.preventDefault();
     const formData = new FormData(tableFilter);
     state.kdocsTableQuery = String(formData.get("query") || "").trim();
-    state.kdocsCourtMode = String(formData.get("court_mode") || "");
-    state.kdocsDateFrom = String(formData.get("date_from") || "");
-    state.kdocsDateTo = String(formData.get("date_to") || "");
+    state.kdocsFilterColumn = String(formData.get("filter_column") || "");
+    state.kdocsFilterValue = String(formData.get("filter_value") || "").trim();
+    state.kdocsSortColumn = String(formData.get("sort_column") || "");
     state.kdocsSortOrder = String(formData.get("sort_order") || "desc");
     state.kdocsPage = 1;
     await renderKDocsBrowser();
@@ -2217,9 +2222,9 @@ async function renderKDocsBrowser({ refreshOverview = false } = {}) {
   const filterReset = $("#kdocs-filter-reset");
   if (filterReset) filterReset.addEventListener("click", async () => {
     state.kdocsTableQuery = "";
-    state.kdocsCourtMode = "";
-    state.kdocsDateFrom = "";
-    state.kdocsDateTo = "";
+    state.kdocsFilterColumn = "";
+    state.kdocsFilterValue = "";
+    state.kdocsSortColumn = "";
     state.kdocsSortOrder = "desc";
     state.kdocsPage = 1;
     await renderKDocsBrowser();

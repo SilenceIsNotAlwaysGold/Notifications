@@ -41,6 +41,9 @@ class KDocsRowPageOut(BaseModel):
     page: int
     page_size: int
     query: str = ""
+    filter_column: str = ""
+    filter_value: str = ""
+    sort_column: str = ""
     court_mode: str = ""
     date_from: str | None = None
     date_to: str | None = None

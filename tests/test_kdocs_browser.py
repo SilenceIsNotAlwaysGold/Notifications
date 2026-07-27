@@ -125,6 +125,7 @@ def test_kdocs_browser_maps_sparse_cells_and_paginates(monkeypatch):
 
 
 def test_kdocs_court_rows_filter_sort_and_paginate_across_full_sheet(monkeypatch):
+    KDocsBrowserService._rows_cache.clear()
     client = CourtRowsFakeKDocsClient()
     service = KDocsBrowserService(kdocs_settings(monkeypatch), client)
 
@@ -132,16 +133,18 @@ def test_kdocs_court_rows_filter_sort_and_paginate_across_full_sheet(monkeypatch
         "court",
         page=1,
         page_size=1,
-        query="张",
-        court_mode="线上",
+        filter_column="被告",
+        filter_value="张",
+        sort_column="开庭时间",
         sort_order="desc",
     )
     second_page = service.list_rows(
         "court",
         page=2,
         page_size=1,
-        query="张",
-        court_mode="线上",
+        filter_column="被告",
+        filter_value="张",
+        sort_column="开庭时间",
         sort_order="desc",
     )
 
@@ -152,6 +155,7 @@ def test_kdocs_court_rows_filter_sort_and_paginate_across_full_sheet(monkeypatch
 
 
 def test_kdocs_court_rows_filter_by_date_range_and_sort_ascending(monkeypatch):
+    KDocsBrowserService._rows_cache.clear()
     service = KDocsBrowserService(kdocs_settings(monkeypatch), CourtRowsFakeKDocsClient())
 
     result = service.list_rows(
@@ -160,11 +164,34 @@ def test_kdocs_court_rows_filter_by_date_range_and_sort_ascending(monkeypatch):
         page_size=30,
         date_from="2026-08-01",
         date_to="2026-09-30",
+        sort_column="开庭时间",
         sort_order="asc",
     )
 
     assert result.total == 2
     assert [item.values["被告"] for item in result.items] == ["张六", "李四"]
+
+
+def test_kdocs_full_table_cache_is_reused_for_filter_and_sort(monkeypatch):
+    KDocsBrowserService._rows_cache.clear()
+    client = CourtRowsFakeKDocsClient()
+    service = KDocsBrowserService(kdocs_settings(monkeypatch), client)
+
+    service.list_rows("court", page=1, page_size=2, query="线上")
+    service.list_rows("court", page=1, page_size=2, sort_column="被告", sort_order="asc")
+
+    assert client.range_calls == [("court-file", 1, 1, 4, 0, 17)]
+
+
+def test_kdocs_generic_filter_and_sort_reject_unknown_columns(monkeypatch):
+    service = KDocsBrowserService(kdocs_settings(monkeypatch), FakeKDocsClient())
+
+    try:
+        service.list_rows("payment", page=1, page_size=30, sort_column="不存在")
+    except ValueError as exc:
+        assert str(exc) == "排序字段不存在"
+    else:
+        raise AssertionError("unknown sort columns must be rejected")
 
 
 def test_kdocs_browser_documents_only_returns_display_fields(monkeypatch):
