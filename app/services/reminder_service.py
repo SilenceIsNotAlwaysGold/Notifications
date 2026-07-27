@@ -17,6 +17,9 @@ from app.utils.datetime_utils import app_timezone, ensure_aware, now_tz, start_o
 
 logger = logging.getLogger(__name__)
 
+REMINDER_DIGEST_MAX_CHARS = 3500
+REMINDER_DIGEST_MAX_ITEMS = 20
+
 
 class ReminderService:
     def __init__(self, db: Session, wecom_adapter: WeComMessageAdapter | None = None) -> None:
@@ -296,36 +299,48 @@ class ReminderService:
         failed = 0
         retrying = 0
         try:
-            for reminder in due_reminders:
-                mentioned = [reminder.target_userid] if reminder.target_userid else None
-                attempt_no = reminder.retry_count + 1
-                result = None
+            for reminders in self._group_for_delivery(due_reminders):
+                primary = reminders[0]
+                mentioned = list(dict.fromkeys(item.target_userid for item in reminders if item.target_userid)) or None
+                content = self._delivery_content(reminders)
                 try:
-                    result = self._send_text(reminder, mentioned)
-                    self._write_send_log(reminder, result, mentioned, None, attempt_no)
-                    if not result.get("success"):
-                        raise RuntimeError(result.get("error") or "企业微信发送失败")
-                    if result.get("mode") == "mock":
-                        self.mark_simulated(reminder)
-                        simulated += 1
-                    else:
-                        self.mark_sent(reminder)
-                        sent += 1
+                    result = self._send_text(primary, mentioned, content=content)
                 except Exception as exc:
-                    logger.exception("发送提醒失败，reminder_id=%s", reminder.id)
-                    if result is None or result.get("success"):
-                        result = {
-                            "success": False,
-                            "mode": getattr(self.wecom_adapter, "mode", "mock"),
-                            "status_code": None,
-                            "response": None,
-                            "error": str(exc),
-                        }
-                        self._write_send_log(reminder, result, mentioned, None, attempt_no)
-                    if self.mark_send_failure(reminder, str(exc)):
-                        failed += 1
+                    logger.exception("发送提醒摘要失败，group_id=%s", primary.group_id)
+                    result = {
+                        "success": False,
+                        "mode": getattr(self.wecom_adapter, "mode", "mock"),
+                        "status_code": None,
+                        "response": None,
+                        "error": str(exc),
+                    }
+
+                for reminder in reminders:
+                    self._write_send_log(
+                        reminder,
+                        result,
+                        mentioned,
+                        None,
+                        reminder.retry_count + 1,
+                        content=content,
+                    )
+
+                if result.get("success"):
+                    if result.get("mode") == "mock":
+                        for reminder in reminders:
+                            self.mark_simulated(reminder)
+                        simulated += len(reminders)
                     else:
-                        retrying += 1
+                        for reminder in reminders:
+                            self.mark_sent(reminder)
+                        sent += len(reminders)
+                else:
+                    error = str(result.get("error") or "企业微信发送失败")
+                    for reminder in reminders:
+                        if self.mark_send_failure(reminder, error):
+                            failed += 1
+                        else:
+                            retrying += 1
             summary = {"sent": sent, "simulated": simulated, "failed": failed, "retrying": retrying, "total": len(due_reminders), **({"operator": operator} if operator else {})}
             if failed:
                 run_service.finish_partial(run_log, summary=summary, total_count=len(due_reminders), success_count=sent + simulated, failed_count=failed)
@@ -440,10 +455,12 @@ class ReminderService:
         mentioned_userids: list[str] | None,
         mentioned_mobiles: list[str] | None,
         attempt_no: int,
+        content: str | None = None,
     ) -> None:
+        delivered_content = content or reminder.content
         request_payload = {
             "group_id": reminder.group_id,
-            "content": reminder.content[:200],
+            "content": delivered_content[:200],
             "mentioned_userids": mentioned_userids or [],
             "mentioned_mobiles": mentioned_mobiles or [],
         }
@@ -470,18 +487,58 @@ class ReminderService:
         self.db.add(log)
         self.db.flush()
 
-    def _send_text(self, reminder: Reminder, mentioned_userids: list[str] | None) -> dict[str, object]:
+    def _send_text(
+        self,
+        reminder: Reminder,
+        mentioned_userids: list[str] | None,
+        content: str | None = None,
+    ) -> dict[str, object]:
+        delivered_content = content or reminder.content
         try:
             return self.wecom_adapter.send_text(
                 reminder.group_id,
-                reminder.content,
+                delivered_content,
                 mentioned_userids=mentioned_userids,
                 tenant_id=reminder.tenant_id,
             )
         except TypeError as exc:
             if "tenant_id" not in str(exc):
                 raise
-            return self.wecom_adapter.send_text(reminder.group_id, reminder.content, mentioned_userids=mentioned_userids)
+            return self.wecom_adapter.send_text(reminder.group_id, delivered_content, mentioned_userids=mentioned_userids)
+
+    @staticmethod
+    def _group_for_delivery(reminders: list[Reminder]) -> list[list[Reminder]]:
+        grouped: dict[str, list[Reminder]] = {}
+        for reminder in reminders:
+            grouped.setdefault(reminder.group_id, []).append(reminder)
+        return list(grouped.values())
+
+    @staticmethod
+    def _delivery_content(reminders: list[Reminder]) -> str:
+        if len(reminders) == 1:
+            return reminders[0].content
+
+        unique_contents = list(
+            dict.fromkeys(" ".join(reminder.content.split()) for reminder in reminders if reminder.content.strip())
+        )
+        header = f"【致和法务提醒】本次共 {len(reminders)} 个提醒任务："
+        content_budget = REMINDER_DIGEST_MAX_CHARS - 60
+        lines: list[str] = []
+        for content in unique_contents[:REMINDER_DIGEST_MAX_ITEMS]:
+            line = f"{len(lines) + 1}. {content}"
+            candidate = "\n".join([header, *lines, line])
+            if len(candidate) > content_budget:
+                break
+            lines.append(line)
+
+        if not lines and unique_contents:
+            available = max(1, content_budget - len(header) - 4)
+            lines.append(f"1. {unique_contents[0][:available]}")
+
+        omitted = len(unique_contents) - len(lines)
+        footer = f"另有 {omitted} 项，请登录管理后台查看。" if omitted else "请及时处理。"
+        digest = "\n".join([header, *lines, footer])
+        return digest[:REMINDER_DIGEST_MAX_CHARS]
 
     def _infer_tenant_id_from_group(self, group_id: str) -> str | None:
         legal_case = self.db.scalar(
