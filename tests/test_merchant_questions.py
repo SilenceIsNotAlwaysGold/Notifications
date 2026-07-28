@@ -191,7 +191,9 @@ def test_explicit_payment_confirmation_does_not_create_question(client, db_sessi
     _create_group(client)
     now = datetime(2026, 7, 20, 10, 0, tzinfo=app_timezone())
 
-    for index, content in enumerate(("已缴费", "已代缴", "已收款", "转账成功")):
+    for index, content in enumerate(
+        ("已缴费", "已代缴", "已收款", "转账成功", "尼加提·帕力哈提，我已交诉讼费。", "诉讼费已经交了")
+    ):
         _text(client, "merchant_group", f"merchant_{index}", content, now + timedelta(seconds=index))
 
     assert db_session.scalar(select(MerchantQuestion)) is None
@@ -244,7 +246,6 @@ def test_payment_deadline_and_explicit_requests_create_questions(client, db_sess
     _create_group(client)
     now = datetime(2026, 7, 20, 10, 0, tzinfo=app_timezone())
     contents = (
-        "诉讼费500元已经转账",
         "这个明天下午截止",
         "麻烦核实一下资料",
         "这个应该怎么处理？",
@@ -252,6 +253,18 @@ def test_payment_deadline_and_explicit_requests_create_questions(client, db_sess
         "付款码出一下",
         "这个多少钱",
     )
+
+    for index, content in enumerate(contents):
+        _text(client, "merchant_group", f"merchant_{index}", content, now + timedelta(seconds=index))
+
+    questions = list(db_session.scalars(select(MerchantQuestion).order_by(MerchantQuestion.id)).all())
+    assert [item.content for item in questions] == list(contents)
+
+
+def test_unpaid_or_question_payment_messages_still_require_reply(client, db_session):
+    _create_group(client)
+    now = datetime(2026, 7, 20, 10, 0, tzinfo=app_timezone())
+    contents = ("诉讼费还没交", "诉讼费交了吗？", "是否已经交诉讼费")
 
     for index, content in enumerate(contents):
         _text(client, "merchant_group", f"merchant_{index}", content, now + timedelta(seconds=index))

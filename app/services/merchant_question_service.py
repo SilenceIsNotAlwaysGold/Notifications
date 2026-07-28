@@ -12,6 +12,7 @@ from app.core.config import get_settings
 from app.services.reminder_service import ReminderService
 from app.services.wecom_archive_group_service import WeComArchiveGroupService
 from app.utils.datetime_utils import ensure_aware, now_tz
+from app.utils.regex_parser import is_payment_done_text
 
 SYSTEM_MESSAGE_PREFIXES = (
     "【致和法务】",
@@ -135,7 +136,7 @@ class MerchantQuestionService:
         if message.sender_id in internal_userids:
             closed = self._close_relevant_question(message)
             return {"created": 0, "closed": closed}
-        if self._is_conversation_closing(message.content or ""):
+        if is_payment_done_text(message.content or "") or self._is_conversation_closing(message.content or ""):
             closed = self._close_sender_question(message)
             return {"created": 0, "closed": closed}
         if not self._requires_business_reply(message.content or ""):

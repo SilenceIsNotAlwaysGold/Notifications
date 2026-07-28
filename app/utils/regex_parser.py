@@ -20,7 +20,33 @@ FULL_DATETIME_PATTERNS = [
 CN_TIME_PATTERN = re.compile(r"(?:(\d{4})年)?(\d{1,2})月(\d{1,2})日\s*(上午|下午)?\s*(\d{1,2})点")
 
 PAYMENT_NOTICE_KEYWORDS = ["需要缴费", "缴费通知", "缴费金额", "诉讼费", "公告费", "开庭费", "缴纳"]
-PAYMENT_DONE_KEYWORDS = ["已付款", "已支付", "支付成功", "转账成功", "已缴费", "已代缴", "已收款", "付款截图"]
+PAYMENT_DONE_KEYWORDS = [
+    "已付款",
+    "已支付",
+    "支付成功",
+    "转账成功",
+    "已缴费",
+    "已代缴",
+    "已收款",
+    "付款截图",
+    "已交诉讼费",
+    "已经交诉讼费",
+    "诉讼费已交",
+    "已交公告费",
+    "公告费已交",
+    "已经转账",
+]
+
+PAYMENT_FEE_PATTERN = r"(?:案件受理费|诉讼费|公告费|保全费|执行费|律师费|法务费|费用|款项)"
+PAYMENT_DONE_PATTERN = re.compile(
+    rf"(?:我|本人|我们|这边|客户|对方)?(?:已经|已)(?:付款|支付|代缴|转账)(?:了)?"
+    rf"|(?:我|本人|我们|这边|客户|对方)?(?:已经|已)(?:交|缴|付)(?:了)?[^，。；;!?！？]{{0,12}}{PAYMENT_FEE_PATTERN}"
+    rf"|{PAYMENT_FEE_PATTERN}[^，。；;!?！？]{{0,12}}(?:已经|已)?(?:交了|缴了|付了|付款了|支付了|代缴了|转账了|已交|已缴|已付|已支付|已代缴|已转账)"
+)
+PAYMENT_NOT_DONE_PATTERN = re.compile(
+    r"(?:未|没|没有|尚未|还没|暂未)[^，。；;!?！？]{0,8}(?:交|缴|付|付款|支付|转账|到账)"
+    r"|(?:是否|有没有|交没交|缴没缴|付没付|交了?吗|缴了?吗|付了?吗|支付了吗|转账了吗)"
+)
 COURT_KEYWORDS = ["传票", "开庭", "现场开庭"]
 JUDGMENT_KEYWORDS = ["判决书", "民事判决书", "调解书", "民事调解书", "裁定书", "民事裁定书"]
 DEFAULT_KEYWORDS = ["强制执行", "仲裁", "逾期"]
@@ -116,7 +142,7 @@ def extract_event_time(content: str) -> datetime | None:
 
 def extract_event_type(content: str, keyword_config: dict[str, list[str]] | None = None) -> str:
     keywords = _keyword_sets(keyword_config)
-    if contains_any(content, keywords["payment_done"]):
+    if is_payment_done_text(content, keyword_config=keyword_config):
         return "payment_screenshot"
     if contains_any(content, keywords["payment_notice"]):
         return "payment_notice"
@@ -143,7 +169,15 @@ def matched_keywords(content: str, keyword_config: dict[str, list[str]] | None =
 
 def has_payment_conflict(content: str, keyword_config: dict[str, list[str]] | None = None) -> bool:
     keywords = _keyword_sets(keyword_config)
-    return contains_any(content, keywords["payment_done"]) and contains_any(content, keywords["payment_notice"])
+    return is_payment_done_text(content, keyword_config=keyword_config) and contains_any(content, keywords["payment_notice"])
+
+
+def is_payment_done_text(content: str, keyword_config: dict[str, list[str]] | None = None) -> bool:
+    cleaned = " ".join((content or "").split())
+    if not cleaned or PAYMENT_NOT_DONE_PATTERN.search(cleaned):
+        return False
+    keywords = _keyword_sets(keyword_config)
+    return contains_any(cleaned, keywords["payment_done"]) or bool(PAYMENT_DONE_PATTERN.search(cleaned))
 
 
 def contains_any(content: str, keywords: list[str]) -> bool:

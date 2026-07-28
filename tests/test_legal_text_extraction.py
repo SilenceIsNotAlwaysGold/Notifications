@@ -111,6 +111,28 @@ def test_payment_notice_extracts_fee_type_and_deadline_rules():
     assert relative["metadata"]["structured_fields"]["payment_term_days"] == 5
 
 
+@pytest.mark.parametrize(
+    "content",
+    (
+        "尼加提·帕力哈提，我已交诉讼费。",
+        "诉讼费已经交了",
+        "公告费已交",
+        "诉讼费500元已经转账",
+    ),
+)
+def test_payment_completion_variants_are_classified_as_receipts(content):
+    result = LegalTextExtractionService(Settings(LEGAL_EXTRACTION_MODE="regex")).extract(content)
+
+    assert result["event_type"] == "payment_screenshot"
+
+
+@pytest.mark.parametrize("content", ("诉讼费还没交", "诉讼费交了吗？", "是否已经交诉讼费"))
+def test_unpaid_or_question_variants_are_not_classified_as_receipts(content):
+    result = LegalTextExtractionService(Settings(LEGAL_EXTRACTION_MODE="regex")).extract(content)
+
+    assert result["event_type"] != "payment_screenshot"
+
+
 def test_court_notice_without_defendant_requires_review():
     adapter = StubLLMAdapter(
         {
