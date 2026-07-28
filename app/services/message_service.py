@@ -18,10 +18,12 @@ from app.services.document_sync_service import DocumentSyncService
 from app.services.media_file_service import MediaFileService
 from app.services.merchant_question_service import MerchantQuestionService
 from app.services.ocr_service import OCRService
+from app.services.payment_tracking_service import PaymentTrackingService
 from app.services.reminder_service import ReminderService
 from app.services.tenant_settings_service import TenantSettingsService
 from app.services.wecom_archive_group_service import WeComArchiveGroupService
 from app.utils.datetime_utils import ensure_aware, now_tz, today_tz
+from app.utils.regex_parser import is_payment_done_text
 from app.utils.repayment_annotation import parse_repayment_annotation
 
 logger = logging.getLogger(__name__)
@@ -83,6 +85,7 @@ class MessageService:
         if linked_media and linked_media.get("event_id"):
             event_ids.append(int(linked_media["event_id"]))
         events_by_type: dict[str, LegalEvent] = {}
+        event_metadata = self._event_metadata(extracted)
         for event_type in event_types:
             event = self._create_event(
                 event_type=event_type,
@@ -91,7 +94,7 @@ class MessageService:
                 tenant_id=tenant_id,
                 amount=extracted.get("amount"),
                 extracted_text=extracted.get("extracted_text"),
-                metadata=extracted.get("metadata") or {},
+                metadata=event_metadata,
             )
             event_ids.append(event.id)
             events_by_type[event_type] = event
@@ -104,6 +107,19 @@ class MessageService:
                 AttributionService(self.db).ensure_event(event, group_id=group_message.group_id, reason="文本消息无法唯一确定案件")
 
         reminder_ids: list[int] = []
+        if payload.msg_type == "text" and self._payment_tracking_enabled(tenant_id, group_message.group_id):
+            payment_notice = events_by_type.get("payment_notice")
+            if payment_notice is not None:
+                reminders = self.reminder_service.create_standalone_payment_confirmation_followups(
+                    payment_notice,
+                    group_message,
+                    extracted,
+                )
+                reminder_ids.extend(reminder.id for reminder in reminders)
+            if events_by_type.get("payment_screenshot") is not None and is_payment_done_text(payload.content or ""):
+                reminder_ids.extend(
+                    PaymentTrackingService(self.db).confirm_standalone_notice(group_message, extracted)
+                )
 
         self._handle_media_payload(group_message, payload, legal_case.id if legal_case else None)
         if payload.msg_type == "text" and extracted.get("case_no"):
@@ -121,6 +137,17 @@ class MessageService:
             "extracted": self._json_safe_extracted(extracted),
             "linked_media_file_id": linked_media.get("linked_media_file_id") if linked_media else None,
         }
+
+    @staticmethod
+    def _event_metadata(extracted: dict[str, Any]) -> dict[str, Any]:
+        metadata = dict(extracted.get("metadata") or {})
+        structured = dict(metadata.get("structured_fields") or {})
+        for key in ("case_no", "plaintiff", "defendant"):
+            value = extracted.get(key)
+            if value not in (None, ""):
+                structured[key] = value
+        metadata["structured_fields"] = structured
+        return metadata
 
     @staticmethod
     def _apply_repayment_annotation(

@@ -74,7 +74,7 @@ class LegalTextExtractionService:
         keyword_config: dict[str, list[str]] | None = None,
         context_messages: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        regex_result = parse_legal_text(text, keyword_config=keyword_config)
+        regex_result = self._enrich_regex_result(parse_legal_text(text, keyword_config=keyword_config), text or "")
         if self.settings.legal_extraction_mode != "llm" or (not text and not context_messages):
             return self._apply_repayment_annotation(regex_result, context_messages)
 
@@ -94,6 +94,15 @@ class LegalTextExtractionService:
                 raise LegalLLMError(f"LLM 抽取处理失败：{type(exc).__name__}") from exc
             fallback = self._fallback_result(regex_result, f"LLM 抽取处理失败：{type(exc).__name__}")
             return self._apply_repayment_annotation(fallback, context_messages)
+
+    @classmethod
+    def _enrich_regex_result(cls, result: dict[str, Any], text: str) -> dict[str, Any]:
+        if result.get("event_type") != "payment_notice":
+            return result
+        metadata = dict(result.get("metadata") or {})
+        structured = dict(metadata.get("structured_fields") or {})
+        structured.update(cls._payment_notice_fields(text))
+        return {**result, "metadata": {**metadata, "structured_fields": structured}}
 
     @staticmethod
     def _apply_repayment_annotation(
@@ -301,6 +310,19 @@ class LegalTextExtractionService:
                     int(absolute.group(1)),
                     int(absolute.group(2)),
                     int(absolute.group(3)),
+                ).isoformat()
+            except ValueError:
+                pass
+        short_absolute = re.search(
+            r"(?<!\d)(\d{2})[./-](\d{1,2})[./-](\d{1,2})(?:日)?(?:之前|前|截止)[^。；\n]{0,12}?(?:缴纳|交纳|缴费|交费)",
+            text,
+        )
+        if "payment_deadline" not in result and short_absolute:
+            try:
+                result["payment_deadline"] = date(
+                    2000 + int(short_absolute.group(1)),
+                    int(short_absolute.group(2)),
+                    int(short_absolute.group(3)),
                 ).isoformat()
             except ValueError:
                 pass

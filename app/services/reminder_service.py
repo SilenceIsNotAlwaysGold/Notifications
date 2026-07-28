@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.adapters.wecom_message import WeComMessageAdapter
 from app.models.legal_case import LegalCase
 from app.models.legal_event import LegalEvent
+from app.models.group_message import GroupMessage
 from app.models.reminder import Reminder
 from app.models.reminder_send_log import ReminderSendLog
 from app.services.reminder_rule_service import ReminderRuleService
@@ -205,6 +206,56 @@ class ReminderService:
                     content=content,
                     target_userid=resolved_target,
                     source_event_id=source_event_id,
+                    dedupe_key=dedupe_key,
+                    flush=False,
+                )
+            )
+        self.db.flush()
+        return created
+
+    def create_standalone_payment_confirmation_followups(
+        self,
+        event: LegalEvent,
+        message: GroupMessage,
+        extracted: dict[str, object],
+    ) -> list[Reminder]:
+        if event.event_type != "payment_notice" or event.amount is None:
+            return []
+        from app.services.payment_tracking_service import PaymentTrackingService
+
+        payment_tracking = PaymentTrackingService(self.db)
+        duplicate_event_id = payment_tracking.find_duplicate_open_notice(event, message, extracted)
+        if duplicate_event_id is not None:
+            return []
+        group_id, target_userid = payment_tracking.source_message_destination(
+            event,
+            fallback_group_id=message.group_id,
+            fallback_target_userid=message.sender_id,
+        )
+        metadata = extracted.get("metadata") if isinstance(extracted.get("metadata"), dict) else {}
+        structured = metadata.get("structured_fields") if isinstance(metadata.get("structured_fields"), dict) else {}
+        case_no = extracted.get("case_no") or structured.get("case_no") or "案号待确认"
+        defendant = extracted.get("defendant") or structured.get("defendant") or "当事人待确认"
+        payment_type = structured.get("payment_type") or "缴费"
+        content = (
+            f"【缴费待确认】{defendant}，案号：{case_no}，{payment_type}{event.amount}元，"
+            "尚未收到明确付款确认。请付款后回复“已缴费/已代缴/已收款”。"
+        )
+        created: list[Reminder] = []
+        for minutes in (30, 90):
+            dedupe_key = f"payment-confirmation:{event.id}:{minutes}"
+            if self.db.scalar(select(Reminder.id).where(Reminder.dedupe_key == dedupe_key)):
+                continue
+            created.append(
+                self._create(
+                    case_id=event.case_id,
+                    tenant_id=event.tenant_id or message.tenant_id,
+                    group_id=group_id,
+                    reminder_type="payment_confirmation",
+                    remind_at=ensure_aware(message.received_at) + timedelta(minutes=minutes),
+                    content=content,
+                    target_userid=target_userid,
+                    source_event_id=event.id,
                     dedupe_key=dedupe_key,
                     flush=False,
                 )

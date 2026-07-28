@@ -16,6 +16,8 @@ from app.models.contact import Contact, ContactGroup
 from app.models.payment_record import PaymentRecord
 from app.models.reminder import Reminder
 from app.models.wecom_archive_group import WeComArchiveGroup
+from app.models.group_message import GroupMessage
+from app.utils.regex_parser import parse_legal_text
 from app.utils.datetime_utils import now_tz
 
 
@@ -27,13 +29,24 @@ class PaymentTrackingService:
 
     def reminder_destination(self, event: LegalEvent, legal_case: LegalCase) -> tuple[str, str | None]:
         """Resolve payment reminders to the source group and source sender."""
+        return self.source_message_destination(
+            event,
+            fallback_group_id=legal_case.group_id,
+            fallback_target_userid=legal_case.debtor_wecom_userid or legal_case.lawyer_wecom_userid,
+        )
+
+    def source_message_destination(
+        self,
+        event: LegalEvent,
+        *,
+        fallback_group_id: str,
+        fallback_target_userid: str | None = None,
+    ) -> tuple[str, str | None]:
         message = event.group_message
         if message is None and event.group_message_id is not None:
-            from app.models.group_message import GroupMessage
-
             message = self.db.get(GroupMessage, event.group_message_id)
         if message is None:
-            return legal_case.group_id, legal_case.debtor_wecom_userid or legal_case.lawyer_wecom_userid
+            return fallback_group_id, fallback_target_userid
 
         sender_id = (message.sender_id or "").strip()
         if not sender_id:
@@ -51,6 +64,142 @@ class PaymentTrackingService:
             .limit(1)
         )
         return message.group_id, (contact.wecomapi_user_id if contact and contact.wecomapi_user_id else sender_id)
+
+    def confirm_standalone_notice(self, message: GroupMessage, extracted: dict[str, Any]) -> list[int]:
+        rows = self.db.execute(
+            select(LegalEvent, Reminder)
+            .join(Reminder, Reminder.source_event_id == LegalEvent.id)
+            .join(GroupMessage, GroupMessage.id == LegalEvent.group_message_id)
+            .where(
+                GroupMessage.group_id == message.group_id,
+                LegalEvent.event_type == "payment_notice",
+                Reminder.reminder_type == "payment_confirmation",
+                Reminder.status == "pending",
+            )
+            .order_by(LegalEvent.id.desc(), Reminder.id.asc())
+        ).all()
+        events: dict[int, LegalEvent] = {}
+        for event, _reminder in rows:
+            events[event.id] = event
+        if not events:
+            return []
+
+        scored = [(self._confirmation_score(event, extracted, message.content or ""), event) for event in events.values()]
+        best_score = max(score for score, _event in scored)
+        matches = [event for score, event in scored if score == best_score and score > 0]
+        if len(matches) != 1:
+            matches = list(events.values()) if len(events) == 1 else []
+        if len(matches) != 1:
+            return []
+
+        notice = matches[0]
+        reminders = list(
+            self.db.scalars(
+                select(Reminder).where(
+                    Reminder.source_event_id == notice.id,
+                    Reminder.reminder_type.in_(("payment_confirmation", "payment_tracking")),
+                    Reminder.status == "pending",
+                )
+            ).all()
+        )
+        now = now_tz()
+        for reminder in reminders:
+            reminder.status = "cancelled"
+            reminder.cancelled_at = now
+            reminder.cancel_reason = f"群消息 {message.id} 已明确确认缴费"
+        metadata = self._metadata(notice)
+        metadata["standalone_payment_confirmation"] = {
+            "message_id": message.id,
+            "confirmed_at": now.isoformat(),
+        }
+        notice.metadata_json = json.dumps(metadata, ensure_ascii=False)
+        self.db.flush()
+        return [reminder.id for reminder in reminders]
+
+    def find_duplicate_open_notice(
+        self,
+        event: LegalEvent,
+        message: GroupMessage,
+        extracted: dict[str, Any],
+    ) -> int | None:
+        rows = self.db.execute(
+            select(LegalEvent, GroupMessage)
+            .join(GroupMessage, GroupMessage.id == LegalEvent.group_message_id)
+            .join(Reminder, Reminder.source_event_id == LegalEvent.id)
+            .where(
+                LegalEvent.id != event.id,
+                LegalEvent.event_type == "payment_notice",
+                GroupMessage.group_id == message.group_id,
+                Reminder.reminder_type == "payment_confirmation",
+                Reminder.status == "pending",
+            )
+            .order_by(LegalEvent.id.desc())
+        ).all()
+        for candidate, candidate_message in rows:
+            if self._same_notice(candidate, candidate_message, event, message, extracted):
+                return candidate.id
+        return None
+
+    @classmethod
+    def _same_notice(
+        cls,
+        candidate: LegalEvent,
+        candidate_message: GroupMessage,
+        event: LegalEvent,
+        message: GroupMessage,
+        extracted: dict[str, Any],
+    ) -> bool:
+        candidate_metadata = cls._metadata(candidate)
+        candidate_structured = candidate_metadata.get("structured_fields")
+        if not isinstance(candidate_structured, dict):
+            candidate_structured = {}
+        incoming_metadata = extracted.get("metadata")
+        if not isinstance(incoming_metadata, dict):
+            incoming_metadata = {}
+        incoming_structured = incoming_metadata.get("structured_fields")
+        if not isinstance(incoming_structured, dict):
+            incoming_structured = {}
+
+        candidate_case = candidate_structured.get("case_no") or parse_legal_text(candidate.extracted_text).get("case_no")
+        incoming_case = extracted.get("case_no") or incoming_structured.get("case_no")
+        candidate_party = candidate_structured.get("defendant") or parse_legal_text(candidate.extracted_text).get("defendant")
+        incoming_party = extracted.get("defendant") or incoming_structured.get("defendant")
+        candidate_type = candidate_structured.get("payment_type")
+        incoming_type = incoming_structured.get("payment_type")
+
+        if candidate.amount != event.amount:
+            return False
+        if candidate_case and incoming_case:
+            return cls._normalize_case_no(candidate_case) == cls._normalize_case_no(incoming_case)
+        if candidate_party and incoming_party:
+            return str(candidate_party).strip() == str(incoming_party).strip() and candidate_type == incoming_type
+        return "".join((candidate_message.content or "").split()) == "".join((message.content or "").split())
+
+    @staticmethod
+    def _confirmation_score(event: LegalEvent, extracted: dict[str, Any], content: str) -> int:
+        metadata = PaymentTrackingService._metadata(event)
+        structured = metadata.get("structured_fields") if isinstance(metadata.get("structured_fields"), dict) else {}
+        parsed = parse_legal_text(event.extracted_text)
+        case_no = structured.get("case_no") or metadata.get("case_no") or parsed.get("case_no")
+        defendant = structured.get("defendant") or metadata.get("defendant") or parsed.get("defendant")
+        payment_type = structured.get("payment_type")
+        incoming_case = extracted.get("case_no")
+        incoming_defendant = extracted.get("defendant")
+        incoming_type = (extracted.get("metadata") or {}).get("structured_fields", {}).get("payment_type")
+        score = 0
+        if incoming_case and case_no and PaymentTrackingService._normalize_case_no(incoming_case) == PaymentTrackingService._normalize_case_no(case_no):
+            score += 100
+        if defendant and (defendant == incoming_defendant or str(defendant) in content):
+            score += 40
+        if incoming_type and payment_type and incoming_type == payment_type:
+            score += 10
+        if extracted.get("amount") is not None and event.amount is not None and Decimal(str(extracted["amount"])) == Decimal(str(event.amount)):
+            score += 20
+        return score
+
+    @staticmethod
+    def _normalize_case_no(value: Any) -> str:
+        return re.sub(r"[\s（）()]", "", str(value or "")).casefold()
 
     def repair_pending_reminder_destinations(self, *, dry_run: bool = True) -> dict[str, int]:
         rows = self.db.execute(

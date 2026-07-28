@@ -5,9 +5,14 @@ from typing import Any
 
 from app.utils.datetime_utils import app_timezone, now_tz
 
-CASE_NO_PATTERN = re.compile(r"(?:案号|案件编号)?[:：]?\s*[\(（]\d{4}[\)）][\u4e00-\u9fa5A-Za-z0-9]+号")
+CASE_NO_PATTERN = re.compile(
+    r"(?:案号|案件编号)?[:：]?\s*([\(（]\s*\d{4}\s*[\)）](?:\s*[\u4e00-\u9fa5A-Za-z0-9])+\s*号)"
+)
 PLAINTIFF_PATTERN = re.compile(r"原告(?:人)?[:：]?\s*([\u4e00-\u9fa5A-Za-z0-9（）()·、,，\s]{2,40})")
 DEFENDANT_PATTERN = re.compile(r"被告(?:人)?[:：]?\s*([\u4e00-\u9fa5A-Za-z0-9（）()·、,，\s]{2,40})")
+LEADING_PARTY_PATTERN = re.compile(
+    r"^\s*([\u4e00-\u9fa5·]{2,12})\s*[,，]\s*(?=(?:案号|我?(?:已经|已)|诉讼费|公告费|案件受理费))"
+)
 AMOUNT_PATTERNS = [
     re.compile(r"[¥￥]\s*([\d,]+(?:\.\d{1,2})?)"),
     re.compile(r"人民币\s*([\d,]+(?:\.\d{1,2})?)"),
@@ -19,7 +24,7 @@ FULL_DATETIME_PATTERNS = [
 ]
 CN_TIME_PATTERN = re.compile(r"(?:(\d{4})年)?(\d{1,2})月(\d{1,2})日\s*(上午|下午)?\s*(\d{1,2})点")
 
-PAYMENT_NOTICE_KEYWORDS = ["需要缴费", "缴费通知", "缴费金额", "诉讼费", "公告费", "开庭费", "缴纳"]
+PAYMENT_NOTICE_KEYWORDS = ["需要缴费", "缴费通知", "缴费金额", "案件受理费", "诉讼费", "公告费", "开庭费", "缴纳"]
 PAYMENT_DONE_KEYWORDS = [
     "已付款",
     "已支付",
@@ -64,7 +69,7 @@ def parse_legal_text(text: str | None, keyword_config: dict[str, list[str]] | No
         "amount": amounts[0] if amounts else None,
         "document_type": extract_document_type(content),
         "plaintiff": extract_party(content, PLAINTIFF_PATTERN),
-        "defendant": extract_party(content, DEFENDANT_PATTERN),
+        "defendant": extract_party(content, DEFENDANT_PATTERN) or extract_leading_party(content),
         "court_time": extract_event_time(content),
         "requires_review": requires_review(content, event_type),
         "keywords": matched_keywords(content, keywords),
@@ -80,8 +85,7 @@ def extract_case_no(content: str) -> str | None:
     match = CASE_NO_PATTERN.search(content)
     if not match:
         return None
-    case_no_match = re.search(r"[\(（]\d{4}[\)）][\u4e00-\u9fa5A-Za-z0-9]+号", match.group(0))
-    return case_no_match.group(0) if case_no_match else match.group(0)
+    return re.sub(r"\s+", "", match.group(1))
 
 
 def extract_amounts(content: str) -> list[Decimal]:
@@ -112,6 +116,11 @@ def extract_party(content: str, pattern: re.Pattern[str]) -> str | None:
         return None
     value = re.split(r"[\n\r，,。；;]\s*", match.group(1).strip())[0]
     return value.strip(" ：:，,。；;") or None
+
+
+def extract_leading_party(content: str) -> str | None:
+    match = LEADING_PARTY_PATTERN.search(content)
+    return match.group(1).strip() if match else None
 
 
 def requires_review(content: str, event_type: str) -> bool:
