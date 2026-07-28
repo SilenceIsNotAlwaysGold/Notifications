@@ -7,6 +7,8 @@ from app.adapters.wecomapi import WeComApiAdapter
 from app.core.config import get_settings
 from app.db.session import SessionLocal
 from app.models.wecom_archive_group import WeComArchiveGroup
+from app.models.contact import Contact, ContactGroup
+from app.services.contact_service import ContactService
 from app.services.tenant_settings_service import TenantSettingsService
 
 logger = logging.getLogger(__name__)
@@ -90,6 +92,102 @@ class WeComMessageAdapter:
         result = {"success": False, "mode": mode, "status_code": None, "response": None, "error": "生产发送仅支持 wecomapi"}
         self._log_result(group_id, content, result)
         return result
+
+    def resolve_mentioned_userids(
+        self,
+        group_id: str,
+        mentioned_userids: list[str] | None,
+        *,
+        tenant_id: str | None = None,
+    ) -> list[str]:
+        requested = list(dict.fromkeys(str(value).strip() for value in (mentioned_userids or []) if str(value).strip()))
+        if not requested:
+            return []
+        effective = self._effective_wecom_settings(tenant_id)
+        if effective["wecom"]["send_mode"] != "wecomapi":
+            return requested
+        protocol_room_id = self._resolve_wecomapi_room_id(group_id)
+        if not protocol_room_id:
+            return []
+
+        db = SessionLocal()
+        try:
+            resolved = self._contact_mappings(db, group_id, requested)
+            unresolved = [value for value in requested if value not in resolved]
+            if unresolved:
+                adapter = self._wecomapi_adapter(effective)
+                room_result = adapter.get_room_details([protocol_room_id])
+                room = next(iter(room_result.get("rooms") or []), None)
+                raw_members = room.get("memberList") if isinstance(room, dict) else []
+                member_ids = [
+                    str(member.get("userId") or "").strip()
+                    for member in raw_members
+                    if isinstance(member, dict) and str(member.get("userId") or "").strip()
+                ]
+                if member_ids:
+                    details = adapter.get_contact_details(member_ids)
+                    for contact in details.get("contacts") or []:
+                        if not isinstance(contact, dict):
+                            continue
+                        protocol_user_id = str(contact.get("userId") or "").strip()
+                        account_id = str(contact.get("acctid") or "").strip()
+                        if not protocol_user_id or protocol_user_id not in member_ids:
+                            continue
+                        display_name = str(
+                            contact.get("realName") or contact.get("nickname") or contact.get("alias") or account_id or protocol_user_id
+                        ).strip()
+                        ContactService(db).observe(
+                            group_id=group_id,
+                            archive_user_id=account_id or None,
+                            wecomapi_user_id=protocol_user_id,
+                            display_name=display_name,
+                            tenant_id=tenant_id,
+                            source="wecomapi",
+                        )
+                    db.commit()
+                    resolved.update(self._contact_mappings(db, group_id, unresolved))
+                    for value in unresolved:
+                        if value in member_ids:
+                            resolved[value] = value
+            return list(dict.fromkeys(resolved[value] for value in requested if value in resolved))
+        finally:
+            db.close()
+
+    @staticmethod
+    def _contact_mappings(db, group_id: str, identifiers: list[str]) -> dict[str, str]:
+        rows = db.execute(
+            select(Contact, ContactGroup)
+            .join(ContactGroup, ContactGroup.contact_id == Contact.id)
+            .where(
+                ContactGroup.group_id == group_id,
+                ContactGroup.membership_status != "left",
+                Contact.is_active.is_(True),
+                (Contact.archive_user_id.in_(identifiers)) | (Contact.wecomapi_user_id.in_(identifiers)),
+            )
+        ).all()
+        result: dict[str, str] = {}
+        for contact, _membership in rows:
+            if not contact.wecomapi_user_id:
+                continue
+            if contact.archive_user_id:
+                result[contact.archive_user_id] = contact.wecomapi_user_id
+            result[contact.wecomapi_user_id] = contact.wecomapi_user_id
+        return result
+
+    @staticmethod
+    def _wecomapi_adapter(effective: dict[str, Any]) -> WeComApiAdapter:
+        return WeComApiAdapter(
+            base_url=effective["wecom"].get("wecomapi_base_url"),
+            api_path=str(effective["wecom"].get("wecomapi_api_path") or "/wecom/finder/api"),
+            token=effective["wecom"].get("wecomapi_token"),
+            token_header=str(effective["wecom"].get("wecomapi_token_header") or "WECOM-TOKEN"),
+            guid=effective["wecom"].get("wecomapi_guid"),
+            timeout_seconds=int(effective["wecom"]["timeout_seconds"]),
+            min_interval_seconds=float(effective["wecom"].get("wecomapi_min_interval_seconds") or 0),
+            daily_limit=int(effective["wecom"].get("wecomapi_daily_limit") or 200),
+            failure_threshold=int(effective["wecom"].get("wecomapi_failure_threshold") or 3),
+            cooldown_seconds=int(effective["wecom"].get("wecomapi_cooldown_seconds") or 300),
+        )
 
     def _effective_wecom_settings(self, tenant_id: str | None) -> dict[str, Any]:
         if tenant_id is None:

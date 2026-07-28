@@ -111,3 +111,15 @@ def test_repeated_identical_notice_does_not_duplicate_followups(db_session):
     assert len(reminders) == 2
     assert {item.source_event_id for item in reminders} == {first["event_ids"][0]}
     assert second["reminder_ids"] == []
+
+
+def test_platform_payment_reminder_callback_is_archived_without_new_event(db_session):
+    result = _send(
+        db_session,
+        '@所有人 【缴费待确认】李江胜，案号：（2026）桂0702民初5834号，案件受理费25.00元，请付款后回复“已缴费”。',
+        sender="bot-account",
+    )
+
+    assert result["event_ids"] == []
+    assert result["reminder_ids"] == []
+    assert db_session.scalar(select(LegalEvent.id)) is None

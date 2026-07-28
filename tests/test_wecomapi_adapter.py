@@ -4,6 +4,7 @@ from app.adapters.wecom_message import WeComMessageAdapter
 from app.adapters.wecomapi import WeComApiAdapter
 from app.core.config import get_settings
 from app.models.wecom_archive_group import WeComArchiveGroup
+from app.models.contact import Contact
 
 
 def _configure_wecomapi(monkeypatch, *, threshold: int = 3) -> None:
@@ -93,6 +94,77 @@ def test_wecomapi_send_with_mentions_uses_hypertext_payload(db_session, monkeypa
             ],
         },
     }
+
+
+def test_reminder_mention_resolves_archive_account_to_protocol_member(db_session, monkeypatch):
+    _configure_wecomapi(monkeypatch)
+    db_session.add(
+        WeComArchiveGroup(
+            room_id="wr_resolve_mentions",
+            wecomapi_room_id="room-protocol-resolve",
+            status="enabled",
+        )
+    )
+    db_session.commit()
+    monkeypatch.setattr(
+        WeComApiAdapter,
+        "get_room_details",
+        lambda *_args, **_kwargs: {
+            "success": True,
+            "rooms": [{"roomId": "room-protocol-resolve", "memberList": [{"userId": "16880001"}]}],
+        },
+    )
+    monkeypatch.setattr(
+        WeComApiAdapter,
+        "get_contact_details",
+        lambda *_args, **_kwargs: {
+            "success": True,
+            "contacts": [{"userId": "16880001", "acctid": "test123", "realName": "测试发送人"}],
+        },
+    )
+
+    resolved = WeComMessageAdapter().resolve_mentioned_userids(
+        "wr_resolve_mentions",
+        ["test123"],
+    )
+
+    assert resolved == ["16880001"]
+    db_session.expire_all()
+    contact = db_session.query(Contact).filter(Contact.archive_user_id == "test123").one()
+    assert contact.wecomapi_user_id == "16880001"
+
+
+def test_unresolved_archive_account_is_not_sent_as_protocol_mention(db_session, monkeypatch):
+    _configure_wecomapi(monkeypatch)
+    db_session.add(
+        WeComArchiveGroup(
+            room_id="wr_unresolved_mentions",
+            wecomapi_room_id="room-protocol-unresolved",
+            status="enabled",
+        )
+    )
+    db_session.commit()
+    monkeypatch.setattr(
+        WeComApiAdapter,
+        "get_room_details",
+        lambda *_args, **_kwargs: {
+            "success": True,
+            "rooms": [{"roomId": "room-protocol-unresolved", "memberList": [{"userId": "16880002"}]}],
+        },
+    )
+    monkeypatch.setattr(
+        WeComApiAdapter,
+        "get_contact_details",
+        lambda *_args, **_kwargs: {
+            "success": True,
+            "contacts": [{"userId": "16880002", "acctid": "someone-else", "realName": "其他成员"}],
+        },
+    )
+
+    assert WeComMessageAdapter().resolve_mentioned_userids(
+        "wr_unresolved_mentions",
+        ["unknown-account"],
+    ) == []
 
 
 def test_wecomapi_send_without_room_mapping_is_blocked(db_session, monkeypatch):

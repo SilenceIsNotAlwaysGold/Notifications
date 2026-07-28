@@ -405,6 +405,9 @@ class ReminderService:
             for reminders in self._group_for_delivery(due_reminders):
                 primary = reminders[0]
                 mentioned = list(dict.fromkeys(item.target_userid for item in reminders if item.target_userid)) or None
+                resolver = getattr(self.wecom_adapter, "resolve_mentioned_userids", None)
+                if callable(resolver):
+                    mentioned = resolver(primary.group_id, mentioned, tenant_id=primary.tenant_id) or None
                 content = self._delivery_content(reminders)
                 try:
                     result = self._send_text(primary, mentioned, content=content)

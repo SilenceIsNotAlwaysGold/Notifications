@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from datetime import timedelta
 from decimal import Decimal
 from typing import Any
@@ -43,6 +44,25 @@ class MessageService:
 
     def handle_incoming_message(self, payload: MockMessageCreate) -> dict[str, Any]:
         group_message = self._save_group_message(payload)
+        if self._is_platform_generated_message(payload.content):
+            self.db.flush()
+            return {
+                "group_message_id": group_message.id,
+                "case_id": None,
+                "event_ids": [],
+                "reminder_ids": [],
+                "extracted": {
+                    "case_no": None,
+                    "amounts": [],
+                    "amount": None,
+                    "keywords": [],
+                    "event_type": "unknown",
+                    "event_types": [],
+                    "extracted_text": payload.content or "",
+                    "metadata": {"parser": "platform_generated"},
+                },
+                "linked_media_file_id": None,
+            }
         MerchantQuestionService(self.db).handle_message(group_message)
         extracted = self._extract(payload, group_message.tenant_id)
         repayment_annotation = parse_repayment_annotation(payload.content) if payload.msg_type == "text" else None
@@ -137,6 +157,16 @@ class MessageService:
             "extracted": self._json_safe_extracted(extracted),
             "linked_media_file_id": linked_media.get("linked_media_file_id") if linked_media else None,
         }
+
+    @staticmethod
+    def _is_platform_generated_message(content: str | None) -> bool:
+        normalized = " ".join((content or "").split())
+        return bool(
+            re.match(
+                r"^(?:@[^\s]+\s*)*(?:【缴费待确认】|【缴费信息待核实】|【致和法务提醒】|【致和法务】企业微信发送通道测试成功)",
+                normalized,
+            )
+        )
 
     @staticmethod
     def _event_metadata(extracted: dict[str, Any]) -> dict[str, Any]:
