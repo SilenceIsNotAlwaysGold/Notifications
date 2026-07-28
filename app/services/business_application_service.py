@@ -27,8 +27,8 @@ class BusinessApplicationService:
             raise ValueError("业务事件不存在")
         if event.business_status == "applied":
             return
-        case_independent_court = event.event_type == "court_notice" and event.attribution_status == "not_required"
-        if not case_independent_court and (event.attribution_status != "confirmed" or not event.case_id):
+        case_independent_media = event.event_type in {"court_notice", "judgment"} and event.attribution_status == "not_required"
+        if not case_independent_media and (event.attribution_status != "confirmed" or not event.case_id):
             raise ValueError("案件归属未确认")
         if event.business_status != "approved":
             raise ValueError("业务事件尚未批准")

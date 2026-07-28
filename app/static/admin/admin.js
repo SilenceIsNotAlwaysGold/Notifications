@@ -1482,6 +1482,12 @@ function reviewDetail(review) {
             <div class="field"><label>被告</label><input name="defendant" value="${escapeHtml(reviewFieldValue(result, "defendant"))}" ${editable ? "" : "disabled"} /></div>
             <div class="field"><label>金额</label><input name="amount" type="number" min="0" step="0.01" value="${escapeHtml(reviewFieldValue(result, "amount"))}" ${editable ? "" : "disabled"} /></div>
             <div class="field"><label>开庭时间</label><input name="court_time" type="datetime-local" value="${escapeHtml(reviewFieldValue(result, "court_time"))}" ${editable ? "" : "disabled"} /></div>
+            <div class="field"><label>法院</label><input name="court_name" value="${escapeHtml(reviewFieldValue(result, "court_name"))}" ${editable ? "" : "disabled"} /></div>
+            <div class="field"><label>身份证</label><input name="identity_number" value="${escapeHtml(reviewFieldValue(result, "identity_number"))}" ${editable ? "" : "disabled"} /></div>
+            <div class="field"><label>文书签发日</label><input name="document_date" type="date" value="${escapeHtml(reviewFieldValue(result, "document_date"))}" ${editable ? "" : "disabled"} /></div>
+            <div class="field"><label>应还款日</label><input name="repayment_due_date" type="date" value="${escapeHtml(reviewFieldValue(result, "repayment_due_date"))}" ${editable ? "" : "disabled"} /></div>
+            <div class="field"><label>执行案号</label><input name="enforcement_case_no" value="${escapeHtml(reviewFieldValue(result, "enforcement_case_no"))}" ${editable ? "" : "disabled"} /></div>
+            <div class="field"><label>订单号</label><input name="order_no" value="${escapeHtml(reviewFieldValue(result, "order_no"))}" ${editable ? "" : "disabled"} /></div>
             <div class="field wide"><label>复核备注</label><textarea name="note" ${editable ? "" : "disabled"}>${escapeHtml(review.review_note || "")}</textarea></div>
           </div>
           ${
@@ -1549,7 +1555,7 @@ async function submitReviewDecision(review, decision) {
     return;
   }
   if (decision === "corrected") {
-    for (const key of ["case_no", "event_type", "document_type", "plaintiff", "defendant", "amount", "court_time"]) {
+    for (const key of ["case_no", "event_type", "document_type", "plaintiff", "defendant", "amount", "court_time", "court_name", "identity_number", "document_date", "repayment_due_date", "enforcement_case_no", "order_no"]) {
       if (values[key] !== "") payload[key] = values[key];
     }
   }

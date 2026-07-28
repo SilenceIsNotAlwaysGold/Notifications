@@ -574,6 +574,11 @@ class OCRReviewDecision(BaseModel):
     court_room: str | None = Field(default=None, max_length=255)
     hearing_mode: str | None = Field(default=None, max_length=64)
     judge_phone: str | None = Field(default=None, max_length=64)
+    identity_number: str | None = Field(default=None, max_length=32)
+    document_date: date | None = None
+    repayment_due_date: date | None = None
+    enforcement_case_no: str | None = Field(default=None, max_length=128)
+    order_no: str | None = Field(default=None, max_length=128)
 
     @model_validator(mode="after")
     def validate_decision(self):
@@ -589,6 +594,11 @@ class OCRReviewDecision(BaseModel):
             "court_room",
             "hearing_mode",
             "judge_phone",
+            "identity_number",
+            "document_date",
+            "repayment_due_date",
+            "enforcement_case_no",
+            "order_no",
         }
         if self.decision == "corrected" and not (self.model_fields_set & correction_fields):
             raise ValueError("修正复核至少需要修改一个识别字段")

@@ -502,6 +502,233 @@ def test_court_notice_ocr_without_case_is_auto_approved(db_session, tmp_path, mo
     assert db_session.scalar(select(BusinessOutbox).where(BusinessOutbox.aggregate_id == event.id)) is not None
 
 
+def test_judgment_without_case_uploads_document_and_writes_enforcement_sheet(db_session, tmp_path):
+    document_path = tmp_path / "judgment.pdf"
+    document_path.write_bytes(b"judgment-pdf")
+    result = {
+        "event_type": "judgment",
+        "document_type": "判决书",
+        "case_no": "(2026)陕0423民初1531号",
+        "plaintiff": "天津乔洋商贸有限公司",
+        "defendant": "佐宇航",
+        "amount": "7615.21",
+        "requires_review": False,
+        "metadata": {
+            "structured_fields": {
+                "identity_number": "610000199001011234",
+                "document_date": "2026-07-20",
+                "repayment_due_date": "2026-08-05",
+                "court_name": "泾阳县人民法院",
+            }
+        },
+    }
+    media = MediaFile(
+        group_id="legal_document_group",
+        msg_id="judgment-msg-1",
+        media_type="pdf",
+        original_filename="judgment.pdf",
+        file_ext=".pdf",
+        local_path=str(document_path),
+        download_status="downloaded",
+        ocr_status="processed",
+        review_status="not_required",
+        ocr_result_json=json.dumps(result, ensure_ascii=False),
+        source="test",
+    )
+    db_session.add(media)
+    db_session.flush()
+    event = LegalEvent(
+        event_type="judgment",
+        event_time=now_tz(),
+        attribution_status="not_required",
+        business_status="approved",
+        metadata_json=json.dumps({"media_file_id": media.id}, ensure_ascii=False),
+    )
+    db_session.add(event)
+    db_session.flush()
+    media.review_event_id = event.id
+
+    BusinessApplicationService(db_session).apply_event(event.id)
+
+    logs = list(db_session.scalars(select(DocumentSyncLog).order_by(DocumentSyncLog.id)).all())
+    assert event.case_id is None
+    assert event.business_status == "applied"
+    assert media.business_applied_at is not None
+    assert [log.sync_type for log in logs] == ["legal_document_upload", "enforcement_progress"]
+    assert {log.status for log in logs} == {"applied"}
+    row = json.loads(logs[1].request_payload_json)["payload"]["row"]
+    assert row["案号"] == "(2026)陕0423民初1531号"
+    assert row["原告"] == "天津乔洋商贸有限公司"
+    assert row["被告"] == "佐宇航"
+    assert row["文书类型"] == "判决书"
+    assert row["总金额"] == "7615.21"
+    assert row["已还欠款"] == "0.00"
+    assert row["提交情况"] == "未提交"
+    assert row["文件链接"].startswith("kdocs://")
+    assert str(tmp_path) not in row["文件链接"]
+
+
+def test_complete_judgment_ocr_without_case_is_auto_approved(db_session, tmp_path, monkeypatch):
+    document_path = tmp_path / "mediation.pdf"
+    document_path.write_bytes(b"mediation-pdf")
+    message = GroupMessage(
+        group_id="legal_document_group",
+        sender_id="operator",
+        msg_type="file",
+        raw_payload_json="{}",
+        received_at=now_tz(),
+    )
+    db_session.add(message)
+    db_session.flush()
+    media = MediaFile(
+        group_message_id=message.id,
+        group_id=message.group_id,
+        msg_id="mediation-msg-auto",
+        media_type="pdf",
+        original_filename="mediation.pdf",
+        file_ext=".pdf",
+        local_path=str(document_path),
+        download_status="downloaded",
+        ocr_status="pending",
+        source="test",
+    )
+    db_session.add(media)
+    db_session.flush()
+    service = MediaFileService(db_session)
+    monkeypatch.setattr(
+        service.ocr_service,
+        "extract_from_file",
+        lambda *_args, **_kwargs: {
+            "success": True,
+            "raw_text": "四川省泸县人民法院 民事调解书 (2026)川0521民初2440号 原告金尚华电器百货店 被告朱俊豪",
+            "event_type": "judgment",
+            "document_type": "调解书",
+            "case_no": "(2026)川0521民初2440号",
+            "plaintiff": "金尚华电器百货店",
+            "defendant": "朱俊豪",
+            "amount": "6619.99",
+            "confidence": 0.99,
+            "extraction_confidence": 0.96,
+            "requires_review": False,
+            "review_reasons": [],
+            "metadata": {"structured_fields": {"court_name": "泸县人民法院"}},
+        },
+    )
+
+    service.process_ocr(media.id)
+
+    event = db_session.get(LegalEvent, media.review_event_id)
+    assert media.case_id is None
+    assert media.review_status == "not_required"
+    assert event.case_id is None
+    assert event.attribution_status == "not_required"
+    assert event.business_status == "approved"
+    assert db_session.scalar(select(AttributionItem)) is None
+    assert db_session.scalar(select(BusinessOutbox).where(BusinessOutbox.aggregate_id == event.id)) is not None
+
+
+def test_legal_document_review_reason_prevents_automatic_write(db_session, tmp_path, monkeypatch):
+    document_path = tmp_path / "ambiguous.png"
+    document_path.write_bytes(b"spreadsheet-screenshot")
+    message = GroupMessage(
+        group_id="legal_document_group",
+        sender_id="operator",
+        msg_type="image",
+        raw_payload_json="{}",
+        received_at=now_tz(),
+    )
+    db_session.add(message)
+    db_session.flush()
+    media = MediaFile(
+        group_message_id=message.id,
+        group_id=message.group_id,
+        media_type="image",
+        local_path=str(document_path),
+        download_status="downloaded",
+        ocr_status="pending",
+        source="test",
+    )
+    db_session.add(media)
+    db_session.flush()
+    service = MediaFileService(db_session)
+    monkeypatch.setattr(
+        service.ocr_service,
+        "extract_from_file",
+        lambda *_args, **_kwargs: {
+            "success": True,
+            "raw_text": "人民法院调解书信息统计表 (2026)川0521民初2440号 原告甲公司 被告张三",
+            "event_type": "judgment",
+            "document_type": "调解书",
+            "case_no": "(2026)川0521民初2440号",
+            "plaintiff": "甲公司",
+            "defendant": "张三",
+            "confidence": 0.99,
+            "extraction_confidence": 0.95,
+            "requires_review": True,
+            "review_reasons": ["疑似表格截图，并非正式法律文书"],
+            "metadata": {"review_reasons": ["疑似表格截图，并非正式法律文书"]},
+        },
+    )
+
+    service.process_ocr(media.id)
+
+    event = db_session.get(LegalEvent, media.review_event_id)
+    assert media.review_status == "pending"
+    assert event.business_status == "staged"
+    assert db_session.scalar(select(BusinessOutbox).where(BusinessOutbox.aggregate_id == event.id)) is None
+    assert db_session.scalar(select(DocumentSyncLog)) is None
+
+
+def test_judgment_upload_failure_keeps_business_unapplied(db_session, tmp_path, monkeypatch):
+    document_path = tmp_path / "failed-judgment.pdf"
+    document_path.write_bytes(b"judgment-pdf")
+    result = {
+        "event_type": "judgment",
+        "document_type": "判决书",
+        "case_no": "(2026)陕0423民初1531号",
+        "plaintiff": "天津乔洋商贸有限公司",
+        "defendant": "佐宇航",
+        "requires_review": False,
+        "metadata": {},
+    }
+    media = MediaFile(
+        group_id="legal_document_group",
+        media_type="pdf",
+        local_path=str(document_path),
+        download_status="downloaded",
+        ocr_status="processed",
+        review_status="not_required",
+        ocr_result_json=json.dumps(result, ensure_ascii=False),
+        source="test",
+    )
+    db_session.add(media)
+    db_session.flush()
+    event = LegalEvent(
+        event_type="judgment",
+        attribution_status="not_required",
+        business_status="approved",
+        metadata_json=json.dumps({"media_file_id": media.id}),
+    )
+    db_session.add(event)
+    db_session.flush()
+    media.review_event_id = event.id
+    service = MediaFileService(db_session)
+
+    class FailedLog:
+        id = 999
+        status = "failed"
+        error_message = "upload unavailable"
+
+    monkeypatch.setattr(service.document_sync, "sync_legal_document_upload", lambda *_args, **_kwargs: FailedLog())
+    monkeypatch.setattr(service.document_sync, "retry_failed_sync", lambda *_args, **_kwargs: FailedLog())
+
+    with pytest.raises(ValueError, match="法律文书上传失败"):
+        service._apply_ocr_business(media, event, result, None)
+
+    assert event.business_status == "approved"
+    assert media.business_applied_at is None
+
+
 def test_summons_layout_fallback_stages_unknown_ai_result_for_review(db_session, tmp_path, monkeypatch):
     image_path = tmp_path / "fallback-summons.jpg"
     image_path.write_bytes(b"court-image")
