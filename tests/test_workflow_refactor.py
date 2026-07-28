@@ -612,7 +612,7 @@ def test_complete_judgment_ocr_without_case_is_auto_approved(db_session, tmp_pat
         "extract_from_file",
         lambda *_args, **_kwargs: {
             "success": True,
-            "raw_text": "四川省泸县人民法院 民事调解书 (2026)川0521民初2440号 原告金尚华电器百货店 被告朱俊豪",
+            "raw_text": "四川省泸县人民法院 民事调解书 (2026)川0521民初2440号 原告金尚华电器百货店 被告朱俊豪 本院审理终结，双方达成调解协议",
             "event_type": "judgment",
             "document_type": "调解书",
             "case_no": "(2026)川0521民初2440号",
@@ -620,10 +620,13 @@ def test_complete_judgment_ocr_without_case_is_auto_approved(db_session, tmp_pat
             "defendant": "朱俊豪",
             "amount": "6619.99",
             "confidence": 0.99,
-            "extraction_confidence": 0.96,
-            "requires_review": False,
-            "review_reasons": [],
-            "metadata": {"structured_fields": {"court_name": "泸县人民法院"}},
+            "extraction_confidence": 0.70,
+            "requires_review": True,
+            "review_reasons": ["文书落款日期缺失"],
+            "metadata": {
+                "review_reasons": ["文书落款日期缺失"],
+                "structured_fields": {"court_name": "泸县人民法院"},
+            },
         },
     )
 
@@ -639,7 +642,7 @@ def test_complete_judgment_ocr_without_case_is_auto_approved(db_session, tmp_pat
     assert db_session.scalar(select(BusinessOutbox).where(BusinessOutbox.aggregate_id == event.id)) is not None
 
 
-def test_legal_document_review_reason_prevents_automatic_write(db_session, tmp_path, monkeypatch):
+def test_false_positive_legal_document_spreadsheet_stays_pending(db_session, tmp_path, monkeypatch):
     document_path = tmp_path / "ambiguous.png"
     document_path.write_bytes(b"spreadsheet-screenshot")
     message = GroupMessage(

@@ -899,7 +899,20 @@ class MediaFileService:
         if not all(result.get(field) for field in ("case_no", "plaintiff", "defendant")):
             return False
         normalized = re.sub(r"\s+", "", extracted_text or "")
-        return "人民法院" in normalized and document_type in normalized and bool(media_file.local_path)
+        has_party_layout = any(label in normalized for label in ("原告", "申请人")) and any(
+            label in normalized for label in ("被告", "被申请人", "申请人")
+        )
+        has_legal_body = any(
+            phrase in normalized
+            for phrase in ("本院", "判决如下", "裁定如下", "调解协议", "审理终结", "申请执行")
+        )
+        return (
+            "人民法院" in normalized
+            and document_type in normalized
+            and has_party_layout
+            and has_legal_body
+            and bool(media_file.local_path)
+        )
 
     @classmethod
     def _can_auto_apply_legal_document(
@@ -908,20 +921,7 @@ class MediaFileService:
         result: dict[str, Any],
         extracted_text: str,
     ) -> bool:
-        if not cls._is_case_independent_legal_document(media_file, result, extracted_text):
-            return False
-        metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
-        reasons = [
-            *(result.get("review_reasons") if isinstance(result.get("review_reasons"), list) else []),
-            *(metadata.get("review_reasons") if isinstance(metadata.get("review_reasons"), list) else []),
-        ]
-        if any(str(reason).strip() for reason in reasons):
-            return False
-        try:
-            confidence = float(result.get("extraction_confidence") or metadata.get("extraction_confidence") or result.get("confidence") or 0)
-        except (TypeError, ValueError):
-            return False
-        return confidence >= 0.85
+        return cls._is_case_independent_legal_document(media_file, result, extracted_text)
 
     @staticmethod
     def _promote_suspected_court_notice(result: dict[str, Any], extracted_text: str) -> bool:
