@@ -1375,11 +1375,6 @@ async function renderArchiveGroups() {
       row.querySelectorAll("[data-feature]").forEach((field) => {
         payload.features[field.dataset.feature] = field.checked;
       });
-      if (payload.features.question_timeout && !payload.alert_userids.length) {
-        showAlert("开启提问超时前，必须配置至少一个提醒 @ 人员 ID", "error");
-        row.querySelector('[data-field="alert_userids"]')?.focus();
-        return;
-      }
       await api(`/api/v1/legal/wecom-archive/groups/${encodeURIComponent(button.dataset.saveArchiveGroup)}`, {
         method: "PATCH",
         body: JSON.stringify(payload),

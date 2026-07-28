@@ -61,7 +61,7 @@ def test_external_question_times_out_once_and_internal_reply_closes_it(client, d
     assert second == {"checked": 0, "created_reminders": 0, "created_escalations": 0}
     reminders = list(db_session.scalars(select(Reminder).where(Reminder.reminder_type == "merchant_question_timeout")).all())
     assert len(reminders) == 1
-    assert reminders[0].target_userid == "manager_001"
+    assert reminders[0].target_userid == "merchant_001"
     assert reminders[0].content.startswith("【缴费信息待核实】")
 
     _text(client, "merchant_group", "staff_001", "需要，今天下班前完成。", asked_at + timedelta(minutes=8))
@@ -130,13 +130,13 @@ def test_question_deadline_uses_business_hours_and_escalates(client, db_session,
         "merchant_question_followup",
         "merchant_question_escalation",
     ]
-    assert [item.target_userid for item in reminders] == ["owner_001", "owner_001", "supervisor_001"]
+    assert [item.target_userid for item in reminders] == ["merchant_001", "merchant_001", "merchant_001"]
     assert "等待 5 分钟" in reminders[0].content
     assert "等待 30 分钟" in reminders[1].content
     assert "等待 60 分钟" in reminders[2].content
     assert question.status == "escalated"
     assert reminders[-1].reminder_type == "merchant_question_escalation"
-    assert reminders[-1].target_userid == "supervisor_001"
+    assert reminders[-1].target_userid == "merchant_001"
     get_settings.cache_clear()
 
 
@@ -173,6 +173,62 @@ def test_system_generated_internal_message_does_not_close_real_question(client, 
 
     question = db_session.scalar(select(MerchantQuestion))
     assert question.status == "open"
+
+
+def test_system_generated_message_with_leading_mention_does_not_close_or_create_question(client, db_session):
+    _create_group(client, internal=["system_sender"])
+    asked_at = datetime(2026, 7, 20, 10, 0, tzinfo=app_timezone())
+    _text(client, "merchant_group", "merchant_001", "真实商家问题，请处理", asked_at)
+
+    _text(
+        client,
+        "merchant_group",
+        "system_sender",
+        "@法律顾问-珊珊 【商家待回复】消息已等待 5 分钟，请尽快回复：真实商家问题",
+        asked_at + timedelta(minutes=5),
+    )
+
+    questions = list(db_session.scalars(select(MerchantQuestion)).all())
+    assert len(questions) == 1
+    assert questions[0].status == "open"
+
+
+def test_external_quoted_reply_closes_original_question_without_creating_another(client, db_session):
+    _create_group(client, internal=["staff_001"])
+    asked_at = datetime(2026, 7, 20, 10, 0, tzinfo=app_timezone())
+    original = "顺锦祝枫麻烦核实一下是否已结清@A PP @法务左辅"
+    _text(client, "merchant_group", "LuWeiJie", original, asked_at)
+    service = MerchantQuestionService(db_session)
+    service.scan_timeouts(asked_at + timedelta(minutes=6))
+    reminder = db_session.scalar(select(Reminder))
+    db_session.commit()
+
+    _text(
+        client,
+        "merchant_group",
+        "external_responder",
+        f"「诉前调解员-伟杰：{original}」\n- - - - - - - - - - - - - - -\n没有",
+        asked_at + timedelta(minutes=7),
+    )
+
+    db_session.expire_all()
+    questions = list(db_session.scalars(select(MerchantQuestion)).all())
+    assert len(questions) == 1
+    assert questions[0].status == "replied"
+    assert questions[0].reply_message_id is not None
+    assert reminder.status == "cancelled"
+
+
+def test_other_sender_acknowledgement_closes_latest_question(client, db_session):
+    _create_group(client, internal=["staff_001"])
+    asked_at = datetime(2026, 7, 20, 10, 0, tzinfo=app_timezone())
+    _text(client, "merchant_group", "LuWeiJie", "麻烦核实一下是否已结清", asked_at)
+
+    _text(client, "merchant_group", "external_responder", "稍等", asked_at + timedelta(minutes=1))
+
+    question = db_session.scalar(select(MerchantQuestion))
+    assert question.status == "replied"
+    assert question.reply_message_id is not None
 
 
 def test_conversation_closing_messages_do_not_create_questions(client, db_session):
@@ -304,15 +360,16 @@ def test_internal_reply_cancels_all_pending_timeout_stages(client, db_session, m
     get_settings.cache_clear()
 
 
-def test_timeout_without_alert_target_does_not_send_unmentioned_message(client, db_session):
+def test_timeout_without_configured_alert_target_mentions_question_initiator(client, db_session):
     _create_group(client, alerts=[])
     asked_at = datetime(2026, 7, 20, 9, 0, tzinfo=app_timezone())
     _text(client, "merchant_group", "merchant_001", "请尽快回复", asked_at)
 
     result = MerchantQuestionService(db_session).scan_timeouts(asked_at + timedelta(minutes=6))
 
-    assert result["created_reminders"] == 0
-    assert db_session.scalar(select(Reminder)) is None
+    assert result["created_reminders"] == 1
+    reminder = db_session.scalar(select(Reminder))
+    assert reminder.target_userid == "merchant_001"
 
 
 def test_question_can_be_manually_closed(client, db_session):

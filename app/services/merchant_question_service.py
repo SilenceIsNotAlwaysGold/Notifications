@@ -114,6 +114,12 @@ INSTRUCTION_SIGNALS = ("不要", "不用", "不需要", "取消", "停止", "撤
 
 NO_REPLY_PHRASES = ("请谅解", "敬请谅解", "请知悉", "仅供参考", "无需回复", "不用回复")
 
+RESPONSE_ACK_PATTERN = re.compile(
+    r"^(?:稍等(?:一下|下)?|等一下|我(?:先)?(?:看|查|核实|确认)(?:一下|下)?|正在(?:看|查|核实|确认|处理)|马上(?:看|查|核实|确认|处理))$"
+)
+
+QUOTE_DIVIDER_PATTERN = re.compile(r"(?:\r?\n)(?:\s*-\s*){6,}(?:\r?\n)")
+
 
 class MerchantQuestionService:
     def __init__(self, db: Session) -> None:
@@ -132,6 +138,15 @@ class MerchantQuestionService:
         if not self.group_service.feature_enabled(message.group_id, "question_timeout"):
             return {"created": 0, "closed": 0}
 
+        quoted_reply, quoted_closed = self._consume_quoted_reply(message)
+        if quoted_reply:
+            return {"created": 0, "closed": quoted_closed}
+
+        if self._is_response_acknowledgement(message.content or ""):
+            closed = self._close_latest_other_sender_question(message)
+            if closed:
+                return {"created": 0, "closed": closed}
+
         internal_userids = set(self.group_service.internal_userids(group))
         if message.sender_id in internal_userids:
             closed = self._close_relevant_question(message)
@@ -148,7 +163,6 @@ class MerchantQuestionService:
         if existing:
             return {"created": 0, "closed": 0}
         asked_at = ensure_aware(message.received_at)
-        alert_userids = self.group_service.alert_userids(group)
         question = MerchantQuestion(
             tenant_id=message.tenant_id or group.tenant_id,
             group_id=message.group_id,
@@ -158,7 +172,7 @@ class MerchantQuestionService:
             asked_at=asked_at,
             deadline_at=self._business_deadline(asked_at, group.question_timeout_minutes),
             status="open",
-            assigned_userid=alert_userids[0] if alert_userids else None,
+            assigned_userid=message.sender_id,
         )
         self.db.add(question)
         self.db.flush()
@@ -181,8 +195,7 @@ class MerchantQuestionService:
                 continue
             dedupe_key = f"merchant-question:{question.id}:timeout"
             reminder = self.db.scalar(select(Reminder).where(Reminder.dedupe_key == dedupe_key))
-            alert_userids = self.group_service.alert_userids(group)
-            target_userid = question.assigned_userid or (alert_userids[0] if alert_userids else None)
+            target_userid = question.sender_id
             if target_userid and question.assigned_userid is None:
                 question.assigned_userid = target_userid
             if reminder is None and target_userid:
@@ -222,16 +235,14 @@ class MerchantQuestionService:
             group = self.group_service.get_group(question.group_id)
             if not group or not self.group_service.feature_enabled(question.group_id, "question_timeout"):
                 continue
-            alert_userids = self.group_service.alert_userids(group)
-            assigned = question.assigned_userid or (alert_userids[0] if alert_userids else None)
+            assigned = question.sender_id
             if assigned and question.assigned_userid is None:
                 question.assigned_userid = assigned
-            escalation_target = alert_userids[1] if len(alert_userids) > 1 else assigned
             first_minutes = group.question_timeout_minutes
             followup_minutes = max(first_minutes + 1, self.settings.merchant_question_escalation_minutes)
             stages = [
                 (followup_minutes, "merchant_question_followup", assigned, f"followup-{followup_minutes}"),
-                (max(followup_minutes + 1, 60), "merchant_question_escalation", escalation_target, "escalation-60"),
+                (max(followup_minutes + 1, 60), "merchant_question_escalation", assigned, "escalation-60"),
             ]
             for minutes, reminder_type, target_userid, stage_key in stages:
                 if not target_userid or self._business_deadline(question.asked_at, minutes) > now:
@@ -353,6 +364,57 @@ class MerchantQuestionService:
         self.db.flush()
         return 1
 
+    def _consume_quoted_reply(self, reply: GroupMessage) -> tuple[bool, int]:
+        quoted_content = self._quoted_content(reply.content or "")
+        if quoted_content is None:
+            return False, 0
+        questions = list(
+            self.db.scalars(
+                select(MerchantQuestion)
+                .where(MerchantQuestion.group_id == reply.group_id)
+                .where(MerchantQuestion.asked_at <= ensure_aware(reply.received_at))
+                .order_by(MerchantQuestion.asked_at.desc(), MerchantQuestion.id.desc())
+            ).all()
+        )
+        normalized_quote = self._normalized_match_text(quoted_content)
+        question = next(
+            (
+                item
+                for item in questions
+                if self._normalized_match_text(item.content) in normalized_quote
+                or normalized_quote in self._normalized_match_text(item.content)
+            ),
+            None,
+        )
+        if question is None or question.status not in {"open", "timed_out", "escalated"}:
+            return True, 0
+        question.status = "replied"
+        question.reply_message_id = reply.id
+        question.replied_at = ensure_aware(reply.received_at)
+        question.updated_at = now_tz()
+        self._cancel_pending_question_reminders(question, "群成员已引用回复发起人的问题", reply.sender_id)
+        self.db.flush()
+        return True, 1
+
+    def _close_latest_other_sender_question(self, reply: GroupMessage) -> int:
+        question = self.db.scalar(
+            select(MerchantQuestion)
+            .where(MerchantQuestion.group_id == reply.group_id)
+            .where(MerchantQuestion.sender_id != reply.sender_id)
+            .where(MerchantQuestion.status.in_(["open", "timed_out", "escalated"]))
+            .where(MerchantQuestion.asked_at <= ensure_aware(reply.received_at))
+            .order_by(MerchantQuestion.asked_at.desc(), MerchantQuestion.id.desc())
+        )
+        if question is None:
+            return 0
+        question.status = "replied"
+        question.reply_message_id = reply.id
+        question.replied_at = ensure_aware(reply.received_at)
+        question.updated_at = now_tz()
+        self._cancel_pending_question_reminders(question, "群成员已响应发起人的问题", reply.sender_id)
+        self.db.flush()
+        return 1
+
     def _close_sender_question(self, message: GroupMessage) -> int:
         question = self.db.scalar(
             select(MerchantQuestion)
@@ -386,8 +448,14 @@ class MerchantQuestionService:
 
     @staticmethod
     def _is_system_generated(content: str) -> bool:
-        cleaned = content.strip()
+        cleaned = re.sub(r"^(?:@\S+\s*)+", "", content.strip())
         return any(cleaned.startswith(prefix) for prefix in SYSTEM_MESSAGE_PREFIXES)
+
+    @staticmethod
+    def _is_response_acknowledgement(content: str) -> bool:
+        body = MerchantQuestionService._message_body(content)
+        normalized = re.sub(r"[\s,，。.!！?？~～、;；:：\"'“”‘’()（）]+", "", body)
+        return bool(normalized and RESPONSE_ACK_PATTERN.fullmatch(normalized))
 
     @staticmethod
     def _is_conversation_closing(content: str) -> bool:
@@ -421,8 +489,31 @@ class MerchantQuestionService:
 
     @staticmethod
     def _message_body(content: str) -> str:
-        body = content.rsplit("------", 1)[-1].strip()
+        parts = QUOTE_DIVIDER_PATTERN.split(content, maxsplit=1)
+        body = parts[-1].strip()
+        if len(parts) == 1:
+            body = content.rsplit("------", 1)[-1].strip()
         return re.sub(r"^(?:@\S+\s*)+", "", body).strip()
+
+    @staticmethod
+    def _quoted_content(content: str) -> str | None:
+        parts = QUOTE_DIVIDER_PATTERN.split(content, maxsplit=1)
+        if len(parts) == 1 and "------" in content:
+            parts = content.split("------", 1)
+        if len(parts) != 2:
+            return None
+        quoted = re.sub(r"^(?:@\S+\s*)+", "", parts[0].strip())
+        quoted = re.sub(r"^这是一条引用/回复消息[：:]?", "", quoted).strip()
+        quoted = quoted.strip('「」\"“”')
+        if "：" in quoted:
+            quoted = quoted.split("：", 1)[1]
+        elif ":" in quoted:
+            quoted = quoted.split(":", 1)[1]
+        return quoted.strip() or None
+
+    @staticmethod
+    def _normalized_match_text(content: str) -> str:
+        return re.sub(r"[\s「」\"“”'‘’]+", "", content or "")
 
     @staticmethod
     def _stage_content(minutes: int, content: str, escalated: bool = False) -> str:
