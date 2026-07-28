@@ -222,9 +222,11 @@ class MediaFileService:
                 plaintiff=result.get("plaintiff"),
                 defendant=result.get("defendant"),
             )
-            matched_case = None if stage_only else suggested_case
             is_court_notice = result.get("event_type") == "court_notice"
             is_legal_document = self._is_case_independent_legal_document(media_file, result, extracted_text)
+            matched_case = None if stage_only or is_legal_document else suggested_case
+            if is_legal_document:
+                media_file.case_id = None
             if matched_case:
                 media_file.case_id = matched_case.id
                 media_file.tenant_id = matched_case.tenant_id or media_file.tenant_id
@@ -653,19 +655,22 @@ class MediaFileService:
         result["metadata"]["reviewed_by"] = operator
         result["metadata"]["reviewed_at"] = now_tz().isoformat()
 
-        matched_case = self.case_service.find_case_for_extracted(
+        suggested_case = self.case_service.find_case_for_extracted(
             result.get("case_no"),
             media_file.group_id,
             media_file.tenant_id,
             plaintiff=result.get("plaintiff"),
             defendant=result.get("defendant"),
         )
-        if matched_case:
+        is_court_notice = result.get("event_type") == "court_notice"
+        is_legal_document = self._is_case_independent_legal_document(media_file, result, media_file.extracted_text or "")
+        matched_case = None if is_legal_document else suggested_case
+        if is_legal_document:
+            media_file.case_id = None
+        elif matched_case:
             media_file.case_id = matched_case.id
             media_file.tenant_id = matched_case.tenant_id or media_file.tenant_id
             self._backfill_group_message_events(media_file, matched_case.id, media_file.tenant_id)
-        is_court_notice = result.get("event_type") == "court_notice"
-        is_legal_document = self._is_case_independent_legal_document(media_file, result, media_file.extracted_text or "")
         if not matched_case and result.get("case_no") and not (is_court_notice or is_legal_document):
             CaseCandidateService(self.db).detect(
                 case_no=result.get("case_no"),

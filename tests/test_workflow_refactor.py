@@ -580,6 +580,18 @@ def test_complete_judgment_ocr_without_case_is_auto_approved(db_session, tmp_pat
     )
     db_session.add(message)
     db_session.flush()
+    existing_case = LegalCase(
+        case_no="(2026)川0521民初2440号",
+        plaintiff_name="金尚华电器百货店",
+        debtor_name="朱俊豪",
+        group_id=message.group_id,
+        due_date=date.today() + timedelta(days=10),
+        total_amount=Decimal("6619.99"),
+        paid_amount=Decimal("0"),
+        status="normal",
+    )
+    db_session.add(existing_case)
+    db_session.flush()
     media = MediaFile(
         group_message_id=message.id,
         group_id=message.group_id,
