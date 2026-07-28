@@ -130,8 +130,7 @@ def test_reminder_mention_resolves_archive_account_to_protocol_member(db_session
 
     assert resolved == ["16880001"]
     db_session.expire_all()
-    contact = db_session.query(Contact).filter(Contact.archive_user_id == "test123").one()
-    assert contact.wecomapi_user_id == "16880001"
+    assert db_session.query(Contact).filter(Contact.archive_user_id == "test123").one_or_none() is None
 
 
 def test_unresolved_archive_account_is_not_sent_as_protocol_mention(db_session, monkeypatch):

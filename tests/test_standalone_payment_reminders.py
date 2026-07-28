@@ -103,14 +103,18 @@ def test_repayment_annotation_does_not_close_fee_notice(db_session):
     assert {item.status for item in _reminders(db_session)} == {"pending"}
 
 
-def test_repeated_identical_notice_does_not_duplicate_followups(db_session):
+def test_repeated_identical_notice_restarts_followups_from_latest_message(db_session):
     first = _send(db_session, "李江胜，案件受理费25元，请缴费")
     second = _send(db_session, "李江胜，案件受理费25元，请缴费", minutes=2)
 
     reminders = _reminders(db_session)
-    assert len(reminders) == 2
-    assert {item.source_event_id for item in reminders} == {first["event_ids"][0]}
-    assert second["reminder_ids"] == []
+    first_reminders = [item for item in reminders if item.source_event_id == first["event_ids"][0]]
+    second_reminders = [item for item in reminders if item.source_event_id == second["event_ids"][0]]
+    assert {item.status for item in first_reminders} == {"cancelled"}
+    assert len(second_reminders) == 2
+    assert {item.status for item in second_reminders} == {"pending"}
+    second_message = db_session.get(LegalEvent, second["event_ids"][0]).group_message
+    assert {round((item.remind_at - second_message.received_at).total_seconds() / 60) for item in second_reminders} == {30, 90}
 
 
 def test_platform_payment_reminder_callback_is_archived_without_new_event(db_session):

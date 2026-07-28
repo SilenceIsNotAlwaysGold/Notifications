@@ -226,7 +226,7 @@ class ReminderService:
         payment_tracking = PaymentTrackingService(self.db)
         duplicate_event_id = payment_tracking.find_duplicate_open_notice(event, message, extracted)
         if duplicate_event_id is not None:
-            return []
+            payment_tracking.supersede_open_notice_reminders(duplicate_event_id, event.id)
         group_id, target_userid = payment_tracking.source_message_destination(
             event,
             fallback_group_id=message.group_id,

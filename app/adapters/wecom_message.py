@@ -8,7 +8,6 @@ from app.core.config import get_settings
 from app.db.session import SessionLocal
 from app.models.wecom_archive_group import WeComArchiveGroup
 from app.models.contact import Contact, ContactGroup
-from app.services.contact_service import ContactService
 from app.services.tenant_settings_service import TenantSettingsService
 
 logger = logging.getLogger(__name__)
@@ -113,45 +112,32 @@ class WeComMessageAdapter:
         db = SessionLocal()
         try:
             resolved = self._contact_mappings(db, group_id, requested)
-            unresolved = [value for value in requested if value not in resolved]
-            if unresolved:
-                adapter = self._wecomapi_adapter(effective)
-                room_result = adapter.get_room_details([protocol_room_id])
-                room = next(iter(room_result.get("rooms") or []), None)
-                raw_members = room.get("memberList") if isinstance(room, dict) else []
-                member_ids = [
-                    str(member.get("userId") or "").strip()
-                    for member in raw_members
-                    if isinstance(member, dict) and str(member.get("userId") or "").strip()
-                ]
-                if member_ids:
-                    details = adapter.get_contact_details(member_ids)
-                    for contact in details.get("contacts") or []:
-                        if not isinstance(contact, dict):
-                            continue
-                        protocol_user_id = str(contact.get("userId") or "").strip()
-                        account_id = str(contact.get("acctid") or "").strip()
-                        if not protocol_user_id or protocol_user_id not in member_ids:
-                            continue
-                        display_name = str(
-                            contact.get("realName") or contact.get("nickname") or contact.get("alias") or account_id or protocol_user_id
-                        ).strip()
-                        ContactService(db).observe(
-                            group_id=group_id,
-                            archive_user_id=account_id or None,
-                            wecomapi_user_id=protocol_user_id,
-                            display_name=display_name,
-                            tenant_id=tenant_id,
-                            source="wecomapi",
-                        )
-                    db.commit()
-                    resolved.update(self._contact_mappings(db, group_id, unresolved))
-                    for value in unresolved:
-                        if value in member_ids:
-                            resolved[value] = value
-            return list(dict.fromkeys(resolved[value] for value in requested if value in resolved))
         finally:
             db.close()
+        unresolved = [value for value in requested if value not in resolved]
+        if unresolved:
+            adapter = self._wecomapi_adapter(effective)
+            room_result = adapter.get_room_details([protocol_room_id])
+            room = next(iter(room_result.get("rooms") or []), None)
+            raw_members = room.get("memberList") if isinstance(room, dict) else []
+            member_ids = [
+                str(member.get("userId") or "").strip()
+                for member in raw_members
+                if isinstance(member, dict) and str(member.get("userId") or "").strip()
+            ]
+            if member_ids:
+                details = adapter.get_contact_details(member_ids)
+                for contact in details.get("contacts") or []:
+                    if not isinstance(contact, dict):
+                        continue
+                    protocol_user_id = str(contact.get("userId") or "").strip()
+                    account_id = str(contact.get("acctid") or "").strip()
+                    if protocol_user_id not in member_ids:
+                        continue
+                    if account_id:
+                        resolved[account_id] = protocol_user_id
+                    resolved[protocol_user_id] = protocol_user_id
+        return list(dict.fromkeys(resolved[value] for value in requested if value in resolved))
 
     @staticmethod
     def _contact_mappings(db, group_id: str, identifiers: list[str]) -> dict[str, str]:

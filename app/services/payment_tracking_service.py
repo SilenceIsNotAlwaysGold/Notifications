@@ -140,6 +140,29 @@ class PaymentTrackingService:
                 return candidate.id
         return None
 
+    def supersede_open_notice_reminders(self, event_id: int, superseded_by_event_id: int) -> list[int]:
+        reminders = list(
+            self.db.scalars(
+                select(Reminder).where(
+                    Reminder.source_event_id == event_id,
+                    Reminder.reminder_type == "payment_confirmation",
+                    Reminder.status == "pending",
+                )
+            ).all()
+        )
+        now = now_tz()
+        for reminder in reminders:
+            reminder.status = "cancelled"
+            reminder.cancelled_at = now
+            reminder.cancel_reason = f"相同缴费通知已由事件 {superseded_by_event_id} 重新发送并重新计时"
+        event = self.db.get(LegalEvent, event_id)
+        if event is not None:
+            metadata = self._metadata(event)
+            metadata["superseded_by_payment_notice_event_id"] = superseded_by_event_id
+            event.metadata_json = json.dumps(metadata, ensure_ascii=False)
+        self.db.flush()
+        return [reminder.id for reminder in reminders]
+
     @classmethod
     def _same_notice(
         cls,
