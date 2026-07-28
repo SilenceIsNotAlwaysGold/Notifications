@@ -17,6 +17,17 @@ def reset_kdocs_real(monkeypatch):
     get_settings.cache_clear()
 
 
+def test_enforcement_values_are_bounded_for_kdocs_cell_limits():
+    values = KDocsAdapter()._enforcement_values(
+        {
+            "案号": "(2026)陕0423民初1531号",
+            "识别摘要": "判决书识别内容" * 300,
+        }
+    )
+
+    assert all(not isinstance(value, str) or len(value.encode("utf-8")) <= 900 for value in values)
+
+
 def test_real_gateway_upload_uses_multipart_contract(tmp_path, monkeypatch):
     reset_kdocs_real(monkeypatch)
     captured = {}

@@ -603,7 +603,7 @@ class KDocsAdapter:
             24: self._pick(row, "订单号", "order_no"),
         }
         for index, value in assignments.items():
-            values[index] = value
+            values[index] = self._bounded_cell_value(value)
         return values
 
     def _court_time_values(self, row: dict[str, Any]) -> list[Any]:
