@@ -19,6 +19,7 @@ class GroupMessage(Base):
     content: Mapped[str | None] = mapped_column(Text, nullable=True)
     file_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     raw_payload_json: Mapped[str] = mapped_column(Text)
+    processing_mode: Mapped[str] = mapped_column(String(32), default="live", index=True)
     received_at: Mapped[datetime] = mapped_column(AwareDateTime, default=now_tz, index=True)
     created_at: Mapped[datetime] = mapped_column(AwareDateTime, default=now_tz)
 

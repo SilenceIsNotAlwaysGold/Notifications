@@ -177,6 +177,7 @@ class MockMessageCreate(BaseModel):
     file_url: str | None = None
     received_at: datetime | None = None
     raw_payload_json: dict[str, Any] | None = None
+    processing_mode: Literal["live", "backfill", "shadow"] = "live"
 
 
 class MessageProcessOut(BaseModel):
@@ -421,6 +422,7 @@ class WeComArchiveGroupOut(BaseModel):
     seen_message_count: int
     first_seen_at: datetime | None
     last_seen_at: datetime | None
+    live_since_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 

@@ -73,6 +73,8 @@ def test_alembic_upgrade_head_succeeds_with_temp_sqlite(tmp_path, monkeypatch):
         assert "group_type" in {column["name"] for column in inspector.get_columns("wecom_archive_groups")}
         assert "access_policy" in {column["name"] for column in inspector.get_columns("wecom_archive_groups")}
         assert "applies_to_event_id" in {column["name"] for column in inspector.get_columns("payment_records")}
+        assert "processing_mode" in {column["name"] for column in inspector.get_columns("group_messages")}
+        assert "live_since_at" in {column["name"] for column in inspector.get_columns("wecom_archive_groups")}
     finally:
         engine.dispose()
         get_settings.cache_clear()

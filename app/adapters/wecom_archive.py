@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import urljoin
 
@@ -146,7 +146,13 @@ class WeComArchiveAdapter:
                     if archive_group.tenant_id and not raw_message.get("tenant_id"):
                         message_to_process = {**raw_message, "tenant_id": archive_group.tenant_id}
 
-                payload = MockMessageCreate(**self.normalize_message(message_to_process))
+                normalized = self.normalize_message(message_to_process)
+                received_at = datetime.fromisoformat(normalized["received_at"])
+                live_cutoff = ensure_aware(datetime.now()) - timedelta(
+                    minutes=self.settings.wecom_archive_live_window_minutes
+                )
+                normalized["processing_mode"] = "live" if ensure_aware(received_at) >= live_cutoff else "backfill"
+                payload = MockMessageCreate(**normalized)
                 message_service.handle_incoming_message(payload)
                 processed += 1
                 last_seq = max(last_seq, seq)

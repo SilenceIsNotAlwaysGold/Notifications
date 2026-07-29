@@ -154,6 +154,76 @@ class LegalLLMAdapter:
         }
         return parsed
 
+    def classify_conversation(
+        self,
+        message: str,
+        *,
+        open_question: str | None = None,
+        context_messages: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        if not self.settings.legal_llm_base_url or not self.settings.legal_llm_model:
+            raise LegalLLMError("未配置会话意图模型")
+        payload = {
+            "model": self.settings.legal_llm_model,
+            "temperature": 0,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "你是企业微信群法务业务会话路由器，只输出JSON。"
+                        "判断当前消息是否提出了必须由群成员回复或处理的新问题，或是否已经回应了待回复问题。"
+                        "欢迎语、通知、普通陈述、表情、寒暄、结束语、机器人提醒不得创建任务。"
+                        "支付失败、没有、稍等、正在核实、已处理等只要是在回应待回复问题，都算有效回应。"
+                        "引用或转述原问题后的回答必须判定is_answer=true，不能再次判为新问题。"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "current_message": message[:2000],
+                            "open_question": open_question,
+                            "recent_context": (context_messages or [])[-12:],
+                            "output_schema": {
+                                "needs_reply": "boolean",
+                                "is_answer": "boolean",
+                                "conversation_closed": "boolean",
+                                "confidence": "number 0..1",
+                                "reason": "string",
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+        }
+        endpoint = urljoin(self.settings.legal_llm_base_url.rstrip("/") + "/", "chat/completions")
+        headers = {"Content-Type": "application/json"}
+        if self.settings.legal_llm_api_key:
+            headers["Authorization"] = f"Bearer {self.settings.legal_llm_api_key}"
+        started_at = time.monotonic()
+        try:
+            response = httpx.post(
+                endpoint,
+                headers=headers,
+                json=payload,
+                timeout=self.settings.legal_llm_timeout_seconds,
+            )
+            response.raise_for_status()
+            data = response.json()
+            parsed = self._decode_json_object(data["choices"][0]["message"]["content"])
+        except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as exc:
+            raise LegalLLMError(f"LLM 会话判断请求失败：{type(exc).__name__}") from exc
+        parsed["_response_metadata"] = {
+            "model": data.get("model") or self.settings.legal_llm_model,
+            "request_hash": hashlib.sha256(
+                json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            ).hexdigest(),
+            "duration_ms": int((time.monotonic() - started_at) * 1000),
+        }
+        return parsed
+
     @staticmethod
     def _decode_json_object(content: Any) -> dict[str, Any]:
         if isinstance(content, list):

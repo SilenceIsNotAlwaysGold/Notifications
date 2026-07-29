@@ -149,8 +149,7 @@ def test_message_without_case_number_never_uses_group_as_case_ownership(client, 
     assert response.status_code == 200
     assert response.json()["data"]["case_id"] is None
     event = db_session.scalar(select(LegalEvent).order_by(LegalEvent.id.desc()))
-    assert event.case_id is None
-    assert event.attribution_status == "pending"
+    assert event is None
 
 
 def test_message_without_case_number_does_not_guess_shared_group_case(client, db_session):

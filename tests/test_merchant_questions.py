@@ -47,7 +47,7 @@ def test_external_question_times_out_once_and_internal_reply_closes_it(client, d
     assert group["group_type"] == "merchant"
     assert group["internal_userids"] == ["staff_001"]
     asked_at = datetime(2026, 7, 20, 9, 0, tzinfo=app_timezone())
-    _text(client, "merchant_group", "merchant_001", "诉讼费今天需要交吗？", asked_at)
+    _text(client, "merchant_group", "merchant_001", "资料今天需要提交吗？", asked_at)
 
     question = db_session.scalar(select(MerchantQuestion))
     assert question.status == "open"
@@ -62,7 +62,7 @@ def test_external_question_times_out_once_and_internal_reply_closes_it(client, d
     reminders = list(db_session.scalars(select(Reminder).where(Reminder.reminder_type == "merchant_question_timeout")).all())
     assert len(reminders) == 1
     assert reminders[0].target_userid == "merchant_001"
-    assert reminders[0].content.startswith("【缴费信息待核实】")
+    assert reminders[0].content.startswith("【商家待回复】")
 
     _text(client, "merchant_group", "staff_001", "需要，今天下班前完成。", asked_at + timedelta(minutes=8))
     db_session.expire_all()
@@ -258,7 +258,7 @@ def test_explicit_payment_confirmation_does_not_create_question(client, db_sessi
 def test_closing_message_closes_same_senders_pending_question_and_reminders(client, db_session):
     _create_group(client)
     asked_at = datetime(2026, 7, 20, 10, 0, tzinfo=app_timezone())
-    _text(client, "merchant_group", "merchant_001", "诉讼费今天需要交吗？", asked_at)
+    _text(client, "merchant_group", "merchant_001", "资料今天需要提交吗？", asked_at)
     service = MerchantQuestionService(db_session)
     service.scan_timeouts(asked_at + timedelta(minutes=6))
     question = db_session.scalar(select(MerchantQuestion))
@@ -326,7 +326,20 @@ def test_unpaid_or_question_payment_messages_still_require_reply(client, db_sess
         _text(client, "merchant_group", f"merchant_{index}", content, now + timedelta(seconds=index))
 
     questions = list(db_session.scalars(select(MerchantQuestion).order_by(MerchantQuestion.id)).all())
-    assert [item.content for item in questions] == list(contents)
+    assert questions == []
+
+
+def test_payment_notice_uses_payment_workflow_without_merchant_timeout(client, db_session):
+    _create_group(client)
+    now = datetime(2026, 7, 29, 10, 0, tzinfo=app_timezone())
+
+    _text(client, "merchant_group", "notice_sender", "李江胜案件受理费25元，请在8月2日前缴费", now)
+
+    assert db_session.scalar(select(MerchantQuestion)) is None
+    reminders = list(db_session.scalars(select(Reminder).order_by(Reminder.id)).all())
+    assert [item.reminder_type for item in reminders] == ["payment_confirmation", "payment_confirmation"]
+    assert {round((item.remind_at - now).total_seconds() / 60) for item in reminders} == {30, 90}
+    assert {item.target_userid for item in reminders} == {"notice_sender"}
 
 
 def test_plain_status_update_without_requested_action_does_not_create_question(client, db_session):
@@ -357,6 +370,61 @@ def test_internal_reply_cancels_all_pending_timeout_stages(client, db_session, m
     db_session.expire_all()
 
     assert {db_session.get(Reminder, item.id).status for item in reminders} == {"cancelled"}
+    get_settings.cache_clear()
+
+
+def test_ai_rejects_keyword_false_positive(client, db_session, monkeypatch):
+    monkeypatch.setenv("LEGAL_LLM_BASE_URL", "https://llm.example/v1")
+    monkeypatch.setenv("LEGAL_LLM_MODEL", "test-model")
+    get_settings.cache_clear()
+    _create_group(client)
+    monkeypatch.setattr(
+        "app.services.merchant_question_service.LegalLLMAdapter.classify_conversation",
+        lambda self, message, **kwargs: {
+            "needs_reply": False,
+            "is_answer": False,
+            "conversation_closed": False,
+            "confidence": 0.98,
+            "reason": "这是进度陈述，不要求回复",
+        },
+    )
+
+    _text(
+        client,
+        "merchant_group",
+        "merchant_001",
+        "欢迎加入沟通群，后续有任何需求请随时告知",
+        datetime(2026, 7, 29, 10, 0, tzinfo=app_timezone()),
+    )
+
+    assert db_session.scalar(select(MerchantQuestion)) is None
+    get_settings.cache_clear()
+
+
+def test_ai_answer_closes_question_without_quote_format(client, db_session, monkeypatch):
+    _create_group(client)
+    asked_at = datetime(2026, 7, 29, 10, 0, tzinfo=app_timezone())
+    _text(client, "merchant_group", "initiator", "麻烦核实一下是否已经结清", asked_at)
+    monkeypatch.setenv("LEGAL_LLM_BASE_URL", "https://llm.example/v1")
+    monkeypatch.setenv("LEGAL_LLM_MODEL", "test-model")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        "app.services.merchant_question_service.LegalLLMAdapter.classify_conversation",
+        lambda self, message, **kwargs: {
+            "needs_reply": False,
+            "is_answer": True,
+            "conversation_closed": True,
+            "confidence": 0.99,
+            "reason": "明确回答尚未结清",
+        },
+    )
+
+    _text(client, "merchant_group", "responder", "没有", asked_at + timedelta(minutes=2))
+
+    question = db_session.scalar(select(MerchantQuestion))
+    assert question.status == "replied"
+    assert question.reply_message_id is not None
+    assert "AI判断为有效回应" in question.close_reason
     get_settings.cache_clear()
 
 

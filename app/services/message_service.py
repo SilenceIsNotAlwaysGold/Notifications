@@ -44,7 +44,7 @@ class MessageService:
     def handle_incoming_message(self, payload: MockMessageCreate) -> dict[str, Any]:
         group_message = self._save_group_message(payload)
         archive_group = WeComArchiveGroupService(self.db).get_group(group_message.group_id)
-        if archive_group and archive_group.status == "capture_only":
+        if archive_group and archive_group.status != "enabled":
             self.db.flush()
             return {
                 "group_message_id": group_message.id,
@@ -59,7 +59,12 @@ class MessageService:
                     "event_type": "unknown",
                     "event_types": [],
                     "extracted_text": payload.content or "",
-                    "metadata": {"parser": "capture_only", "business_processing_skipped": True},
+                    "metadata": {
+                        "parser": "archive_only",
+                        "business_processing_skipped": True,
+                        "group_status": archive_group.status,
+                        "processing_mode": payload.processing_mode,
+                    },
                 },
                 "linked_media_file_id": None,
             }
@@ -82,7 +87,6 @@ class MessageService:
                 },
                 "linked_media_file_id": None,
             }
-        MerchantQuestionService(self.db).handle_message(group_message)
         extracted = self._extract(payload, group_message.tenant_id)
         confirmation_text, is_quoted_reply = self._reply_body(payload.content)
         ignore_quoted_payment_prompt = False
@@ -106,6 +110,12 @@ class MessageService:
         repayment_annotation = parse_repayment_annotation(payload.content) if payload.msg_type == "text" else None
         if repayment_annotation:
             extracted = self._apply_repayment_annotation(extracted, repayment_annotation, group_message.id)
+        if (
+            payload.processing_mode == "live"
+            and payload.msg_type == "text"
+            and extracted.get("event_type") not in {"payment_notice", "payment_screenshot"}
+        ):
+            MerchantQuestionService(self.db).handle_message(group_message)
         legal_case = self.case_service.find_case_for_extracted(
             extracted.get("case_no"),
             group_message.group_id,
@@ -137,10 +147,11 @@ class MessageService:
                 )
             except Exception:
                 logger.exception("还款说明文字绑定截图失败 group_message_id=%s", group_message.id)
+        extracted_event_types = extracted.get("event_types") or []
         event_types = (
             []
             if payload.msg_type in {"image", "file", "pdf"} or linked_media or ignore_quoted_payment_prompt
-            else (extracted.get("event_types") or ["unknown"])
+            else [event_type for event_type in extracted_event_types if event_type not in {"unknown", "keyword"}]
         )
 
         event_ids: list[int] = []
@@ -163,13 +174,20 @@ class MessageService:
             if legal_case:
                 event.attribution_status = "confirmed"
                 event.business_status = "staged"
+            elif event_type in {"payment_notice", "payment_screenshot"}:
+                event.attribution_status = "not_required"
+                event.business_status = "staged"
             else:
                 event.attribution_status = "pending"
                 event.business_status = "staged"
                 AttributionService(self.db).ensure_event(event, group_id=group_message.group_id, reason="文本消息无法唯一确定案件")
 
         reminder_ids: list[int] = []
-        if payload.msg_type == "text" and self._payment_tracking_enabled(tenant_id, group_message.group_id):
+        if (
+            payload.processing_mode == "live"
+            and payload.msg_type == "text"
+            and self._payment_tracking_enabled(tenant_id, group_message.group_id)
+        ):
             payment_notice = events_by_type.get("payment_notice")
             if payment_notice is not None:
                 reminders = self.reminder_service.create_standalone_payment_confirmation_followups(
@@ -274,6 +292,7 @@ class MessageService:
             content=payload.content,
             file_url=payload.file_url,
             raw_payload_json=raw_payload_json,
+            processing_mode=payload.processing_mode,
             received_at=received_at,
         )
         self.db.add(group_message)
@@ -352,7 +371,10 @@ class MessageService:
             if media_file:
                 self.media_file_service.download_media_file(media_file.id)
                 if WeComArchiveGroupService(self.db).feature_enabled(group_message.group_id, "ocr"):
-                    self.media_file_service.process_ocr(media_file.id)
+                    self.media_file_service.process_ocr(
+                        media_file.id,
+                        stage_only=payload.processing_mode != "live",
+                    )
         except Exception:
             # 媒体处理不能阻断消息入库和事件归档。
             logger.exception("媒体消息处理失败 group_message_id=%s", group_message.id)

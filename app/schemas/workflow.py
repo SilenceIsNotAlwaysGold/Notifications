@@ -182,6 +182,28 @@ class PaymentReceiptAssignment(BaseModel):
     payment_id: int = Field(ge=1)
 
 
+class PaymentMediaReceiptAssignment(BaseModel):
+    media_file_id: int = Field(ge=1)
+
+
+class UnmatchedPaymentMediaOut(BaseModel):
+    media_file_id: int
+    event_id: int
+    group_id: str
+    group_name: str | None
+    amount: Decimal | None
+    defendant: str | None
+    case_no: str | None
+    preview_url: str | None
+    candidate_event_ids: list[int] = Field(default_factory=list)
+    created_at: datetime
+
+
+class UnmatchedPaymentMediaListOut(BaseModel):
+    total: int
+    items: list[UnmatchedPaymentMediaOut]
+
+
 class PaymentTrackingListOut(BaseModel):
     total: int
     items: list[PaymentTrackingOut]

@@ -26,5 +26,6 @@ class WeComArchiveGroup(Base):
     seen_message_count: Mapped[int] = mapped_column(Integer, default=0)
     first_seen_at: Mapped[datetime | None] = mapped_column(AwareDateTime, nullable=True)
     last_seen_at: Mapped[datetime | None] = mapped_column(AwareDateTime, nullable=True)
+    live_since_at: Mapped[datetime | None] = mapped_column(AwareDateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(AwareDateTime, default=now_tz)
     updated_at: Mapped[datetime] = mapped_column(AwareDateTime, default=now_tz, onupdate=now_tz)

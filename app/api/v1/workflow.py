@@ -28,11 +28,14 @@ from app.schemas.workflow import (
     PaymentListOut,
     PaymentOut,
     PaymentReceiptAssignment,
+    PaymentMediaReceiptAssignment,
     PaymentReceiptListOut,
     PaymentReceiptOut,
     PaymentTrackingListOut,
     PaymentTrackingOut,
     PaymentUpdate,
+    UnmatchedPaymentMediaListOut,
+    UnmatchedPaymentMediaOut,
 )
 from app.services.attribution_service import AttributionService
 from app.services.case_group_service import CaseGroupService
@@ -210,6 +213,51 @@ def payment_daily_summary(
         group_ids=scoped_groups or None,
     )
     return ok("每日缴费信息汇总生成成功", PaymentDailySummaryOut(**result))
+
+
+@router.get("/payment-trackings/unmatched-media")
+def list_unmatched_payment_media(
+    offset: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=200),
+    db: Session = Depends(get_db),
+    operator_info: dict[str, object] = Depends(get_current_operator),
+):
+    scoped_groups = allowed_group_ids(operator_info) if resource_scope_enabled(operator_info) and operator_info.get("role") != "admin" else None
+    total, items = PaymentTrackingService(db).list_unmatched_media_receipts(
+        group_ids=scoped_groups,
+        offset=offset,
+        limit=limit,
+    )
+    return ok(
+        "未匹配付款凭证查询成功",
+        UnmatchedPaymentMediaListOut(total=total, items=[UnmatchedPaymentMediaOut(**item) for item in items]),
+    )
+
+
+@router.post("/payment-trackings/{event_id}/assign-media-receipt")
+def assign_payment_media_receipt(
+    event_id: int,
+    payload: PaymentMediaReceiptAssignment,
+    db: Session = Depends(get_db),
+    operator_info: dict[str, object] = Depends(get_current_operator),
+):
+    from app.models.media_file import MediaFile
+
+    notice = db.get(LegalEvent, event_id)
+    media = db.get(MediaFile, payload.media_file_id)
+    if not notice or notice.event_type != "payment_notice":
+        raise_fail("缴费通知不存在", code=1404, status_code=404)
+    if not media:
+        raise_fail("付款凭证不存在", code=1404, status_code=404)
+    if not has_group_access(operator_info, media.group_id, media.tenant_id):
+        raise_fail("无权限访问付款凭证", code=403, status_code=403)
+    try:
+        receipt = PaymentTrackingService(db).assign_media_receipt(notice, media, str(operator_info["operator"]))
+        db.commit()
+    except ValueError as exc:
+        db.rollback()
+        raise_fail(str(exc), code=1400)
+    return ok("付款凭证已关联并进入业务执行队列", {"event_id": receipt.id, "media_file_id": media.id})
 
 
 @router.post("/payment-trackings/{event_id}/assign-receipt")

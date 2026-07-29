@@ -2025,13 +2025,15 @@ async function renderPaymentTrackings() {
   });
   if (state.paymentTrackingStatus) params.set("status", state.paymentTrackingStatus);
   if (state.paymentTrackingQuery) params.set("query", state.paymentTrackingQuery);
-  const [data, receiptData, dailySummary] = await Promise.all([
+  const [data, receiptData, unmatchedMediaData, dailySummary] = await Promise.all([
     api(`/api/v1/legal/payment-trackings?${params.toString()}`),
     api("/api/v1/legal/payment-trackings/unassigned-receipts?limit=200"),
+    api("/api/v1/legal/payment-trackings/unmatched-media?limit=200"),
     api("/api/v1/legal/payment-trackings/daily-summary"),
   ]);
   const items = data.items || [];
   const unassignedReceipts = receiptData.items || [];
+  const unmatchedMedia = unmatchedMediaData.items || [];
   const totalPages = Math.max(1, Math.ceil((data.total || 0) / state.paymentTrackingPageSize));
   if (state.paymentTrackingPage > totalPages) {
     state.paymentTrackingPage = totalPages;
@@ -2046,6 +2048,19 @@ async function renderPaymentTrackings() {
     if (!candidates.length) return '<span class="muted">暂无待关联凭证</span>';
     return `<div class="payment-receipt-assignment"><select aria-label="选择付款凭证" data-payment-receipt-select="${row.event_id}"><option value="">选择凭证</option>${candidates.map((receipt) => `<option value="${receipt.id}">${escapeHtml(`${receipt.amount} 元 · ${receipt.payment_date || "日期待确认"} · 凭证 #${receipt.id}`)}</option>`).join("")}</select><button type="button" class="small" data-payment-assign="${row.event_id}">关联</button></div>`;
   };
+  const unmatchedMediaRows = unmatchedMedia.map((receipt) => {
+    const preferredIds = new Set(receipt.candidate_event_ids || []);
+    const sameGroupNotices = items.filter((row) => row.source_group_id === receipt.group_id);
+    const candidates = preferredIds.size
+      ? sameGroupNotices.filter((row) => preferredIds.has(row.event_id))
+      : sameGroupNotices;
+    return {
+      ...receipt,
+      candidate_control: candidates.length
+        ? `<div class="payment-receipt-assignment"><select aria-label="选择缴费通知" data-unmatched-media-select="${receipt.media_file_id}"><option value="">选择同群缴费通知</option>${candidates.map((row) => `<option value="${row.event_id}">${escapeHtml(`${row.defendant || "当事人待确认"} · ${row.payment_type || "缴费"} · ${row.required_amount ?? "金额待确认"} 元`)}</option>`).join("")}</select><button type="button" class="small" data-assign-unmatched-media="${receipt.media_file_id}">关联</button></div>`
+        : '<span class="muted">当前页无同群候选，请先搜索当事人</span>',
+    };
+  });
   const filters = `
     <form id="payment-tracking-filter" class="payment-tracking-filter">
       <label><span>支付状态</span><select name="status">
@@ -2063,6 +2078,12 @@ async function renderPaymentTrackings() {
         <span class="case-candidate-count">${data.total || 0}</span>
       </header>
       ${panel("今日缴费信息汇总", `<div class="payment-summary-meta"><span>已确认 ${escapeHtml(dailySummary.confirmed_count)} 项 · 待确认 ${escapeHtml(dailySummary.pending_count)} 项</span><button type="button" class="ghost small" id="copy-payment-summary">复制汇总</button></div><pre class="payment-daily-summary">${escapeHtml(dailySummary.content)}</pre>`)}
+      ${unmatchedMediaRows.length ? panel("未匹配付款凭证", `${table([
+        { label: "来源群", render: (row) => `<strong>${escapeHtml(row.group_name || "未命名群")}</strong><small class="payment-amount-detail">${escapeHtml(row.group_id)}</small>` },
+        { label: "识别信息", render: (row) => `${escapeHtml(row.defendant || "当事人待确认")} · ${money(row.amount)}<small class="payment-amount-detail">${escapeHtml(row.case_no || "无案号")}</small>` },
+        { label: "原图", render: (row) => row.preview_url ? `<button class="small ghost" data-payment-screenshot="${escapeHtml(row.preview_url)}">查看凭证</button>` : '<span class="muted">无</span>' },
+        { label: "关联缴费通知", render: (row) => row.candidate_control },
+      ], unmatchedMediaRows, "payment-unmatched-media-table")}`) : ""}
       ${panel("缴费信息表", `${filters}${table([
         { label: "日期", key: "notice_date" },
         { label: "原告", key: "plaintiff" },
@@ -2076,7 +2097,7 @@ async function renderPaymentTrackings() {
         { label: "付款凭证", render: (row) => row.receipt_urls?.length ? row.receipt_urls.map((url, index) => `<button class="small ghost" data-payment-screenshot="${escapeHtml(url)}">凭证 ${index + 1}</button>`).join(" ") : '<span class="muted">待上传</span>' },
         { label: "凭证关联", render: receiptOptions },
       ], items, "payment-tracking-table")}
-      <div class="kdocs-pagination"><span>共 ${escapeHtml(data.total || 0)} 条，第 ${state.paymentTrackingPage} / ${totalPages} 页 · 待关联凭证 ${escapeHtml(receiptData.total || 0)} 份</span><button type="button" class="ghost small" id="payment-tracking-prev" ${state.paymentTrackingPage <= 1 ? "disabled" : ""}>上一页</button><button type="button" class="ghost small" id="payment-tracking-next" ${state.paymentTrackingPage >= totalPages ? "disabled" : ""}>下一页</button></div>`)}
+      <div class="kdocs-pagination"><span>共 ${escapeHtml(data.total || 0)} 条，第 ${state.paymentTrackingPage} / ${totalPages} 页 · 待关联凭证 ${escapeHtml((receiptData.total || 0) + (unmatchedMediaData.total || 0))} 份</span><button type="button" class="ghost small" id="payment-tracking-prev" ${state.paymentTrackingPage <= 1 ? "disabled" : ""}>上一页</button><button type="button" class="ghost small" id="payment-tracking-next" ${state.paymentTrackingPage >= totalPages ? "disabled" : ""}>下一页</button></div>`)}
     </section>`;
   $("#payment-tracking-filter").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -2121,6 +2142,22 @@ async function renderPaymentTrackings() {
     try {
       await api(`/api/v1/legal/payment-trackings/${eventId}/assign-receipt`, { method: "POST", body: JSON.stringify({ payment_id: paymentId }) });
       showAlert("付款凭证已关联；金山写入状态可在“写入记录”中查看");
+      await renderPaymentTrackings();
+    } catch (error) {
+      showAlert(error.message, "error");
+      button.disabled = false;
+    }
+  }));
+  document.querySelectorAll("[data-assign-unmatched-media]").forEach((button) => button.addEventListener("click", async () => {
+    const mediaFileId = Number(button.dataset.assignUnmatchedMedia);
+    const select = document.querySelector(`[data-unmatched-media-select="${mediaFileId}"]`);
+    const eventId = Number(select?.value || 0);
+    if (!eventId) return showAlert("请先选择同群缴费通知", "error");
+    if (!window.confirm("确认将该付款截图关联到所选缴费通知？关联后将取消后续催促。")) return;
+    button.disabled = true;
+    try {
+      await api(`/api/v1/legal/payment-trackings/${eventId}/assign-media-receipt`, { method: "POST", body: JSON.stringify({ media_file_id: mediaFileId }) });
+      showAlert("付款凭证已关联，后续催促已进入取消流程");
       await renderPaymentTrackings();
     } catch (error) {
       showAlert(error.message, "error");

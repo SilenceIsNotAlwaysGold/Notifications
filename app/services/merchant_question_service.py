@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 from datetime import datetime, time, timedelta
 
@@ -9,10 +10,14 @@ from app.models.group_message import GroupMessage
 from app.models.merchant_question import MerchantQuestion
 from app.models.reminder import Reminder
 from app.core.config import get_settings
+from app.adapters.legal_llm import LegalLLMAdapter, LegalLLMError
+from app.services.group_context_service import GroupContextService
 from app.services.reminder_service import ReminderService
 from app.services.wecom_archive_group_service import WeComArchiveGroupService
 from app.utils.datetime_utils import ensure_aware, now_tz
 from app.utils.regex_parser import is_payment_done_text
+
+logger = logging.getLogger(__name__)
 
 SYSTEM_MESSAGE_PREFIXES = (
     "【致和法务】",
@@ -147,6 +152,16 @@ class MerchantQuestionService:
             if closed:
                 return {"created": 0, "closed": closed}
 
+        open_question = self._latest_other_sender_question(message)
+        semantic_decision = self._semantic_decision(message, open_question)
+        if open_question and semantic_decision and self._decision_closes_question(semantic_decision):
+            self._close_question_with_reply(
+                open_question,
+                message,
+                f"AI判断为有效回应：{semantic_decision.get('reason') or '已回应发起人的问题'}",
+            )
+            return {"created": 0, "closed": 1}
+
         internal_userids = set(self.group_service.internal_userids(group))
         if message.sender_id in internal_userids:
             closed = self._close_relevant_question(message)
@@ -156,6 +171,11 @@ class MerchantQuestionService:
             return {"created": 0, "closed": closed}
         if not self._requires_business_reply(message.content or ""):
             return {"created": 0, "closed": 0}
+        if semantic_decision is None:
+            semantic_decision = self._semantic_decision(message, None)
+        if self.settings.legal_llm_base_url:
+            if semantic_decision is None or not self._decision_creates_question(semantic_decision):
+                return {"created": 0, "closed": 0}
 
         existing = self.db.scalar(
             select(MerchantQuestion).where(MerchantQuestion.group_message_id == message.id)
@@ -173,10 +193,68 @@ class MerchantQuestionService:
             deadline_at=self._business_deadline(asked_at, group.question_timeout_minutes),
             status="open",
             assigned_userid=message.sender_id,
+            classification_json=json.dumps(semantic_decision or {"source": "rules"}, ensure_ascii=False),
         )
         self.db.add(question)
         self.db.flush()
         return {"created": 1, "closed": 0}
+
+    def _latest_other_sender_question(self, message: GroupMessage) -> MerchantQuestion | None:
+        return self.db.scalar(
+            select(MerchantQuestion)
+            .where(MerchantQuestion.group_id == message.group_id)
+            .where(MerchantQuestion.sender_id != message.sender_id)
+            .where(MerchantQuestion.status.in_(["open", "timed_out", "escalated"]))
+            .where(MerchantQuestion.asked_at <= ensure_aware(message.received_at))
+            .order_by(MerchantQuestion.asked_at.desc(), MerchantQuestion.id.desc())
+        )
+
+    def _semantic_decision(
+        self,
+        message: GroupMessage,
+        open_question: MerchantQuestion | None,
+    ) -> dict | None:
+        if not self.settings.legal_llm_base_url:
+            return None
+        try:
+            return LegalLLMAdapter(self.settings).classify_conversation(
+                self._message_body(message.content or ""),
+                open_question=open_question.content if open_question else None,
+                context_messages=GroupContextService(self.db).around_message(message.id)[-12:],
+            )
+        except LegalLLMError as exc:
+            logger.warning("商家会话AI判断失败 message_id=%s error=%s", message.id, exc)
+            return None
+
+    @staticmethod
+    def _decision_closes_question(decision: dict) -> bool:
+        try:
+            confidence = float(decision.get("confidence") or 0)
+        except (TypeError, ValueError):
+            confidence = 0
+        return confidence >= 0.65 and bool(decision.get("is_answer") or decision.get("conversation_closed"))
+
+    @staticmethod
+    def _decision_creates_question(decision: dict) -> bool:
+        try:
+            confidence = float(decision.get("confidence") or 0)
+        except (TypeError, ValueError):
+            confidence = 0
+        return confidence >= 0.72 and bool(decision.get("needs_reply")) and not bool(decision.get("is_answer"))
+
+    def _close_question_with_reply(
+        self,
+        question: MerchantQuestion,
+        reply: GroupMessage,
+        reason: str,
+    ) -> None:
+        question.status = "replied"
+        question.reply_message_id = reply.id
+        question.replied_at = ensure_aware(reply.received_at)
+        question.updated_at = now_tz()
+        question.close_reason = reason
+        self._cancel_pending_question_reminders(question, reason, reply.sender_id)
+        self.db.flush()
 
     def scan_timeouts(self, current_time: datetime | None = None) -> dict[str, int]:
         now = ensure_aware(current_time) if current_time else now_tz()

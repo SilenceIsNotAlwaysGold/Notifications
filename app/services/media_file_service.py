@@ -188,11 +188,24 @@ class MediaFileService:
                 return summary
 
             extracted_text = result.get("raw_text") or result.get("extracted_text") or ""
+            self._normalize_payment_material(result, extracted_text)
             self._promote_suspected_court_notice(result, extracted_text)
             self._apply_court_party_defaults(result)
             RepaymentTrackingService(self.db).link_payment_result(media_file, result)
+            PaymentTrackingService(self.db).link_media_receipt_result(media_file, result)
+            duplicate_media = self._find_applied_duplicate_media(media_file, result)
+            if duplicate_media:
+                result["requires_review"] = True
+                result.setdefault("metadata", {})["duplicate_media_file_id"] = duplicate_media.id
+                duplicate_reason = f"相同原文件已由资料 #{duplicate_media.id} 执行业务，禁止重复写入"
+                if duplicate_reason not in result.setdefault("review_reasons", []):
+                    result["review_reasons"].append(duplicate_reason)
             result["requires_review"] = self._result_requires_review(result) or stage_only
-            if not stage_only and self._can_auto_apply_legal_document(media_file, result, extracted_text):
+            if (
+                not stage_only
+                and duplicate_media is None
+                and self._can_auto_apply_legal_document(media_file, result, extracted_text)
+            ):
                 result["requires_review"] = False
                 result.setdefault("metadata", {})["case_independent_legal_document"] = True
             if stage_only:
@@ -227,7 +240,8 @@ class MediaFileService:
             is_court_notice = result.get("event_type") == "court_notice"
             is_legal_document = self._is_case_independent_legal_document(media_file, result, extracted_text)
             is_repayment_material = self._is_case_independent_repayment_material(media_file, result, extracted_text)
-            is_case_independent = is_legal_document or is_repayment_material
+            is_fee_material = self._is_case_independent_fee_material(media_file, result, extracted_text)
+            is_case_independent = is_legal_document or is_repayment_material or is_fee_material
             matched_case = None if stage_only or is_case_independent else suggested_case
             if is_case_independent:
                 media_file.case_id = None
@@ -262,7 +276,11 @@ class MediaFileService:
                         (
                             "system:legal-document"
                             if is_legal_document
-                            else ("system:repayment-material" if is_repayment_material else "system:court-notice")
+                            else (
+                                "system:repayment-material"
+                                if is_repayment_material
+                                else ("system:payment-material" if is_fee_material else "system:court-notice")
+                            )
                         ),
                     )
                 else:
@@ -728,6 +746,10 @@ class MediaFileService:
             if not RepaymentTrackingService.valid_plan(result):
                 raise ValueError("还款协议缺少可执行的分期计划，请重新识别后再确认")
         RepaymentTrackingService(self.db).link_payment_result(media_file, result)
+        PaymentTrackingService(self.db).link_media_receipt_result(media_file, result)
+        duplicate_media = self._find_applied_duplicate_media(media_file, result)
+        if duplicate_media:
+            raise ValueError(f"相同原文件已由资料 #{duplicate_media.id} 执行业务，禁止重复确认")
         result["requires_review"] = False
         result.setdefault("metadata", {})["review_decision"] = decision
         result["metadata"]["reviewed_by"] = operator
@@ -747,7 +769,12 @@ class MediaFileService:
             result,
             media_file.extracted_text or "",
         )
-        is_case_independent = is_legal_document or is_repayment_material
+        is_fee_material = self._is_case_independent_fee_material(
+            media_file,
+            result,
+            media_file.extracted_text or "",
+        )
+        is_case_independent = is_legal_document or is_repayment_material or is_fee_material
         matched_case = None if is_case_independent else suggested_case
         if is_case_independent:
             media_file.case_id = None
@@ -906,10 +933,14 @@ class MediaFileService:
     ) -> dict[str, int]:
         if media_file.business_applied_at is not None or event.business_status == "applied":
             return {"created_reminders": 0, "cancelled_reminders": 0}
+        duplicate_media = self._find_applied_duplicate_media(media_file, result)
+        if duplicate_media:
+            raise ValueError(f"相同原文件已由资料 #{duplicate_media.id} 执行业务，禁止重复写入")
         is_case_independent = event.attribution_status == "not_required" and event.event_type in {
             "court_notice",
             "judgment",
             "repayment_agreement",
+            "payment_notice",
             "payment_screenshot",
         }
         if not is_case_independent and (not matched_case or event.attribution_status != "confirmed"):
@@ -936,19 +967,42 @@ class MediaFileService:
             if created and is_repayment:
                 self.document_sync.sync_paid_amount(matched_case)
         standalone_agreement = None
+        standalone_payment_notice = None
         if not matched_case and result.get("event_type") == "payment_screenshot":
-            agreement_event_id = (result.get("metadata") or {}).get("repayment_agreement_event_id")
+            result_metadata = result.get("metadata") or {}
+            agreement_event_id = result_metadata.get("repayment_agreement_event_id")
             standalone_agreement = self.db.get(LegalEvent, agreement_event_id) if agreement_event_id else None
-            if not standalone_agreement:
-                raise ValueError("还款凭证未能唯一匹配同群的还款协议")
+            payment_notice_event_id = result_metadata.get("payment_notice_event_id")
+            standalone_payment_notice = self.db.get(LegalEvent, payment_notice_event_id) if payment_notice_event_id else None
+            if not standalone_agreement and not standalone_payment_notice:
+                raise ValueError("付款凭证未能唯一匹配同群的缴费通知或还款协议")
+            if standalone_payment_notice:
+                cancelled_reminders = PaymentTrackingService(self.db).confirm_notice_with_media(
+                    standalone_payment_notice,
+                    media_file.id,
+                )
         if WeComArchiveGroupService(self.db).feature_enabled(media_file.group_id, "document_sync"):
             if event.event_type not in {"court_notice", "judgment", "repayment_agreement", "payment_screenshot"} or matched_case:
                 self.document_sync.sync_archive_event(event, media_file=media_file)
             self._sync_kdocs_business(event, media_file, result, matched_case)
         created_reminders = 0
-        cancelled_reminders = 0
+        cancelled_reminders = cancelled_reminders if standalone_payment_notice else 0
         if matched_case and result.get("event_type") == "payment_notice" and self._payment_tracking_enabled(matched_case.tenant_id, media_file.group_id):
             created_reminders = self._create_ocr_payment_tracking_once(matched_case, media_file, event.id)
+        if not matched_case and result.get("event_type") == "payment_notice":
+            source_message = self.db.get(GroupMessage, media_file.group_message_id) if media_file.group_message_id else None
+            if (
+                source_message
+                and source_message.processing_mode == "live"
+                and self._payment_tracking_enabled(event.tenant_id, media_file.group_id)
+            ):
+                created_reminders += len(
+                    self.reminder_service.create_standalone_payment_confirmation_followups(
+                        event,
+                        source_message,
+                        result,
+                    )
+                )
         if matched_case and result.get("event_type") == "court_notice":
             created_reminders += len(
                 self.reminder_service.create_court_reminders(
@@ -994,9 +1048,83 @@ class MediaFileService:
     @staticmethod
     def _result_requires_review(result: dict[str, Any]) -> bool:
         event_type = result.get("event_type") or "unknown"
-        repayment_annotation = (result.get("metadata") or {}).get("repayment_annotation")
+        metadata = result.get("metadata") or {}
+        repayment_annotation = metadata.get("repayment_annotation")
         return bool(result.get("requires_review")) or event_type in {"unknown", "repayment_agreement"} or (
-            event_type == "payment_screenshot" and not repayment_annotation
+            event_type == "payment_screenshot"
+            and not repayment_annotation
+            and not metadata.get("payment_notice_event_id")
+        )
+
+    @staticmethod
+    def _normalize_payment_material(result: dict[str, Any], extracted_text: str) -> None:
+        if result.get("event_type") not in {"payment_notice", "payment_screenshot"}:
+            return
+        normalized = re.sub(r"\s+", "", extracted_text or "")
+        paid_signals = ("支付成功", "转账成功", "交易成功", "已支付", "已收款", "电子回单", "跨行转出")
+        pending_signals = (
+            "扫码支付",
+            "扫一扫付款",
+            "应缴纳金额",
+            "应交纳金额",
+            "应交费",
+            "缴款码",
+            "付款码",
+            "订单金额",
+            "支付不了",
+            "交费失败",
+        )
+        if any(signal in normalized for signal in paid_signals):
+            result["event_type"] = "payment_screenshot"
+        elif any(signal in normalized for signal in pending_signals):
+            result["event_type"] = "payment_notice"
+        result["event_types"] = [result["event_type"]]
+
+    @staticmethod
+    def _is_case_independent_fee_material(
+        media_file: MediaFile,
+        result: dict[str, Any],
+        extracted_text: str,
+    ) -> bool:
+        if not media_file.local_path or result.get("amount") is None:
+            return False
+        if result.get("event_type") == "payment_screenshot":
+            return bool((result.get("metadata") or {}).get("payment_notice_event_id"))
+        if result.get("event_type") != "payment_notice":
+            return False
+        normalized = re.sub(r"\s+", "", extracted_text or "")
+        return any(
+            signal in normalized
+            for signal in ("诉讼费", "案件受理费", "公告费", "执行费", "保全费", "缴款码", "应交费", "扫码支付")
+        )
+
+    def _find_applied_duplicate_media(
+        self,
+        media_file: MediaFile,
+        result: dict[str, Any],
+    ) -> MediaFile | None:
+        if result.get("event_type") not in {"court_notice", "judgment", "repayment_agreement"}:
+            return None
+        identity_filters = []
+        normalized_md5 = (media_file.md5sum or "").strip().lower()
+        if normalized_md5 and len(set(normalized_md5)) > 1:
+            identity_filters.append(func.lower(MediaFile.md5sum) == normalized_md5)
+        if media_file.msg_id:
+            identity_filters.append(
+                and_(
+                    MediaFile.msg_id == media_file.msg_id,
+                    MediaFile.seq == media_file.seq,
+                )
+            )
+        if not identity_filters:
+            return None
+        return self.db.scalar(
+            select(MediaFile)
+            .where(MediaFile.id != media_file.id)
+            .where(MediaFile.business_applied_at.is_not(None))
+            .where(or_(*identity_filters))
+            .order_by(MediaFile.business_applied_at.desc(), MediaFile.id.desc())
+            .limit(1)
         )
 
     @staticmethod
@@ -1479,7 +1607,16 @@ class MediaFileService:
         notice_event_id = metadata.get("payment_notice_event_id")
         notice = self.db.get(LegalEvent, notice_event_id) if notice_event_id else None
         paid_for_notice = PaymentService(self.db)._notice_paid_amount(notice.id) if notice else Decimal("0.00")
-        fully_paid = bool(is_paid and notice and notice.amount is not None and paid_for_notice >= notice.amount)
+        notice_metadata = PaymentTrackingService._metadata(notice) if notice else {}
+        receipt_confirmed = bool((notice_metadata.get("standalone_payment_confirmation") or {}).get("media_file_id"))
+        fully_paid = bool(
+            is_paid
+            and notice
+            and (
+                receipt_confirmed
+                or (notice.amount is not None and paid_for_notice >= notice.amount)
+            )
+        )
         target_row_index = None
         if notice:
             notice_log = self.db.scalar(

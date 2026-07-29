@@ -87,7 +87,12 @@ def test_partial_full_and_reversed_payment_ledger(client, db_session):
 def test_unassigned_event_cannot_be_approved(client, db_session):
     response = client.post(
         "/api/v1/legal/messages/mock",
-        json={"group_id": "unknown_group", "sender_id": "u1", "msg_type": "text", "content": "请缴费100元"},
+        json={
+            "group_id": "unknown_group",
+            "sender_id": "u1",
+            "msg_type": "text",
+            "content": "还款协议：甲方甲公司，乙方张三，总金额100元，分期方案待补充",
+        },
     )
     event_id = response.json()["data"]["event_ids"][0]
     approved = client.post(f"/api/v1/legal/events/{event_id}/approve", json={})
@@ -805,6 +810,58 @@ def test_non_summons_unknown_result_is_not_promoted():
 
     assert promoted is False
     assert result["event_type"] == "unknown"
+
+
+def test_same_legal_document_hash_cannot_be_applied_twice(db_session, tmp_path):
+    document_path = tmp_path / "duplicate-judgment.pdf"
+    document_path.write_bytes(b"same-document")
+    applied = MediaFile(
+        group_id="duplicate-document-group",
+        msg_id="first-document",
+        seq=1,
+        media_type="pdf",
+        md5sum="abc123",
+        local_path=str(document_path),
+        download_status="downloaded",
+        ocr_status="processed",
+        business_applied_at=now_tz(),
+        source="test",
+    )
+    duplicate = MediaFile(
+        group_id="duplicate-document-group",
+        msg_id="second-document",
+        seq=2,
+        media_type="pdf",
+        md5sum="abc123",
+        local_path=str(document_path),
+        download_status="downloaded",
+        ocr_status="processed",
+        source="test",
+    )
+    db_session.add_all([applied, duplicate])
+    db_session.flush()
+    result = {
+        "event_type": "judgment",
+        "document_type": "判决书",
+        "case_no": "(2026)陕0423民初1531号",
+        "plaintiff": "甲公司",
+        "defendant": "张三",
+        "metadata": {},
+    }
+    event = LegalEvent(
+        event_type="judgment",
+        attribution_status="not_required",
+        business_status="approved",
+        metadata_json=json.dumps({"media_file_id": duplicate.id}),
+    )
+    db_session.add(event)
+    db_session.flush()
+
+    with pytest.raises(ValueError, match="禁止重复写入"):
+        MediaFileService(db_session)._apply_ocr_business(duplicate, event, result, None)
+
+    assert duplicate.business_applied_at is None
+    assert event.business_status == "approved"
 
 
 def test_court_party_defaults_swap_company_and_summoned_person():

@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     wecom_archive_limit: int = Field(default=100, ge=1, le=1000, alias="WECOM_ARCHIVE_LIMIT")
     wecom_archive_timeout_seconds: int = Field(default=10, gt=0, alias="WECOM_ARCHIVE_TIMEOUT_SECONDS")
     wecom_archive_auto_pull: bool = Field(default=False, alias="WECOM_ARCHIVE_AUTO_PULL")
+    wecom_archive_live_window_minutes: int = Field(default=10, ge=1, le=1440, alias="WECOM_ARCHIVE_LIVE_WINDOW_MINUTES")
     media_storage_dir: str = Field(default="./storage/media", alias="MEDIA_STORAGE_DIR")
     media_public_base_url: str | None = Field(default=None, alias="MEDIA_PUBLIC_BASE_URL")
     media_download_mode: Literal["mock", "real"] = Field(default="mock", alias="MEDIA_DOWNLOAD_MODE")

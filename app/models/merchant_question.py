@@ -27,5 +27,6 @@ class MerchantQuestion(Base):
     closed_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
     closed_at: Mapped[datetime | None] = mapped_column(AwareDateTime, nullable=True)
     close_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    classification_json: Mapped[str] = mapped_column(Text, default="{}")
     created_at: Mapped[datetime] = mapped_column(AwareDateTime, default=now_tz)
     updated_at: Mapped[datetime] = mapped_column(AwareDateTime, default=now_tz, onupdate=now_tz)

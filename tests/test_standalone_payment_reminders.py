@@ -43,7 +43,7 @@ def test_unassigned_payment_notice_creates_source_group_followups_only(db_sessio
     assert result["case_id"] is None
     assert event.event_type == "payment_notice"
     assert event.case_id is None
-    assert event.attribution_status == "pending"
+    assert event.attribution_status == "not_required"
     assert len(reminders) == 2
     assert {item.group_id for item in reminders} == {GROUP_ID}
     assert {item.target_userid for item in reminders} == {"notice-sender"}

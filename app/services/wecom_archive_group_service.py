@@ -98,6 +98,7 @@ class WeComArchiveGroupService:
             values["internal_userids_json"] = json.dumps(self._normalize_userids(values.pop("internal_userids")), ensure_ascii=False)
         if "alert_userids" in values:
             values["alert_userids_json"] = json.dumps(self._normalize_userids(values.pop("alert_userids")), ensure_ascii=False)
+        was_enabled = group.status == "enabled"
         for field, value in values.items():
             setattr(group, field, value)
         self._apply_name_classification(group)
@@ -106,6 +107,8 @@ class WeComArchiveGroupService:
             group.group_type = values["group_type"]
         if "status" in values and group.access_policy == "auto":
             group.status = values["status"]
+        if group.status == "enabled" and not was_enabled:
+            group.live_since_at = now_tz()
         group.updated_at = now_tz()
         self.db.flush()
         return group
@@ -148,6 +151,8 @@ class WeComArchiveGroupService:
     def classify_group_name(self, group: WeComArchiveGroup) -> bool:
         before = (group.status, group.group_type)
         self._apply_name_classification(group)
+        if before[0] != "enabled" and group.status == "enabled":
+            group.live_since_at = now_tz()
         changed = before != (group.status, group.group_type)
         if changed:
             group.updated_at = now_tz()

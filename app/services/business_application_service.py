@@ -31,6 +31,7 @@ class BusinessApplicationService:
             "court_notice",
             "judgment",
             "repayment_agreement",
+            "payment_notice",
             "payment_screenshot",
         } and event.attribution_status == "not_required"
         if not case_independent_media and (event.attribution_status != "confirmed" or not event.case_id):

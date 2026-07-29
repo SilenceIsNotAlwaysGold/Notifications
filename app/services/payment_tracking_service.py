@@ -14,6 +14,7 @@ from app.models.legal_case import LegalCase
 from app.models.legal_event import LegalEvent
 from app.models.contact import Contact, ContactGroup
 from app.models.payment_record import PaymentRecord
+from app.models.media_file import MediaFile
 from app.models.reminder import Reminder
 from app.models.wecom_archive_group import WeComArchiveGroup
 from app.models.group_message import GroupMessage
@@ -119,6 +120,70 @@ class PaymentTrackingService:
         notice.metadata_json = json.dumps(metadata, ensure_ascii=False)
         self.db.flush()
         return [reminder.id for reminder in reminders]
+
+    def link_media_receipt_result(self, media_file, result: dict[str, Any]) -> LegalEvent | None:
+        if result.get("event_type") != "payment_screenshot":
+            return None
+        metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+        if metadata.get("repayment_annotation"):
+            return None
+        candidates = list(
+            self.db.scalars(
+                select(LegalEvent)
+                .join(GroupMessage, GroupMessage.id == LegalEvent.group_message_id)
+                .where(
+                    GroupMessage.group_id == media_file.group_id,
+                    LegalEvent.event_type == "payment_notice",
+                    LegalEvent.business_status != "rejected",
+                    GroupMessage.received_at <= media_file.created_at,
+                )
+                .order_by(LegalEvent.id.desc())
+                .limit(100)
+            ).all()
+        )
+        candidates = [
+            event
+            for event in candidates
+            if not self._metadata(event).get("standalone_payment_confirmation")
+            and not self._metadata(event).get("superseded_by_payment_notice_event_id")
+        ]
+        if not candidates:
+            return None
+        text = result.get("raw_text") or result.get("extracted_text") or ""
+        scored = [(self._confirmation_score(event, result, text), event) for event in candidates]
+        best_score = max(score for score, _event in scored)
+        matches = [event for score, event in scored if score == best_score and score > 0]
+        if len(matches) != 1:
+            metadata["unmatched_payment_receipt"] = True
+            metadata["payment_notice_candidate_ids"] = [event.id for event in candidates[:10]]
+            return None
+        metadata["payment_notice_event_id"] = matches[0].id
+        metadata["payment_notice_match_source"] = "same_group_semantic_score"
+        return matches[0]
+
+    def confirm_notice_with_media(self, notice: LegalEvent, media_file_id: int) -> int:
+        reminders = list(
+            self.db.scalars(
+                select(Reminder).where(
+                    Reminder.source_event_id == notice.id,
+                    Reminder.reminder_type.in_(("payment_confirmation", "payment_tracking")),
+                    Reminder.status == "pending",
+                )
+            ).all()
+        )
+        now = now_tz()
+        for reminder in reminders:
+            reminder.status = "cancelled"
+            reminder.cancelled_at = now
+            reminder.cancel_reason = f"付款凭证媒体 {media_file_id} 已确认缴费"
+        metadata = self._metadata(notice)
+        metadata["standalone_payment_confirmation"] = {
+            "media_file_id": media_file_id,
+            "confirmed_at": now.isoformat(),
+        }
+        notice.metadata_json = json.dumps(metadata, ensure_ascii=False)
+        self.db.flush()
+        return len(reminders)
 
     def find_duplicate_open_notice(
         self,
@@ -468,6 +533,104 @@ class PaymentTrackingService:
             for payment, legal_case in pairs
         ]
         return len(rows), rows[offset : offset + limit]
+
+    def list_unmatched_media_receipts(
+        self,
+        *,
+        group_ids: list[str] | None = None,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> tuple[int, list[dict[str, Any]]]:
+        query = (
+            select(MediaFile, LegalEvent)
+            .join(LegalEvent, LegalEvent.id == MediaFile.review_event_id)
+            .where(LegalEvent.event_type == "payment_screenshot")
+            .where(MediaFile.business_applied_at.is_(None))
+            .where(LegalEvent.business_status.in_(("staged", "approved")))
+            .order_by(MediaFile.created_at.desc(), MediaFile.id.desc())
+        )
+        if group_ids is not None:
+            if not group_ids:
+                return 0, []
+            query = query.where(MediaFile.group_id.in_(group_ids))
+        pairs = list(self.db.execute(query).all())
+        group_names = {
+            group.room_id: group.display_name
+            for group in self.db.scalars(
+                select(WeComArchiveGroup).where(
+                    WeComArchiveGroup.room_id.in_({media.group_id for media, _event in pairs})
+                )
+            ).all()
+        } if pairs else {}
+        rows: list[dict[str, Any]] = []
+        for media, event in pairs:
+            try:
+                result = json.loads(media.review_result_json or media.ocr_result_json or "{}")
+            except (TypeError, ValueError):
+                result = {}
+            metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+            if metadata.get("repayment_annotation") or metadata.get("payment_notice_event_id"):
+                continue
+            rows.append(
+                {
+                    "media_file_id": media.id,
+                    "event_id": event.id,
+                    "group_id": media.group_id,
+                    "group_name": group_names.get(media.group_id),
+                    "amount": event.amount,
+                    "defendant": result.get("defendant"),
+                    "case_no": result.get("case_no"),
+                    "preview_url": f"/api/v1/legal/media-files/{media.id}/content" if media.local_path else None,
+                    "candidate_event_ids": [int(value) for value in metadata.get("payment_notice_candidate_ids", []) if str(value).isdigit()],
+                    "created_at": media.created_at,
+                }
+            )
+        return len(rows), rows[offset : offset + limit]
+
+    def assign_media_receipt(
+        self,
+        notice: LegalEvent,
+        media_file: MediaFile,
+        operator: str,
+    ) -> LegalEvent:
+        if notice.event_type != "payment_notice" or not notice.group_message:
+            raise ValueError("缴费通知缺少来源群")
+        if media_file.group_id != notice.group_message.group_id:
+            raise ValueError("付款凭证和缴费通知不在同一个群")
+        receipt = self.db.get(LegalEvent, media_file.review_event_id) if media_file.review_event_id else None
+        if not receipt or receipt.event_type != "payment_screenshot":
+            raise ValueError("所选资料不是付款凭证")
+        if media_file.business_applied_at is not None or receipt.business_status == "applied":
+            raise ValueError("付款凭证已经执行，不能重复关联")
+        try:
+            result = json.loads(media_file.review_result_json or media_file.ocr_result_json or "{}")
+        except (TypeError, ValueError) as exc:
+            raise ValueError("付款凭证识别结果无效") from exc
+        metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+        if metadata.get("repayment_annotation"):
+            raise ValueError("还款协议凭证不能关联到诉讼缴费通知")
+        metadata["payment_notice_event_id"] = notice.id
+        metadata["payment_notice_match_source"] = "manual_same_group_assignment"
+        metadata.pop("unmatched_payment_receipt", None)
+        metadata.pop("payment_notice_candidate_ids", None)
+        result["metadata"] = metadata
+        result["requires_review"] = False
+        media_file.review_result_json = json.dumps(result, ensure_ascii=False, default=str)
+        media_file.review_status = "corrected"
+        media_file.reviewed_by = operator
+        media_file.reviewed_at = now_tz()
+        receipt.metadata_json = json.dumps({**self._metadata(receipt), **metadata}, ensure_ascii=False, default=str)
+        receipt.attribution_status = "not_required"
+        receipt.business_status = "approved"
+        receipt.approved_by = operator
+        receipt.approved_at = now_tz()
+        from app.services.attribution_service import AttributionService
+        from app.services.outbox_service import OutboxService
+
+        AttributionService(self.db).mark_media_not_required(media_file.id, "付款凭证已人工关联同群缴费通知", operator)
+        OutboxService(self.db).enqueue_event(receipt.id, receipt.tenant_id)
+        self.db.flush()
+        return receipt
 
     def daily_summary(
         self,
