@@ -57,6 +57,7 @@ class LegalLLMAdapter:
                         "判决书、调解书和裁定书必须提取文书落款日期 document_date、法院 court_name、被告身份证号码 identity_number；"
                         "amount 应填写判决或调解确认需要履行的本金或明确合计金额，不得使用原告诉请但未获支持的金额；"
                         "调解书有分期履行内容时，提取 repayment_due_date 和 repayment_plan；"
+                        "还款协议必须提取完整 repayment_plan、协议签署日 agreement_date 和约定的仲裁机构 arbitration_institution；"
                         "只有关键字段缺失、正文冲突或金额无法判断时才设置 requires_review=true，且必须写明 review_reasons。"
                         "开庭传票必须重点识别被告姓名：优先读取‘被传唤人姓名’或‘被告’栏，即使内容为手写也要结合 OCR 原文判断；"
                         "开庭传票默认将公司、个体工商户等经营主体名称识别为原告，将被传唤人、当事人或自然人姓名识别为被告；"
@@ -92,6 +93,8 @@ class LegalLLMAdapter:
                                 "payment_type": "string|null",
                                 "payment_deadline": "YYYY-MM-DD|null",
                                 "payment_term_days": "number|null",
+                                "agreement_date": "YYYY-MM-DD|null",
+                                "arbitration_institution": "string|null",
                                 "repayment_plan": {
                                     "first_payment_date": "YYYY-MM-DD|null",
                                     "monthly_payment_day": "number|null",

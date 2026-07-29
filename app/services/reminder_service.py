@@ -327,6 +327,50 @@ class ReminderService:
                 )
         return created
 
+    def create_standalone_installment_reminders(
+        self,
+        event: LegalEvent,
+        message: GroupMessage,
+        installments: list[dict[str, object]],
+        *,
+        creditor: str,
+        debtor: str,
+    ) -> list[Reminder]:
+        created: list[Reminder] = []
+        current = now_tz()
+        for index, installment in enumerate(installments[:120], start=1):
+            try:
+                due_date = date.fromisoformat(str(installment.get("due_date") or "")[:10])
+            except ValueError:
+                continue
+            sequence = installment.get("sequence") or index
+            amount = installment.get("amount") or "待确认"
+            for label, delta_days in (("d-7", -7), ("d0", 0), ("d+3", 3)):
+                target_date = due_date + timedelta(days=delta_days)
+                remind_at = datetime.combine(target_date, datetime.min.time(), tzinfo=app_timezone()).replace(hour=9)
+                if remind_at <= current:
+                    continue
+                dedupe_key = f"standalone-installment:{event.id}:{sequence}:{label}"
+                if self.db.scalar(select(Reminder.id).where(Reminder.dedupe_key == dedupe_key)):
+                    continue
+                created.append(
+                    self._create(
+                        case_id=None,
+                        tenant_id=event.tenant_id or message.tenant_id,
+                        group_id=message.group_id,
+                        reminder_type="installment_repayment",
+                        remind_at=remind_at,
+                        content=(
+                            f"【还款待确认】{creditor}与{debtor}的第 {sequence} 期还款应于 "
+                            f"{due_date.isoformat()} 支付 {amount} 元，请核实还款情况。"
+                        ),
+                        target_userid=message.sender_id,
+                        source_event_id=event.id,
+                        dedupe_key=dedupe_key,
+                    )
+                )
+        return created
+
     def cancel_pending_case_reminders(self, case_id: int, reason: str) -> int:
         reminders = list(
             self.db.scalars(

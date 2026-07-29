@@ -2216,6 +2216,45 @@ tr:hover td {
   font-size: 13px;
 }
 
+.repayment-plan-list {
+  display: grid;
+  gap: 1px;
+  margin: 10px 0 18px;
+  border: 1px solid var(--line);
+  background: var(--line);
+}
+
+.repayment-plan-list > div {
+  display: grid;
+  grid-template-columns: 90px minmax(120px, 1fr) minmax(180px, 1.5fr);
+  gap: 12px;
+  align-items: center;
+  min-height: 42px;
+  padding: 8px 12px;
+  background: var(--panel);
+}
+
+.repayment-progress-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(110px, 1fr));
+  gap: 1px;
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  background: var(--line);
+}
+
+.repayment-progress-summary > div {
+  display: grid;
+  gap: 5px;
+  padding: 12px;
+  background: var(--panel);
+}
+
+.repayment-progress-summary span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .review-detail-header {
   display: flex;
   align-items: flex-start;

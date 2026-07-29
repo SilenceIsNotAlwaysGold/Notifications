@@ -8,6 +8,8 @@ const state = {
   reviewStatusFilter: "pending",
   selectedSummonsId: null,
   summonsStatusFilter: "incomplete",
+  selectedRepaymentId: null,
+  repaymentStatusFilter: "pending_review",
   reviewPreviewUrl: null,
   reviewPreviewRotation: 0,
   editingReminderId: null,
@@ -50,6 +52,7 @@ const titles = {
   "archive-groups": ["企业微信群", "管理会话发现、案件识别和发送目标映射"],
   "ocr-reviews": ["人工复核", "核对识别结果并控制业务同步"],
   "court-summons": ["开庭传票", "补全传票信息并写入金山开庭时间表"],
+  "repayment-materials": ["还款与仲裁", "处理还款协议、分期履约和回款登记"],
   "recognition-settings": ["识别与 AI", "配置腾讯 OCR 和法律文书结构化模型"],
   reminders: ["提醒任务", "查看、编辑和执行企业微信提醒"],
   "payment-trackings": ["缴费信息跟踪", "按缴费通知汇总支付状态、催促进度和凭证"],
@@ -83,6 +86,7 @@ const sections = {
     views: [
       { view: "attribution", label: "待归属" },
       { view: "court-summons", label: "开庭传票" },
+      { view: "repayment-materials", label: "还款与仲裁" },
       { view: "ocr-reviews", label: "人工复核" },
       { view: "media", label: "附件记录" },
       { view: "messages", label: "来源消息" },
@@ -1747,6 +1751,79 @@ async function renderCourtSummons() {
   await loadReviewPreview(selected);
 }
 
+const repaymentWorkflowLabels = {
+  incomplete: "待补全",
+  pending_review: "待复核",
+  pending_write: "待写入",
+  written: "已写入",
+  write_failed: "写入失败",
+  rejected: "非还款资料",
+};
+
+function repaymentPlanRows(result) {
+  const plan = ((result.metadata || {}).structured_fields || {}).repayment_plan || {};
+  const installments = plan.installments || [];
+  if (!installments.length) return '<div class="empty-state">未提取到分期计划，请重新识别</div>';
+  return `<div class="repayment-plan-list">${installments.map((item, index) => `<div><strong>第 ${escapeHtml(item.sequence || index + 1)} 期</strong><span>${escapeHtml(item.due_date || "日期待确认")}</span><span>${escapeHtml(item.amount == null ? "金额待确认" : `${item.amount} 元`)}</span></div>`).join("")}</div>`;
+}
+
+function repaymentProgressRows(progress) {
+  if (!progress) return '<div class="muted">批准协议后生成履约进度</div>';
+  const labels = { paid: "已完成", partial: "部分还款", pending: "待还款", overdue: "已逾期" };
+  return `<div class="repayment-progress-summary"><div><span>协议金额</span><strong>${escapeHtml(progress.total_debt)} 元</strong></div><div><span>累计还款</span><strong>${escapeHtml(progress.total_paid)} 元</strong></div><div><span>剩余金额</span><strong>${escapeHtml(progress.outstanding)} 元</strong></div><div><span>履约状态</span><strong>${escapeHtml(progress.status)}</strong></div></div><div class="repayment-plan-list">${(progress.installments || []).map((item) => `<div><strong>第 ${escapeHtml(item.sequence)} 期</strong><span>${escapeHtml(item.due_date)}</span><span>${escapeHtml(item.paid)} / ${escapeHtml(item.amount)} 元 · ${escapeHtml(labels[item.status] || item.status)}</span></div>`).join("")}</div>`;
+}
+
+function repaymentMaterialDetail(review) {
+  const result = review.final_result || review.ocr_result || {};
+  const editable = review.review_status === "pending";
+  const kindLabel = review.material_kind === "agreement" ? "还款协议" : "还款凭证";
+  return `<div class="review-detail-header"><div class="summons-heading"><span class="eyebrow">${escapeHtml(review.group_name || "未命名群")} · ${kindLabel}</span><strong>${escapeHtml(review.original_filename || `资料 ${review.media_file_id}`)}</strong><div class="muted mono">${escapeHtml(review.group_id)} · ${escapeHtml(review.msg_id || "无消息 ID")}</div></div><div class="review-header-actions">${badge(repaymentWorkflowLabels[review.workflow_status] || review.workflow_status)}</div></div>
+    <div class="review-detail-grid"><section class="review-preview"><div id="review-preview" class="preview-placeholder">加载预览中...</div></section><section class="review-fields">
+      <form id="repayment-form"><div class="summons-callout">还款协议无需绑定案件。确认后上传原文件，并写入金山“提交仲裁情况合集”；后续回款凭证会更新同一行。</div><div class="form-grid review-form-grid"><div class="field"><label>债权人</label><input name="plaintiff" required value="${escapeHtml(result.plaintiff || "")}" ${editable ? "" : "disabled"} /></div><div class="field"><label>债务人</label><input name="defendant" required value="${escapeHtml(result.defendant || "")}" ${editable ? "" : "disabled"} /></div><div class="field"><label>${review.material_kind === "agreement" ? "协议总额" : "本次还款"}</label><input name="amount" type="number" min="0" step="0.01" required value="${escapeHtml(result.amount == null ? "" : result.amount)}" ${editable ? "" : "disabled"} /></div><div class="field wide"><label>复核备注</label><textarea name="note" ${editable ? "" : "disabled"}>${escapeHtml(review.review_note || "")}</textarea></div></div>
+      <div class="field-label">${review.material_kind === "agreement" ? "分期还款方案" : "匹配协议履约情况"}</div>${review.material_kind === "agreement" ? repaymentPlanRows(result) : repaymentProgressRows(review.progress)}
+      <div class="review-actions">${editable ? '<button type="button" data-repayment-approve>批准并写入</button><button type="button" class="ghost" data-repayment-correct>保存修正并写入</button><button type="button" class="ghost" data-repayment-reanalyze>重新识别</button><button type="button" class="danger-button" data-repayment-reject>非还款资料</button>' : ""}${review.workflow_status === "write_failed" ? '<button type="button" data-repayment-retry>重试金山写入</button>' : ""}</div></form>
+      <div class="summons-sync-summary"><div><span>金山状态</span><strong>${escapeHtml(review.sync_status || "尚未写入")}</strong></div><div><span>目标子表行号</span><strong>${escapeHtml(review.external_row_index == null ? "-" : review.external_row_index)}</strong></div><div><span>写入错误</span><strong>${escapeHtml(review.sync_error || "-")}</strong></div></div>
+      <div class="ocr-text-block"><div class="field-label">OCR 原文</div><pre>${escapeHtml(review.extracted_text || "无识别文本")}</pre></div></section></div>`;
+}
+
+async function submitRepaymentMaterial(review, decision) {
+  const values = Object.fromEntries(new FormData($("#repayment-form")).entries());
+  if (decision !== "rejected" && (!values.plaintiff.trim() || !values.defendant.trim() || !values.amount)) {
+    showAlert("请补全债权人、债务人和金额", "error");
+    return;
+  }
+  if (decision === "rejected" && !values.note.trim()) {
+    showAlert("标记为非还款资料时请填写原因", "error");
+    return;
+  }
+  const payload = decision === "rejected"
+    ? { decision, note: values.note.trim() }
+    : decision === "corrected"
+      ? { decision, event_type: review.material_kind === "agreement" ? "repayment_agreement" : "payment_screenshot", plaintiff: values.plaintiff.trim(), defendant: values.defendant.trim(), amount: values.amount, note: values.note.trim() || null }
+      : { decision, note: values.note.trim() || null };
+  await api(`/api/v1/legal/ocr-reviews/${review.media_file_id}/decision`, { method: "POST", body: JSON.stringify(payload) });
+  showAlert("还款资料已批准，正在进入金山写入队列");
+  await renderRepaymentMaterials();
+}
+
+async function renderRepaymentMaterials() {
+  const query = state.repaymentStatusFilter ? `?workflow_status=${encodeURIComponent(state.repaymentStatusFilter)}&page_size=100` : "?page_size=100";
+  const data = await api(`/api/v1/legal/ocr-reviews/repayment-materials${query}`);
+  const items = data.items || [];
+  if (!items.some((item) => item.media_file_id === state.selectedRepaymentId)) state.selectedRepaymentId = items[0]?.media_file_id || null;
+  const selected = items.find((item) => item.media_file_id === state.selectedRepaymentId) || null;
+  $("#content").innerHTML = `<div class="review-toolbar"><label for="repayment-status-filter">处理状态</label><select id="repayment-status-filter">${[["pending_review","待复核"],["incomplete","待补全"],["pending_write","待写入"],["written","已写入"],["write_failed","写入失败"],["rejected","非还款资料"],["","全部"]].map(([value,label]) => `<option value="${value}" ${state.repaymentStatusFilter === value ? "selected" : ""}>${label}</option>`).join("")}</select><span class="muted">${data.total} 条</span></div><div class="review-workspace"><aside class="review-list-pane">${items.length ? items.map((item) => `<button class="review-list-item ${item.media_file_id === state.selectedRepaymentId ? "active" : ""}" data-repayment-id="${item.media_file_id}"><span>${escapeHtml(item.original_filename || `资料 ${item.media_file_id}`)}</span><small>${item.material_kind === "agreement" ? "还款协议" : "回款凭证"} · ${escapeHtml(repaymentWorkflowLabels[item.workflow_status] || item.workflow_status)}</small></button>`).join("") : '<div class="empty-state">当前状态暂无还款资料</div>'}</aside><main class="review-detail-pane">${selected ? repaymentMaterialDetail(selected) : '<div class="empty-state">请选择还款资料</div>'}</main></div>`;
+  $("#repayment-status-filter").addEventListener("change", (event) => { state.repaymentStatusFilter = event.target.value; state.selectedRepaymentId = null; renderRepaymentMaterials(); });
+  document.querySelectorAll("[data-repayment-id]").forEach((button) => button.addEventListener("click", () => { state.selectedRepaymentId = Number(button.dataset.repaymentId); renderRepaymentMaterials(); }));
+  if (!selected) return;
+  document.querySelector("[data-repayment-approve]")?.addEventListener("click", () => submitRepaymentMaterial(selected, "approved"));
+  document.querySelector("[data-repayment-correct]")?.addEventListener("click", () => submitRepaymentMaterial(selected, "corrected"));
+  document.querySelector("[data-repayment-reject]")?.addEventListener("click", () => submitRepaymentMaterial(selected, "rejected"));
+  document.querySelector("[data-repayment-reanalyze]")?.addEventListener("click", async () => { await api(`/api/v1/legal/media-files/${selected.media_file_id}/ocr?force_reprocess=true`, { method: "POST" }); showAlert("已重新识别还款资料"); await renderRepaymentMaterials(); });
+  document.querySelector("[data-repayment-retry]")?.addEventListener("click", async () => { await api(`/api/v1/legal/ocr-reviews/repayment-materials/${selected.media_file_id}/retry`, { method: "POST" }); showAlert("已重试金山写入"); await renderRepaymentMaterials(); });
+  await loadReviewPreview(selected);
+}
+
 async function renderReminders() {
   const [data, rulesData, groupsData] = await Promise.all([
     api("/api/v1/legal/reminders?limit=100"),
@@ -2771,6 +2848,7 @@ async function loadView() {
     if (state.view === "archive-groups") await renderArchiveGroups();
     if (state.view === "ocr-reviews") await renderOCRReviews();
     if (state.view === "court-summons") await renderCourtSummons();
+    if (state.view === "repayment-materials") await renderRepaymentMaterials();
     if (state.view === "recognition-settings") await renderRecognitionSettings();
     if (state.view === "payment-trackings") await renderPaymentTrackings();
     if (state.view === "reminders") await renderReminders();

@@ -17,6 +17,8 @@ class KDocsReconciliationService:
         "enforcement_progress": "enforcement",
         "court_time": "court",
         "payment_registration": "payment",
+        "repayment_agreement": "repayment",
+        "repayment_progress": "repayment",
     }
 
     def __init__(self, db: Session, adapter: KDocsAdapter | None = None) -> None:

@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 class DocumentSyncService:
-    MAPPING_VERSION = "v3"
+    MAPPING_VERSION = "v4"
     def __init__(self, db: Session, adapter: Any | None = None) -> None:
         self.db = db
         self.settings = get_settings()
@@ -217,6 +217,52 @@ class DocumentSyncService:
             idempotency_key=f"kdocs:enforcement_progress:{event.id}",
         )
 
+    def sync_repayment_agreement(self, event: LegalEvent, row: dict[str, Any]) -> DocumentSyncLog:
+        row_key = f"{row.get('甲方（债权人）') or ''}|{row.get('乙方（债务人）') or ''}"
+        payload = {
+            "tenant_id": event.tenant_id,
+            "space_id": self.settings.kdocs_space_id,
+            "sheet_id": self.settings.kdocs_repayment_sheet_id,
+            "row": row,
+        }
+        return self._execute_once(
+            case_id=event.case_id,
+            tenant_id=event.tenant_id,
+            sync_type="repayment_agreement",
+            operation="upsert_repayment_tracking_row",
+            initial_payload=payload,
+            callback=lambda: self.adapter.upsert_repayment_tracking_row(row, tenant_id=event.tenant_id),
+            external_sheet_name=self.settings.kdocs_repayment_sheet_id,
+            external_row_key=row_key,
+            idempotency_key=f"kdocs:repayment_agreement:{event.id}",
+        )
+
+    def sync_repayment_progress(
+        self,
+        payment_event: LegalEvent,
+        agreement_event: LegalEvent,
+        row: dict[str, Any],
+    ) -> DocumentSyncLog:
+        row_key = f"{row.get('甲方（债权人）') or ''}|{row.get('乙方（债务人）') or ''}"
+        payload = {
+            "tenant_id": payment_event.tenant_id,
+            "space_id": self.settings.kdocs_space_id,
+            "sheet_id": self.settings.kdocs_repayment_sheet_id,
+            "row": row,
+            "agreement_event_id": agreement_event.id,
+        }
+        return self._execute_once(
+            case_id=payment_event.case_id,
+            tenant_id=payment_event.tenant_id,
+            sync_type="repayment_progress",
+            operation="upsert_repayment_tracking_row",
+            initial_payload=payload,
+            callback=lambda: self.adapter.upsert_repayment_tracking_row(row, tenant_id=payment_event.tenant_id),
+            external_sheet_name=self.settings.kdocs_repayment_sheet_id,
+            external_row_key=row_key,
+            idempotency_key=f"kdocs:repayment_progress:{payment_event.id}",
+        )
+
     def sync_payment_registration(self, event: LegalEvent, row: dict[str, Any]) -> DocumentSyncLog:
         payload = {
             "tenant_id": event.tenant_id,
@@ -386,6 +432,8 @@ class DocumentSyncService:
             return self.adapter.append_enforcement_row(payload.get("row") or payload, tenant_id=log.tenant_id)
         if operation == "append_payment_registration_row":
             return self.adapter.append_payment_registration_row(payload.get("row") or payload, tenant_id=log.tenant_id)
+        if operation == "upsert_repayment_tracking_row":
+            return self.adapter.upsert_repayment_tracking_row(payload.get("row") or payload, tenant_id=log.tenant_id)
         return {
             "success": False,
             "mode": self.settings.kdocs_mode,

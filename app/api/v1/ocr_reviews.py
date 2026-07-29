@@ -9,6 +9,7 @@ from app.api.v1.response import ok, raise_fail
 from app.core.resource_permissions import filter_by_case_or_group, has_media_access
 from app.db.session import get_db
 from app.models.media_file import MediaFile
+from app.models.legal_event import LegalEvent
 from app.models.document_sync_log import DocumentSyncLog
 from app.models.wecom_archive_group import WeComArchiveGroup
 from app.schemas.legal import (
@@ -18,9 +19,12 @@ from app.schemas.legal import (
     OCRReviewDecisionOut,
     OCRReviewListOut,
     OCRReviewOut,
+    RepaymentMaterialListOut,
+    RepaymentMaterialOut,
 )
 from app.services.group_context_service import GroupContextService
 from app.services.media_file_service import MediaFileService
+from app.services.repayment_tracking_service import RepaymentTrackingService
 
 router = APIRouter(prefix="/legal/ocr-reviews", tags=["legal-ocr-reviews"])
 
@@ -87,6 +91,30 @@ def _court_sync_logs(db: Session) -> tuple[dict[str, DocumentSyncLog], dict[int,
     return by_msg_id, by_media_id
 
 
+def _repayment_sync_logs(db: Session) -> dict[int, DocumentSyncLog]:
+    by_media_id: dict[int, DocumentSyncLog] = {}
+    logs = db.scalars(
+        select(DocumentSyncLog)
+        .where(DocumentSyncLog.sync_type.in_(("repayment_agreement", "repayment_progress", "legal_document_upload")))
+        .order_by(DocumentSyncLog.id.desc())
+    ).all()
+    for log in logs:
+        payload = _parse_json(log.request_payload_json).get("payload") or {}
+        metadata = payload.get("metadata") or {}
+        row = payload.get("row") or {}
+        media_file_id = metadata.get("media_file_id") or row.get("媒体ID")
+        if media_file_id is not None and int(media_file_id) not in by_media_id:
+            by_media_id[int(media_file_id)] = log
+        agreement_event_id = payload.get("agreement_event_id")
+        if agreement_event_id is not None:
+            event = db.get(LegalEvent, int(agreement_event_id))
+            event_metadata = RepaymentTrackingService.metadata(event) if event else {}
+            source_media_id = event_metadata.get("media_file_id")
+            if source_media_id is not None and int(source_media_id) not in by_media_id:
+                by_media_id[int(source_media_id)] = log
+    return by_media_id
+
+
 def _court_summons_out(
     media_file: MediaFile,
     *,
@@ -125,6 +153,57 @@ def _court_summons_out(
         sync_status=sync_log.status if sync_log else None,
         external_row_index=sync_log.external_row_index if sync_log else None,
         sync_error=sync_log.error_message if sync_log else None,
+    )
+
+
+def _repayment_material_out(
+    db: Session,
+    media_file: MediaFile,
+    *,
+    group_name: str | None,
+    sync_log: DocumentSyncLog | None,
+) -> RepaymentMaterialOut:
+    base = _review_out(media_file)
+    result = base.final_result or base.ocr_result
+    material_kind = "agreement" if result.get("event_type") == "repayment_agreement" else "payment"
+    metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+    agreement_event_id = (
+        media_file.review_event_id
+        if material_kind == "agreement"
+        else metadata.get("repayment_agreement_event_id")
+    )
+    agreement = db.get(LegalEvent, int(agreement_event_id)) if agreement_event_id else None
+    progress = RepaymentTrackingService(db).progress(agreement) if agreement else None
+    incomplete = (
+        not result.get("plaintiff")
+        or not result.get("defendant")
+        or result.get("amount") is None
+        or (material_kind == "agreement" and not RepaymentTrackingService.valid_plan(result))
+        or (material_kind == "payment" and not agreement_event_id)
+    )
+    if media_file.review_status == "rejected":
+        workflow_status = "rejected"
+    elif sync_log and sync_log.status == "failed":
+        workflow_status = "write_failed"
+    elif media_file.business_applied_at is not None:
+        workflow_status = "written"
+    elif incomplete:
+        workflow_status = "incomplete"
+    elif media_file.review_status == "pending":
+        workflow_status = "pending_review"
+    else:
+        workflow_status = "pending_write"
+    return RepaymentMaterialOut(
+        **base.model_dump(),
+        group_name=group_name,
+        material_kind=material_kind,
+        workflow_status=workflow_status,
+        sync_log_id=sync_log.id if sync_log else None,
+        sync_status=sync_log.status if sync_log else None,
+        external_row_index=sync_log.external_row_index if sync_log else None,
+        sync_error=sync_log.error_message if sync_log else None,
+        agreement_event_id=int(agreement_event_id) if agreement_event_id else None,
+        progress=progress,
     )
 
 
@@ -186,6 +265,41 @@ def list_court_summons(
     return ok("开庭传票列表查询成功", CourtSummonsListOut(total=len(items), items=items))
 
 
+@router.get("/repayment-materials")
+def list_repayment_materials(
+    workflow_status: str | None = Query(
+        default=None,
+        pattern="^(incomplete|pending_review|pending_write|written|write_failed|rejected)$",
+    ),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=100),
+    db: Session = Depends(get_db),
+    operator_info: dict[str, object] = Depends(get_current_operator),
+):
+    _total, media_files = MediaFileService(db).list_repayment_materials(page=page, page_size=page_size)
+    media_files = filter_by_case_or_group(db, media_files, operator_info)
+    groups = db.scalars(select(WeComArchiveGroup)).all()
+    group_names = {
+        identifier: group.display_name
+        for group in groups
+        for identifier in (group.room_id, group.wecomapi_room_id)
+        if identifier
+    }
+    logs = _repayment_sync_logs(db)
+    items = [
+        _repayment_material_out(
+            db,
+            media_file,
+            group_name=group_names.get(media_file.group_id),
+            sync_log=logs.get(media_file.id),
+        )
+        for media_file in media_files
+    ]
+    if workflow_status:
+        items = [item for item in items if item.workflow_status == workflow_status]
+    return ok("还款资料列表查询成功", RepaymentMaterialListOut(total=len(items), items=items))
+
+
 @router.post("/court-summons/{media_file_id}/retry")
 def retry_court_summons(
     media_file_id: int,
@@ -204,6 +318,26 @@ def retry_court_summons(
         db.rollback()
         raise_fail(str(exc), code=1400)
     return ok("开庭传票写入重试完成", _review_out(result))
+
+
+@router.post("/repayment-materials/{media_file_id}/retry")
+def retry_repayment_material(
+    media_file_id: int,
+    db: Session = Depends(get_db),
+    operator_info: dict[str, object] = Depends(get_current_operator),
+):
+    media_file = db.get(MediaFile, media_file_id)
+    if not media_file:
+        raise_fail("还款资料不存在", code=1404, status_code=404)
+    if not has_media_access(db, operator_info, media_file):
+        raise_fail("无权限访问该资源", code=403, status_code=403)
+    try:
+        result = MediaFileService(db).retry_repayment_material(media_file_id)
+        db.commit()
+    except ValueError as exc:
+        db.rollback()
+        raise_fail(str(exc), code=1400)
+    return ok("还款资料写入重试完成", _review_out(result))
 
 
 @router.get("/{media_file_id}")

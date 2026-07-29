@@ -653,6 +653,23 @@ class CourtSummonsListOut(BaseModel):
     items: list[CourtSummonsOut]
 
 
+class RepaymentMaterialOut(OCRReviewOut):
+    group_name: str | None = None
+    material_kind: Literal["agreement", "payment"]
+    workflow_status: Literal["incomplete", "pending_review", "pending_write", "written", "write_failed", "rejected"]
+    sync_log_id: int | None = None
+    sync_status: str | None = None
+    external_row_index: int | None = None
+    sync_error: str | None = None
+    agreement_event_id: int | None = None
+    progress: dict[str, Any] | None = None
+
+
+class RepaymentMaterialListOut(BaseModel):
+    total: int
+    items: list[RepaymentMaterialOut]
+
+
 class OCRReviewDecisionOut(BaseModel):
     review: OCRReviewOut
     already_decided: bool = False

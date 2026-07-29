@@ -56,6 +56,8 @@ STRUCTURED_FIELDS = {
     "payment_type",
     "payment_deadline",
     "payment_term_days",
+    "agreement_date",
+    "arbitration_institution",
 }
 
 
@@ -97,11 +99,21 @@ class LegalTextExtractionService:
 
     @classmethod
     def _enrich_regex_result(cls, result: dict[str, Any], text: str) -> dict[str, Any]:
-        if result.get("event_type") != "payment_notice":
-            return result
         metadata = dict(result.get("metadata") or {})
         structured = dict(metadata.get("structured_fields") or {})
-        structured.update(cls._payment_notice_fields(text))
+        if result.get("event_type") == "payment_notice":
+            structured.update(cls._payment_notice_fields(text))
+        elif result.get("event_type") == "repayment_agreement":
+            structured.update(cls._repayment_agreement_fields(text))
+            parties = cls._repayment_agreement_parties(text)
+            result = {
+                **result,
+                "plaintiff": result.get("plaintiff") or parties.get("plaintiff"),
+                "defendant": result.get("defendant") or parties.get("defendant"),
+                "amount": result.get("amount") or parties.get("amount"),
+            }
+        else:
+            return result
         return {**result, "metadata": {**metadata, "structured_fields": structured}}
 
     @staticmethod
@@ -182,7 +194,14 @@ class LegalTextExtractionService:
         if amount is None:
             amount = regex_result.get("amount")
         confidence = self._confidence(llm_result.get("confidence"))
-        structured_fields = self._structured_fields(llm_result)
+        structured_fields = {
+            **(
+                self._repayment_agreement_fields(text)
+                if event_type == "repayment_agreement"
+                else {}
+            ),
+            **self._structured_fields(llm_result),
+        }
         if event_type == "payment_notice":
             structured_fields = {
                 **self._payment_notice_fields(text),
@@ -336,6 +355,90 @@ class LegalTextExtractionService:
         return result
 
     @staticmethod
+    def _repayment_agreement_fields(text: str) -> dict[str, Any]:
+        normalized = text or ""
+        installments: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        pattern = re.compile(
+            r"(?:^|[\n；;])\s*(\d{1,3})\s*[.、]?\s*"
+            r"(20\d{2})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日"
+            r"\s*[:：]?\s*(?:应?还款|支付)\s*([\d,，]+(?:\.\d{1,2})?)\s*元?",
+            re.MULTILINE,
+        )
+        for match in pattern.finditer(normalized):
+            try:
+                due_date = date(int(match.group(2)), int(match.group(3)), int(match.group(4))).isoformat()
+                amount = Decimal(match.group(5).replace(",", "").replace("，", "")).quantize(Decimal("0.01"))
+            except (ValueError, InvalidOperation):
+                continue
+            key = (due_date, str(amount))
+            if key in seen:
+                continue
+            seen.add(key)
+            installments.append({"sequence": int(match.group(1)), "due_date": due_date, "amount": amount})
+
+        result: dict[str, Any] = {}
+        if installments:
+            total_match = re.search(
+                r"(?:合计欠|欠款总金额|总欠款)[^\d]{0,20}([\d,，]+(?:\.\d{1,2})?)\s*元",
+                normalized,
+            )
+            total = None
+            if total_match:
+                try:
+                    total = Decimal(total_match.group(1).replace(",", "").replace("，", "")).quantize(Decimal("0.01"))
+                except InvalidOperation:
+                    total = None
+            result["repayment_due_date"] = installments[-1]["due_date"]
+            result["repayment_plan"] = {
+                "first_payment_date": installments[0]["due_date"],
+                "installment_count": len(installments),
+                "total_debt": total or sum((item["amount"] for item in installments), Decimal("0.00")),
+                "installments": installments,
+            }
+
+        institution = re.search(r"提交\s*([\u4e00-\u9fa5]{2,30}仲裁委员会)", normalized)
+        if institution:
+            result["arbitration_institution"] = institution.group(1)
+
+        signing_dates: list[date] = []
+        for match in re.finditer(r"日期\s*[:：]?\s*(20\d{2})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日", normalized):
+            try:
+                signing_dates.append(date(int(match.group(1)), int(match.group(2)), int(match.group(3))))
+            except ValueError:
+                continue
+        if signing_dates:
+            result["agreement_date"] = max(signing_dates).isoformat()
+        return result
+
+    @staticmethod
+    def _repayment_agreement_parties(text: str) -> dict[str, Any]:
+        normalized = text or ""
+        result: dict[str, Any] = {}
+        creditor = re.search(
+            r"甲方\s*[（(]?\s*债权人\s*[）)]?\s*[:：]\s*([^\n；;]{2,100})",
+            normalized,
+        )
+        debtor = re.search(
+            r"乙方\s*[（(]?\s*债务人\s*[）)]?\s*[:：]\s*([^，,\n；;]{2,50})",
+            normalized,
+        )
+        total = re.search(
+            r"(?:合计欠|欠款总金额|总欠款)[^\d]{0,20}([\d,，]+(?:\.\d{1,2})?)\s*元",
+            normalized,
+        )
+        if creditor:
+            result["plaintiff"] = creditor.group(1).strip()
+        if debtor:
+            result["defendant"] = debtor.group(1).strip()
+        if total:
+            try:
+                result["amount"] = Decimal(total.group(1).replace(",", "").replace("，", "")).quantize(Decimal("0.01"))
+            except InvalidOperation:
+                pass
+        return result
+
+    @staticmethod
     def _has_nonmetadata_evidence(
         value: str,
         text: str,
@@ -438,7 +541,11 @@ class LegalTextExtractionService:
 
     @staticmethod
     def _has_classification_conflict(llm_event_type: str | None, regex_event_type: Any) -> bool:
-        return llm_event_type is not None and regex_event_type not in {None, "unknown"} and llm_event_type != regex_event_type
+        return (
+            llm_event_type is not None
+            and regex_event_type not in {None, "unknown", "keyword"}
+            and llm_event_type != regex_event_type
+        )
 
     @staticmethod
     def _has_case_no_conflict(llm_case_no: str | None, regex_case_no: Any) -> bool:

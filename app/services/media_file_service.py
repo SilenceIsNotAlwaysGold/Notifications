@@ -30,6 +30,7 @@ from app.services.outbox_service import OutboxService
 from app.services.payment_service import PaymentService
 from app.services.payment_tracking_service import PaymentTrackingService
 from app.services.reminder_service import ReminderService
+from app.services.repayment_tracking_service import RepaymentTrackingService
 from app.services.system_run_log_service import SystemRunLogService
 from app.services.tenant_settings_service import TenantSettingsService
 from app.services.wecom_archive_group_service import WeComArchiveGroupService
@@ -189,6 +190,7 @@ class MediaFileService:
             extracted_text = result.get("raw_text") or result.get("extracted_text") or ""
             self._promote_suspected_court_notice(result, extracted_text)
             self._apply_court_party_defaults(result)
+            RepaymentTrackingService(self.db).link_payment_result(media_file, result)
             result["requires_review"] = self._result_requires_review(result) or stage_only
             if not stage_only and self._can_auto_apply_legal_document(media_file, result, extracted_text):
                 result["requires_review"] = False
@@ -224,14 +226,16 @@ class MediaFileService:
             )
             is_court_notice = result.get("event_type") == "court_notice"
             is_legal_document = self._is_case_independent_legal_document(media_file, result, extracted_text)
-            matched_case = None if stage_only or is_legal_document else suggested_case
-            if is_legal_document:
+            is_repayment_material = self._is_case_independent_repayment_material(media_file, result, extracted_text)
+            is_case_independent = is_legal_document or is_repayment_material
+            matched_case = None if stage_only or is_case_independent else suggested_case
+            if is_case_independent:
                 media_file.case_id = None
             if matched_case:
                 media_file.case_id = matched_case.id
                 media_file.tenant_id = matched_case.tenant_id or media_file.tenant_id
                 self._backfill_group_message_events(media_file, matched_case.id, media_file.tenant_id)
-            elif result.get("case_no") and not (is_court_notice or is_legal_document):
+            elif result.get("case_no") and not (is_court_notice or is_case_independent):
                 CaseCandidateService(self.db).detect(
                     case_no=result.get("case_no"),
                     group_id=media_file.group_id,
@@ -246,16 +250,20 @@ class MediaFileService:
                 media_file.review_event_id = event.id
                 if matched_case:
                     event.attribution_status = "confirmed"
-                elif is_court_notice or is_legal_document:
+                elif is_court_notice or is_case_independent:
                     event.attribution_status = "not_required"
                     AttributionService(self.db).mark_media_not_required(
                         media_file.id,
                         (
-                            "法律文书可独立上传并写入强制执行进度表，无需案件归属"
-                            if is_legal_document
+                            "法律材料可独立写入对应金山业务表，无需案件归属"
+                            if is_case_independent
                             else "开庭传票可独立写入开庭时间表，无需案件归属"
                         ),
-                        "system:legal-document" if is_legal_document else "system:court-notice",
+                        (
+                            "system:legal-document"
+                            if is_legal_document
+                            else ("system:repayment-material" if is_repayment_material else "system:court-notice")
+                        ),
                     )
                 else:
                     event.attribution_status = "pending"
@@ -271,7 +279,7 @@ class MediaFileService:
                 else:
                     media_file.review_status = "not_required"
                     media_file.review_result_json = media_file.ocr_result_json
-                    if (matched_case or is_court_notice or is_legal_document) and event.event_type != "unknown":
+                    if (matched_case or is_court_notice or is_case_independent) and event.event_type != "unknown":
                         event.business_status = "approved"
                         event.approved_by = "system:auto-confidence"
                         event.approved_at = now_tz()
@@ -349,6 +357,27 @@ class MediaFileService:
         )
         return total, items
 
+    def list_repayment_materials(self, page: int = 1, page_size: int = 100) -> tuple[int, list[MediaFile]]:
+        query = select(MediaFile).where(
+            MediaFile.ocr_result_json.is_not(None),
+            or_(
+                MediaFile.ocr_result_json.like('%"event_type": "repayment_agreement"%'),
+                and_(
+                    MediaFile.ocr_result_json.like('%"event_type": "payment_screenshot"%'),
+                    MediaFile.ocr_result_json.like('%"repayment_annotation"%'),
+                ),
+            ),
+        )
+        total = int(self.db.scalar(select(func.count()).select_from(query.subquery())) or 0)
+        items = list(
+            self.db.scalars(
+                query.order_by(MediaFile.updated_at.desc(), MediaFile.id.desc())
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            ).all()
+        )
+        return total, items
+
     def retry_court_summons(self, media_file_id: int) -> MediaFile:
         media_file = self._get_media_file(media_file_id)
         result = self._load_result(media_file.review_result_json or media_file.ocr_result_json)
@@ -361,6 +390,24 @@ class MediaFileService:
         event = self.db.get(LegalEvent, media_file.review_event_id) if media_file.review_event_id else None
         if not event or event.business_status != "approved":
             raise ValueError("开庭传票业务事件尚未批准")
+        from app.services.business_application_service import BusinessApplicationService
+
+        BusinessApplicationService(self.db).apply_event(event.id)
+        self.db.flush()
+        return media_file
+
+    def retry_repayment_material(self, media_file_id: int) -> MediaFile:
+        media_file = self._get_media_file(media_file_id)
+        result = self._load_result(media_file.review_result_json or media_file.ocr_result_json)
+        if result.get("event_type") not in {"repayment_agreement", "payment_screenshot"}:
+            raise ValueError("该资料不是还款协议或还款凭证")
+        if media_file.review_status not in {"approved", "corrected", "not_required"}:
+            raise ValueError("请先复核还款资料")
+        if media_file.business_applied_at is not None:
+            return media_file
+        event = self.db.get(LegalEvent, media_file.review_event_id) if media_file.review_event_id else None
+        if not event or event.business_status != "approved":
+            raise ValueError("还款资料业务事件尚未批准")
         from app.services.business_application_service import BusinessApplicationService
 
         BusinessApplicationService(self.db).apply_event(event.id)
@@ -650,6 +697,13 @@ class MediaFileService:
             missing = [label for field, label in (("case_no", "案号"), ("plaintiff", "原告"), ("defendant", "被告")) if not str(result.get(field) or "").strip()]
             if missing:
                 raise ValueError(f"法律文书缺少{'、'.join(missing)}，请修正后再确认")
+        if result.get("event_type") == "repayment_agreement":
+            missing = [label for field, label in (("plaintiff", "债权人"), ("defendant", "债务人"), ("amount", "总欠款")) if not result.get(field)]
+            if missing:
+                raise ValueError(f"还款协议缺少{'、'.join(missing)}，请修正后再确认")
+            if not RepaymentTrackingService.valid_plan(result):
+                raise ValueError("还款协议缺少可执行的分期计划，请重新识别后再确认")
+        RepaymentTrackingService(self.db).link_payment_result(media_file, result)
         result["requires_review"] = False
         result.setdefault("metadata", {})["review_decision"] = decision
         result["metadata"]["reviewed_by"] = operator
@@ -664,14 +718,20 @@ class MediaFileService:
         )
         is_court_notice = result.get("event_type") == "court_notice"
         is_legal_document = self._is_case_independent_legal_document(media_file, result, media_file.extracted_text or "")
-        matched_case = None if is_legal_document else suggested_case
-        if is_legal_document:
+        is_repayment_material = self._is_case_independent_repayment_material(
+            media_file,
+            result,
+            media_file.extracted_text or "",
+        )
+        is_case_independent = is_legal_document or is_repayment_material
+        matched_case = None if is_case_independent else suggested_case
+        if is_case_independent:
             media_file.case_id = None
         elif matched_case:
             media_file.case_id = matched_case.id
             media_file.tenant_id = matched_case.tenant_id or media_file.tenant_id
             self._backfill_group_message_events(media_file, matched_case.id, media_file.tenant_id)
-        if not matched_case and result.get("case_no") and not (is_court_notice or is_legal_document):
+        if not matched_case and result.get("case_no") and not (is_court_notice or is_case_independent):
             CaseCandidateService(self.db).detect(
                 case_no=result.get("case_no"),
                 group_id=media_file.group_id,
@@ -688,17 +748,17 @@ class MediaFileService:
         media_file.reviewed_at = now_tz()
         media_file.review_note = note
         media_file.review_result_json = self._dump_result(result)
-        if matched_case or is_court_notice or is_legal_document:
+        if matched_case or is_court_notice or is_case_independent:
             event.attribution_status = "confirmed" if matched_case else "not_required"
             event.business_status = "approved"
             event.approved_by = operator
             event.approved_at = now_tz()
-            if is_court_notice or is_legal_document:
+            if is_court_notice or is_case_independent:
                 AttributionService(self.db).mark_media_not_required(
                     media_file.id,
                     (
-                        "法律文书可独立上传并写入强制执行进度表，无需案件归属"
-                        if is_legal_document
+                        "法律材料可独立写入对应金山业务表，无需案件归属"
+                        if is_case_independent
                         else "开庭传票可独立写入开庭时间表，无需案件归属"
                     ),
                     operator,
@@ -822,7 +882,12 @@ class MediaFileService:
     ) -> dict[str, int]:
         if media_file.business_applied_at is not None or event.business_status == "applied":
             return {"created_reminders": 0, "cancelled_reminders": 0}
-        is_case_independent = event.attribution_status == "not_required" and event.event_type in {"court_notice", "judgment"}
+        is_case_independent = event.attribution_status == "not_required" and event.event_type in {
+            "court_notice",
+            "judgment",
+            "repayment_agreement",
+            "payment_screenshot",
+        }
         if not is_case_independent and (not matched_case or event.attribution_status != "confirmed"):
             raise ValueError("案件归属和业务审批完成后才能执行外部业务")
         if event.business_status != "approved":
@@ -846,8 +911,14 @@ class MediaFileService:
                 result.setdefault("metadata", {})["payment_notice_event_id"] = payment_record.applies_to_event_id
             if created and is_repayment:
                 self.document_sync.sync_paid_amount(matched_case)
+        standalone_agreement = None
+        if not matched_case and result.get("event_type") == "payment_screenshot":
+            agreement_event_id = (result.get("metadata") or {}).get("repayment_agreement_event_id")
+            standalone_agreement = self.db.get(LegalEvent, agreement_event_id) if agreement_event_id else None
+            if not standalone_agreement:
+                raise ValueError("还款凭证未能唯一匹配同群的还款协议")
         if WeComArchiveGroupService(self.db).feature_enabled(media_file.group_id, "document_sync"):
-            if event.event_type not in {"court_notice", "judgment"} or matched_case:
+            if event.event_type not in {"court_notice", "judgment", "repayment_agreement", "payment_screenshot"} or matched_case:
                 self.document_sync.sync_archive_event(event, media_file=media_file)
             self._sync_kdocs_business(event, media_file, result, matched_case)
         created_reminders = 0
@@ -871,6 +942,25 @@ class MediaFileService:
                     source_event_id=event.id,
                 )
             )
+        if not matched_case and result.get("event_type") == "repayment_agreement":
+            plan = RepaymentTrackingService.valid_plan(result) or {}
+            source_message = self.db.get(GroupMessage, media_file.group_message_id) if media_file.group_message_id else None
+            if source_message:
+                created_reminders += len(
+                    self.reminder_service.create_standalone_installment_reminders(
+                        event,
+                        source_message,
+                        plan.get("installments") or [],
+                        creditor=str(result.get("plaintiff") or "债权人"),
+                        debtor=str(result.get("defendant") or "债务人"),
+                    )
+                )
+        if standalone_agreement:
+            progress = RepaymentTrackingService(self.db).progress(standalone_agreement)
+            cancelled_reminders += RepaymentTrackingService(self.db).cancel_satisfied_reminders(
+                standalone_agreement,
+                progress,
+            )
         media_file.business_applied_at = now_tz()
         event.business_status = "applied"
         event.applied_at = now_tz()
@@ -881,7 +971,7 @@ class MediaFileService:
     def _result_requires_review(result: dict[str, Any]) -> bool:
         event_type = result.get("event_type") or "unknown"
         repayment_annotation = (result.get("metadata") or {}).get("repayment_annotation")
-        return bool(result.get("requires_review")) or event_type == "unknown" or (
+        return bool(result.get("requires_review")) or event_type in {"unknown", "repayment_agreement"} or (
             event_type == "payment_screenshot" and not repayment_annotation
         )
 
@@ -913,6 +1003,32 @@ class MediaFileService:
             and has_legal_body
             and bool(media_file.local_path)
         )
+
+    @classmethod
+    def _is_case_independent_repayment_material(
+        cls,
+        media_file: MediaFile,
+        result: dict[str, Any],
+        extracted_text: str,
+    ) -> bool:
+        if result.get("event_type") == "repayment_agreement":
+            normalized = re.sub(r"\s+", "", extracted_text or "")
+            return bool(
+                media_file.local_path
+                and result.get("plaintiff")
+                and result.get("defendant")
+                and result.get("amount") is not None
+                and RepaymentTrackingService.valid_plan(result)
+                and "还款协议" in normalized
+            )
+        if result.get("event_type") == "payment_screenshot":
+            metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+            return bool(
+                metadata.get("repayment_annotation")
+                and metadata.get("repayment_agreement_event_id")
+                and result.get("amount") is not None
+            )
+        return False
 
     @classmethod
     def _can_auto_apply_legal_document(
@@ -1145,14 +1261,22 @@ class MediaFileService:
             )
             if not upload_url:
                 raise ValueError("法律文书已上传但未取得可访问链接")
-            progress_log = self.document_sync.sync_enforcement_progress(
-                event,
-                self._enforcement_row(result, legal_case, media_file, target_filename, str(upload_url)),
-            )
+            if event_type == "repayment_agreement":
+                progress_log = self.document_sync.sync_repayment_agreement(
+                    event,
+                    self._repayment_tracking_row(event, media_file, result, target_filename, str(upload_url)),
+                )
+                failure_label = "还款与仲裁表"
+            else:
+                progress_log = self.document_sync.sync_enforcement_progress(
+                    event,
+                    self._enforcement_row(result, legal_case, media_file, target_filename, str(upload_url)),
+                )
+                failure_label = "强制执行进度表"
             if progress_log.status == "failed":
                 progress_log = self.document_sync.retry_failed_sync(progress_log.id, operator="system:legal-document")
             if progress_log.status != "applied":
-                raise ValueError(f"强制执行进度表写入失败：{progress_log.error_message or progress_log.status}")
+                raise ValueError(f"{failure_label}写入失败：{progress_log.error_message or progress_log.status}")
             return
 
         if event_type == "court_notice":
@@ -1165,6 +1289,24 @@ class MediaFileService:
                 court_log = self.document_sync.retry_failed_sync(court_log.id, operator="system:court-notice")
             if court_log.status != "applied":
                 raise ValueError(f"开庭时间表写入失败：{court_log.error_message or court_log.status}")
+            return
+
+        if event_type == "payment_screenshot" and (result.get("metadata") or {}).get("repayment_agreement_event_id"):
+            agreement = self.db.get(LegalEvent, int(result["metadata"]["repayment_agreement_event_id"]))
+            if not agreement:
+                raise ValueError("还款凭证关联的还款协议不存在")
+            tracking = RepaymentTrackingService(self.db)
+            progress = tracking.progress(agreement)
+            agreement_metadata = tracking.metadata(agreement)
+            log = self.document_sync.sync_repayment_progress(
+                event,
+                agreement,
+                self._repayment_progress_row(agreement_metadata, progress, media_file.id),
+            )
+            if log.status == "failed":
+                log = self.document_sync.retry_failed_sync(log.id, operator="system:repayment-progress")
+            if log.status != "applied":
+                raise ValueError(f"还款情况写入失败：{log.error_message or log.status}")
             return
 
         if event_type in {"payment_notice", "payment_screenshot"}:
@@ -1211,6 +1353,48 @@ class MediaFileService:
             "识别摘要": (result.get("raw_text") or result.get("extracted_text") or "")[:500],
             "需人工复核": bool(result.get("requires_review")),
             "消息ID": media_file.msg_id,
+        }
+
+    def _repayment_tracking_row(
+        self,
+        event: LegalEvent,
+        media_file: MediaFile,
+        result: dict[str, Any],
+        target_filename: str,
+        upload_url: str,
+    ) -> dict[str, Any]:
+        tracking = RepaymentTrackingService(self.db)
+        plan = tracking.valid_plan(result) or {"installments": []}
+        progress = tracking.progress(event)
+        structured = tracking.structured(result)
+        return {
+            "甲方（债权人）": result.get("plaintiff"),
+            "乙方（债务人）": result.get("defendant"),
+            "协议文本": upload_url or target_filename,
+            "证据情况": "齐全",
+            "提交 履约情况": tracking.performance_status(progress),
+            "仲裁机构": structured.get("arbitration_institution"),
+            "仲裁案号": structured.get("arbitration_case_no"),
+            "还款方案": tracking.plan_text(plan),
+            "还款情况": tracking.progress_text(progress),
+            "合计还款": f"{progress['total_paid']:.2f}",
+            "媒体ID": media_file.id,
+        }
+
+    @staticmethod
+    def _repayment_progress_row(
+        agreement_metadata: dict[str, Any],
+        progress: dict[str, Any],
+        media_file_id: int,
+    ) -> dict[str, Any]:
+        tracking = RepaymentTrackingService
+        return {
+            "甲方（债权人）": agreement_metadata.get("plaintiff"),
+            "乙方（债务人）": agreement_metadata.get("defendant"),
+            "提交 履约情况": tracking.performance_status(progress),
+            "还款情况": tracking.progress_text(progress),
+            "合计还款": f"{progress['total_paid']:.2f}",
+            "媒体ID": media_file_id,
         }
 
     def _court_time_row(

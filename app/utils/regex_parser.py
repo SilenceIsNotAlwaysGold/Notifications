@@ -55,6 +55,7 @@ PAYMENT_NOT_DONE_PATTERN = re.compile(
 COURT_KEYWORDS = ["传票", "开庭", "现场开庭"]
 JUDGMENT_KEYWORDS = ["判决书", "民事判决书", "调解书", "民事调解书", "裁定书", "民事裁定书"]
 DEFAULT_KEYWORDS = ["强制执行", "仲裁", "逾期"]
+REPAYMENT_AGREEMENT_KEYWORDS = ["还款协议", "还款调解协议", "分期还款协议"]
 
 
 def parse_legal_text(text: str | None, keyword_config: dict[str, list[str]] | None = None) -> dict[str, Any]:
@@ -151,6 +152,8 @@ def extract_event_time(content: str) -> datetime | None:
 
 def extract_event_type(content: str, keyword_config: dict[str, list[str]] | None = None) -> str:
     keywords = _keyword_sets(keyword_config)
+    if contains_any(content, REPAYMENT_AGREEMENT_KEYWORDS):
+        return "repayment_agreement"
     if is_payment_done_text(content, keyword_config=keyword_config):
         return "payment_screenshot"
     if contains_any(content, keywords["payment_notice"]):

@@ -193,6 +193,22 @@ class KDocsAdapter:
             )
         return self._execute("append_enforcement_row", payload)
 
+    def upsert_repayment_tracking_row(self, row: dict[str, Any], tenant_id: str | None = None) -> dict[str, Any]:
+        payload = {
+            "tenant_id": tenant_id,
+            "space_id": self.settings.kdocs_space_id,
+            "sheet_id": self.settings.kdocs_repayment_sheet_id,
+            "row": row,
+        }
+        if self._use_real_mcp():
+            return self._mcp_execute(
+                "upsert_repayment_tracking_row",
+                payload,
+                lambda: self._mcp_upsert_repayment(row),
+                target="repayment",
+            )
+        return self._execute("upsert_repayment_tracking_row", payload)
+
     def append_payment_registration_row(self, row: dict[str, Any], tenant_id: str | None = None) -> dict[str, Any]:
         payload = {
             "tenant_id": tenant_id,
@@ -223,6 +239,8 @@ class KDocsAdapter:
             return self._court_time_values(row)
         if target == "payment":
             return self._payment_values(row)
+        if target == "repayment":
+            return self._repayment_values(row)
         raise ValueError(f"不支持的金山对账目标：{target}")
 
     def _mcp_upsert_enforcement(self, row: dict[str, Any]) -> dict[str, Any]:
@@ -265,6 +283,69 @@ class KDocsAdapter:
             if str(value or "").strip() == expected:
                 return int(cell.get("rowFrom", cell.get("originRow", -1)))
         return None
+
+    def _mcp_upsert_repayment(self, row: dict[str, Any]) -> dict[str, Any]:
+        assert self.mcp is not None
+        file_id = self.settings.kdocs_enforcement_file_id or ""
+        worksheet_id = self.settings.kdocs_repayment_worksheet_id
+        incoming = self._repayment_values(row)
+        creditor = str(self._pick(row, "甲方（债权人）", "原告", "plaintiff") or "").strip()
+        debtor = str(self._pick(row, "乙方（债务人）", "被告", "defendant") or "").strip()
+        if not creditor or not debtor:
+            raise ValueError("还款协议缺少债权人或债务人，无法定位金山行")
+        with _MCP_WRITE_LOCK:
+            sheet = self.mcp.get_sheet_info(file_id, worksheet_id)
+            last_row = int(sheet.get("rowTo", 0))
+            target_row = self._mcp_find_repayment_row(file_id, worksheet_id, creditor, debtor, last_row)
+            created = target_row is None
+            if target_row is None:
+                target_row = last_row + 1
+                values = incoming
+            else:
+                existing = self._mcp_row_values(file_id, worksheet_id, target_row, 14)
+                values = self._merge_repayment_values(existing, incoming)
+            write_result = self.mcp.write_row(file_id, worksheet_id, target_row, values)
+        return {
+            "file_id": file_id,
+            "worksheet_id": worksheet_id,
+            "row_index": target_row,
+            "created": created,
+            "write": write_result,
+        }
+
+    def _mcp_find_repayment_row(
+        self,
+        file_id: str,
+        worksheet_id: int,
+        creditor: str,
+        debtor: str,
+        last_row: int,
+    ) -> int | None:
+        assert self.mcp is not None
+        if last_row < 1:
+            return None
+        cells = self.mcp.get_range_data(
+            file_id,
+            worksheet_id,
+            row_from=1,
+            row_to=last_row,
+            col_from=0,
+            col_to=1,
+        )
+        by_row: dict[int, dict[int, str]] = {}
+        for cell in cells:
+            row_index = int(cell.get("rowFrom", cell.get("originRow", -1)))
+            col_index = int(cell.get("colFrom", cell.get("originCol", -1)))
+            value = cell.get("cellText") or cell.get("originalCellValue") or cell.get("formula")
+            by_row.setdefault(row_index, {})[col_index] = self._party_key(value)
+        matches = [
+            row_index
+            for row_index, values in by_row.items()
+            if values.get(0) == self._party_key(creditor) and values.get(1) == self._party_key(debtor)
+        ]
+        if len(matches) > 1:
+            raise ValueError("金山还款表存在多条相同债权人和债务人记录，请先人工合并")
+        return matches[0] if matches else None
 
     def _mcp_append_court_time(self, row: dict[str, Any]) -> dict[str, Any]:
         assert self.mcp is not None
@@ -492,7 +573,7 @@ class KDocsAdapter:
 
     def _mcp_readback(self, file_id: str, worksheet_id: int, row_index: int, target: str) -> dict[str, Any]:
         assert self.mcp is not None
-        col_to = {"enforcement": 24, "court": 17, "payment": 8}.get(target, 24)
+        col_to = {"enforcement": 24, "court": 17, "payment": 8, "repayment": 14}.get(target, 24)
         cells = self.mcp.get_range_data(
             file_id,
             worksheet_id,
@@ -544,7 +625,7 @@ class KDocsAdapter:
             "KDOCS_ACCESS_TOKEN": self.settings.kdocs_access_token,
             "KDOCS_DRIVE_ID": self.settings.kdocs_drive_id,
         }
-        if target == "enforcement":
+        if target in {"enforcement", "repayment"}:
             required["KDOCS_ENFORCEMENT_FILE_ID"] = self.settings.kdocs_enforcement_file_id
         elif target == "court":
             required["KDOCS_COURT_TIME_FILE_ID"] = self.settings.kdocs_court_time_file_id
@@ -670,6 +751,54 @@ class KDocsAdapter:
             self._pick(row, "剩余缴费时间") or ("已缴费" if is_paid else "+7天"),
             self._pick(row, "缴费截图上传", "文件链接", "file_url"),
         ]
+
+    def _repayment_values(self, row: dict[str, Any]) -> list[Any]:
+        return [
+            self._bounded_cell_value(self._pick(row, "甲方（债权人）", "原告", "plaintiff")),
+            self._bounded_cell_value(self._pick(row, "乙方（债务人）", "被告", "defendant")),
+            self._bounded_cell_value(self._pick(row, "协议文本", "文件链接", "file_url")),
+            self._bounded_cell_value(self._pick(row, "证据情况") or "齐全"),
+            self._bounded_cell_value(self._pick(row, "提交 履约情况", "履约情况")),
+            self._bounded_cell_value(self._pick(row, "仲裁机构")),
+            self._bounded_cell_value(self._pick(row, "仲裁案号")),
+            self._bounded_cell_value(self._pick(row, "审核意见")),
+            self._bounded_cell_value(self._pick(row, "提交时间")),
+            self._bounded_cell_value(self._pick(row, "通过日期")),
+            self._bounded_cell_value(self._pick(row, "仲裁案件进度")),
+            self._bounded_cell_value(self._pick(row, "缴费情况")),
+            self._bounded_cell_value(self._pick(row, "还款方案")),
+            self._bounded_cell_value(self._pick(row, "还款情况")),
+            self._bounded_cell_value(self._pick(row, "合计还款")),
+        ]
+
+    @classmethod
+    def _merge_repayment_values(cls, existing: list[Any], incoming: list[Any]) -> list[Any]:
+        existing = [*existing, *([None] * max(0, 15 - len(existing)))]
+        values = existing[:15]
+        for index, value in enumerate(incoming[:15]):
+            if value in (None, ""):
+                continue
+            if index == 4:
+                values[index] = cls._merge_status_text(values[index], value)
+            elif index in {12, 13, 14} or values[index] in (None, ""):
+                values[index] = value
+        return values
+
+    @staticmethod
+    def _merge_status_text(existing: Any, incoming: Any) -> str:
+        tokens: list[str] = []
+        for value in (existing, incoming):
+            for token in re.split(r"[,，、;；\n]+", str(value or "")):
+                normalized = token.strip()
+                if normalized and normalized not in tokens:
+                    tokens.append(normalized)
+        if "已履约" in tokens:
+            tokens = [token for token in tokens if token not in {"履约中", "已违约"}]
+        return ",".join(tokens)
+
+    @staticmethod
+    def _party_key(value: Any) -> str:
+        return re.sub(r"\s+", "", str(value or "")).replace("（", "(").replace("）", ")").casefold()
 
     @staticmethod
     def _pick(row: dict[str, Any], *keys: str) -> Any:

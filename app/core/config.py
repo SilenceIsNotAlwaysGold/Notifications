@@ -86,6 +86,7 @@ class Settings(BaseSettings):
     kdocs_judgment_parent_path: str = Field(default="致和法务/判决书文件", alias="KDOCS_JUDGMENT_PARENT_PATH")
     kdocs_enforcement_file_id: str | None = Field(default=None, alias="KDOCS_ENFORCEMENT_FILE_ID")
     kdocs_enforcement_worksheet_id: int = Field(default=10, ge=0, alias="KDOCS_ENFORCEMENT_WORKSHEET_ID")
+    kdocs_repayment_worksheet_id: int = Field(default=12, ge=0, alias="KDOCS_REPAYMENT_WORKSHEET_ID")
     kdocs_court_time_file_id: str | None = Field(default=None, alias="KDOCS_COURT_TIME_FILE_ID")
     kdocs_court_time_worksheet_id: int = Field(default=1, ge=0, alias="KDOCS_COURT_TIME_WORKSHEET_ID")
     kdocs_payment_file_id: str | None = Field(default=None, alias="KDOCS_PAYMENT_FILE_ID")
@@ -93,6 +94,10 @@ class Settings(BaseSettings):
     kdocs_judgment_folder_id: str = Field(default="致和法务/判决书文件", alias="KDOCS_JUDGMENT_FOLDER_ID")
     kdocs_court_time_sheet_id: str = Field(default="致和法务/开庭时间", alias="KDOCS_COURT_TIME_SHEET_ID")
     kdocs_enforcement_sheet_id: str = Field(default="致和法务/强制执行进度表格", alias="KDOCS_ENFORCEMENT_SHEET_ID")
+    kdocs_repayment_sheet_id: str = Field(
+        default="致和法务/强制执行进度表格/提交仲裁情况合集",
+        alias="KDOCS_REPAYMENT_SHEET_ID",
+    )
     kdocs_payment_sheet_id: str = Field(default="致和法务/缴费登记", alias="KDOCS_PAYMENT_SHEET_ID")
     kdocs_case_sheet_id: str = Field(default="致和法务/案件台账", alias="KDOCS_CASE_SHEET_ID")
     kdocs_case_no_column: str = Field(default="案号", alias="KDOCS_CASE_NO_COLUMN")
