@@ -357,6 +357,30 @@ class MediaFileService:
         )
         return total, items
 
+    def list_enforcement_documents(
+        self,
+        page: int = 1,
+        page_size: int = 100,
+    ) -> tuple[int, list[MediaFile]]:
+        query = select(MediaFile).where(
+            MediaFile.ocr_result_json.is_not(None),
+            or_(
+                MediaFile.ocr_result_json.like('%"event_type": "judgment"%'),
+                MediaFile.ocr_result_json.like('%"document_type": "判决书"%'),
+                MediaFile.ocr_result_json.like('%"document_type": "调解书"%'),
+                MediaFile.ocr_result_json.like('%"document_type": "裁定书"%'),
+            ),
+        )
+        total = int(self.db.scalar(select(func.count()).select_from(query.subquery())) or 0)
+        items = list(
+            self.db.scalars(
+                query.order_by(MediaFile.updated_at.desc(), MediaFile.id.desc())
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            ).all()
+        )
+        return total, items
+
     def list_repayment_materials(self, page: int = 1, page_size: int = 100) -> tuple[int, list[MediaFile]]:
         query = select(MediaFile).where(
             MediaFile.ocr_result_json.is_not(None),

@@ -265,6 +265,27 @@ def list_court_summons(
     return ok("开庭传票列表查询成功", CourtSummonsListOut(total=len(items), items=items))
 
 
+@router.get("/enforcement-documents")
+def list_enforcement_documents(
+    review_status: str | None = Query(
+        default=None,
+        pattern="^(pending|approved|corrected|rejected|not_required)$",
+    ),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=100),
+    db: Session = Depends(get_db),
+    operator_info: dict[str, object] = Depends(get_current_operator),
+):
+    _total, media_files = MediaFileService(db).list_enforcement_documents(page=page, page_size=page_size)
+    media_files = filter_by_case_or_group(db, media_files, operator_info)
+    if review_status:
+        media_files = [item for item in media_files if item.review_status == review_status]
+    return ok(
+        "执行文书列表查询成功",
+        OCRReviewListOut(total=len(media_files), items=[_review_out(item) for item in media_files]),
+    )
+
+
 @router.get("/repayment-materials")
 def list_repayment_materials(
     workflow_status: str | None = Query(

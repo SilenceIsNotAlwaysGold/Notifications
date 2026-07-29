@@ -7,7 +7,7 @@ import json
 import re
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.legal_case import LegalCase
@@ -258,6 +258,7 @@ class PaymentTrackingService:
         self,
         *,
         case_ids: list[int] | None = None,
+        group_ids: list[str] | None = None,
         status: str | None = None,
         query_text: str = "",
         offset: int = 0,
@@ -266,15 +267,15 @@ class PaymentTrackingService:
     ) -> tuple[int, list[dict[str, Any]]]:
         query = (
             select(LegalEvent, LegalCase)
-            .join(LegalCase, LegalCase.id == LegalEvent.case_id)
+            .outerjoin(LegalCase, LegalCase.id == LegalEvent.case_id)
             .where(LegalEvent.event_type == "payment_notice")
-            .where(LegalEvent.attribution_status == "confirmed")
-            .where(LegalEvent.business_status.in_(("applied", "legacy_applied")))
+            .where(LegalEvent.business_status != "rejected")
         )
         if case_ids is not None:
-            if not case_ids:
-                return 0, []
-            query = query.where(LegalEvent.case_id.in_(case_ids))
+            standalone_scope = LegalEvent.case_id.is_(None)
+            if group_ids is not None:
+                standalone_scope = standalone_scope & LegalEvent.group_message.has(GroupMessage.group_id.in_(group_ids))
+            query = query.where(or_(LegalEvent.case_id.in_(case_ids), standalone_scope))
 
         pairs = list(self.db.execute(query.order_by(LegalEvent.created_at.desc(), LegalEvent.id.desc())).all())
         if not pairs:
@@ -294,7 +295,7 @@ class PaymentTrackingService:
             ]
         return len(rows), rows[offset : offset + limit]
 
-    def _build_rows(self, pairs: list[tuple[LegalEvent, LegalCase]], *, today: date) -> list[dict[str, Any]]:
+    def _build_rows(self, pairs: list[tuple[LegalEvent, LegalCase | None]], *, today: date) -> list[dict[str, Any]]:
         event_ids = [event.id for event, _case in pairs]
         reminders = list(
             self.db.scalars(
@@ -322,19 +323,28 @@ class PaymentTrackingService:
             if payment.applies_to_event_id is not None:
                 payments_by_event[payment.applies_to_event_id].append(payment)
 
-        return [
+        rows = [
             self._row(event, legal_case, reminders_by_event[event.id], payments_by_event[event.id], today)
             for event, legal_case in pairs
         ]
+        group_ids = {row["source_group_id"] for row in rows if row.get("source_group_id")}
+        group_names = {
+            group.room_id: group.display_name or group.room_id
+            for group in self.db.scalars(
+                select(WeComArchiveGroup).where(WeComArchiveGroup.room_id.in_(group_ids))
+            ).all()
+        } if group_ids else {}
+        for row in rows:
+            row["source_group_name"] = group_names.get(row.get("source_group_id"), row.get("source_group_id"))
+        return rows
 
     def get_row(self, event_id: int, *, today: date | None = None) -> dict[str, Any] | None:
         pair = self.db.execute(
             select(LegalEvent, LegalCase)
-            .join(LegalCase, LegalCase.id == LegalEvent.case_id)
+            .outerjoin(LegalCase, LegalCase.id == LegalEvent.case_id)
             .where(LegalEvent.id == event_id)
             .where(LegalEvent.event_type == "payment_notice")
-            .where(LegalEvent.attribution_status == "confirmed")
-            .where(LegalEvent.business_status.in_(("applied", "legacy_applied")))
+            .where(LegalEvent.business_status != "rejected")
         ).one_or_none()
         if pair is None:
             return None
@@ -344,7 +354,7 @@ class PaymentTrackingService:
     @staticmethod
     def _row(
         event: LegalEvent,
-        legal_case: LegalCase,
+        legal_case: LegalCase | None,
         reminders: list[Reminder],
         payments: list[PaymentRecord],
         today: date,
@@ -354,6 +364,10 @@ class PaymentTrackingService:
         required = Decimal(str(event.amount)) if event.amount is not None else None
         metadata = PaymentTrackingService._metadata(event)
         structured = metadata.get("structured_fields") if isinstance(metadata.get("structured_fields"), dict) else {}
+        parsed = parse_legal_text(event.extracted_text)
+        standalone_confirmation = metadata.get("standalone_payment_confirmation")
+        if legal_case is None and standalone_confirmation and required is not None:
+            effective_paid = required.quantize(Decimal("0.01"))
         notice_date = event.event_time.date() if event.event_time else event.created_at.date()
         deadline = PaymentTrackingService._deadline(structured, notice_date, reminders)
         payment_type = PaymentTrackingService._payment_type(structured, event.extracted_text)
@@ -387,11 +401,14 @@ class PaymentTrackingService:
         outstanding = max(Decimal("0.00"), required - effective_paid) if required is not None else None
         return {
             "event_id": event.id,
-            "case_id": legal_case.id,
+            "case_id": legal_case.id if legal_case else None,
+            "source_group_id": event.group_message.group_id if event.group_message else None,
+            "source_group_name": None,
+            "source_sender_id": event.group_message.sender_id if event.group_message else None,
             "notice_date": notice_date,
-            "plaintiff": legal_case.plaintiff_name,
-            "defendant": legal_case.debtor_name,
-            "case_no": legal_case.case_no,
+            "plaintiff": legal_case.plaintiff_name if legal_case else structured.get("plaintiff") or parsed.get("plaintiff"),
+            "defendant": legal_case.debtor_name if legal_case else structured.get("defendant") or parsed.get("defendant"),
+            "case_no": legal_case.case_no if legal_case else structured.get("case_no") or metadata.get("case_no") or parsed.get("case_no"),
             "payment_info": str(required.quantize(Decimal("0.01"))) if required is not None else event.extracted_text,
             "payment_type": payment_type,
             "required_amount": required,
@@ -457,18 +474,19 @@ class PaymentTrackingService:
         *,
         summary_date: date,
         case_ids: list[int] | None = None,
+        group_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         query = (
             select(LegalEvent, LegalCase)
-            .join(LegalCase, LegalCase.id == LegalEvent.case_id)
+            .outerjoin(LegalCase, LegalCase.id == LegalEvent.case_id)
             .where(LegalEvent.event_type == "payment_notice")
-            .where(LegalEvent.attribution_status == "confirmed")
-            .where(LegalEvent.business_status.in_(("applied", "legacy_applied")))
+            .where(LegalEvent.business_status != "rejected")
         )
         if case_ids is not None:
-            if not case_ids:
-                return self._daily_summary_result(summary_date, [], [])
-            query = query.where(LegalEvent.case_id.in_(case_ids))
+            standalone_scope = LegalEvent.case_id.is_(None)
+            if group_ids is not None:
+                standalone_scope = standalone_scope & LegalEvent.group_message.has(GroupMessage.group_id.in_(group_ids))
+            query = query.where(or_(LegalEvent.case_id.in_(case_ids), standalone_scope))
         pairs = list(self.db.execute(query.order_by(LegalEvent.id.asc())).all())
         if not pairs:
             return self._daily_summary_result(summary_date, [], [])

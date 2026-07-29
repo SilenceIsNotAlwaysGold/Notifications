@@ -263,6 +263,44 @@ def test_court_summons_queue_includes_layout_fallback_and_excludes_generic_ocr(c
     assert data["items"][0]["workflow_status"] == "incomplete"
 
 
+def test_enforcement_document_queue_excludes_other_business_materials(client, db_session):
+    judgment = MediaFile(
+        group_id="document_group",
+        msg_id="judgment-document",
+        media_type="pdf",
+        ocr_status="processed",
+        review_status="pending",
+        extracted_text="民事调解书",
+        ocr_result_json=json.dumps(
+            {"event_type": "judgment", "document_type": "调解书", "metadata": {}},
+            ensure_ascii=False,
+        ),
+        source="test",
+    )
+    repayment = MediaFile(
+        group_id="document_group",
+        msg_id="repayment-document",
+        media_type="pdf",
+        ocr_status="processed",
+        review_status="pending",
+        extracted_text="分期还款协议",
+        ocr_result_json=json.dumps(
+            {"event_type": "repayment_agreement", "document_type": None, "metadata": {}},
+            ensure_ascii=False,
+        ),
+        source="test",
+    )
+    db_session.add_all([judgment, repayment])
+    db_session.commit()
+
+    response = client.get("/api/v1/legal/ocr-reviews/enforcement-documents?review_status=pending")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["total"] == 1
+    assert data["items"][0]["media_file_id"] == judgment.id
+
+
 def test_admin_has_dedicated_court_summons_workspace():
     content = Path("app/static/admin/admin.js").read_text(encoding="utf-8")
 

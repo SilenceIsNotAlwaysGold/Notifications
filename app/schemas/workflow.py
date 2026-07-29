@@ -136,11 +136,14 @@ class PaymentListOut(BaseModel):
 
 class PaymentTrackingOut(BaseModel):
     event_id: int
-    case_id: int
+    case_id: int | None
+    source_group_id: str | None = None
+    source_group_name: str | None = None
+    source_sender_id: str | None = None
     notice_date: date
     plaintiff: str | None
-    defendant: str
-    case_no: str
+    defendant: str | None
+    case_no: str | None
     payment_info: str | None
     payment_type: str
     required_amount: Decimal | None

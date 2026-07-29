@@ -1,6 +1,8 @@
 from datetime import timedelta
 from decimal import Decimal
+import json
 
+from app.models.group_message import GroupMessage
 from app.models.legal_case import LegalCase
 from app.models.legal_event import LegalEvent
 from app.models.media_file import MediaFile
@@ -131,6 +133,63 @@ def test_payment_tracking_marks_unpaid_notice_overdue(db_session):
     assert rows[0]["payment_status"] == "overdue"
     assert rows[0]["remaining_payment_time"] == "逾期 2 天"
     assert rows[0]["tracking_status"] == "催促失败 1 次"
+
+
+def test_standalone_payment_notice_appears_without_case_and_closes_from_confirmation(client, db_session):
+    message = GroupMessage(
+        group_id="standalone-payment-group",
+        sender_id="merchant-sender",
+        msg_type="text",
+        content="李江胜，案件受理费25元，8月2日前缴费",
+        raw_payload_json="{}",
+        received_at=now_tz(),
+    )
+    db_session.add(message)
+    db_session.flush()
+    event = LegalEvent(
+        group_message_id=message.id,
+        event_type="payment_notice",
+        amount=Decimal("25.00"),
+        extracted_text=message.content,
+        metadata_json=json.dumps(
+            {"structured_fields": {"defendant": "李江胜", "payment_type": "案件受理费"}},
+            ensure_ascii=False,
+        ),
+        attribution_status="pending",
+        business_status="staged",
+    )
+    db_session.add(event)
+    db_session.flush()
+    db_session.add(
+        Reminder(
+            group_id=message.group_id,
+            target_userid=message.sender_id,
+            reminder_type="payment_confirmation",
+            remind_at=now_tz() + timedelta(minutes=30),
+            content="请确认缴费",
+            source_event_id=event.id,
+            status="pending",
+        )
+    )
+    db_session.commit()
+
+    pending = client.get("/api/v1/legal/payment-trackings")
+
+    assert pending.status_code == 200
+    row = pending.json()["data"]["items"][0]
+    assert row["case_id"] is None
+    assert row["source_group_id"] == message.group_id
+    assert row["source_sender_id"] == message.sender_id
+    assert row["defendant"] == "李江胜"
+    assert row["payment_status"] == "pending"
+
+    metadata = json.loads(event.metadata_json)
+    metadata["standalone_payment_confirmation"] = {"message_id": 999, "confirmed_at": now_tz().isoformat()}
+    event.metadata_json = json.dumps(metadata, ensure_ascii=False)
+    db_session.commit()
+
+    paid = client.get("/api/v1/legal/payment-trackings")
+    assert paid.json()["data"]["items"][0]["payment_status"] == "paid"
 
 
 def test_partial_payment_screenshot_preserves_notice_fields(db_session):

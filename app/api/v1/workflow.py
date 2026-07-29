@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps_auth import get_current_operator
 from app.api.v1.response import ok, raise_fail
-from app.core.resource_permissions import has_case_access, has_group_access
+from app.core.resource_permissions import allowed_group_ids, has_case_access, has_group_access, resource_scope_enabled
 from app.db.session import get_db
 from app.models.attribution_item import AttributionItem
 from app.models.legal_event import LegalEvent
@@ -150,8 +150,10 @@ def list_payment_trackings(
         for case_id in db.scalars(select(LegalCase.id)).all()
         if has_case_access(db, operator_info, case_id)
     ]
+    scoped_groups = allowed_group_ids(operator_info) if resource_scope_enabled(operator_info) and operator_info.get("role") != "admin" else []
     total, items = PaymentTrackingService(db).list_rows(
         case_ids=accessible_case_ids,
+        group_ids=scoped_groups or None,
         status=status,
         query_text=query,
         offset=offset,
@@ -201,9 +203,11 @@ def payment_daily_summary(
         for case_id in db.scalars(select(LegalCase.id)).all()
         if has_case_access(db, operator_info, case_id)
     ]
+    scoped_groups = allowed_group_ids(operator_info) if resource_scope_enabled(operator_info) and operator_info.get("role") != "admin" else []
     result = PaymentTrackingService(db).daily_summary(
         summary_date=summary_date or now_tz().date(),
         case_ids=accessible_case_ids,
+        group_ids=scoped_groups or None,
     )
     return ok("每日缴费信息汇总生成成功", PaymentDailySummaryOut(**result))
 

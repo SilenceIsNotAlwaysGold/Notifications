@@ -77,10 +77,15 @@ def test_admin_separates_business_workflows_and_exposes_capture_only_groups():
     html = (ROOT / "app/static/admin/index.html").read_text(encoding="utf-8")
     script = (ROOT / "app/static/admin/admin.js").read_text(encoding="utf-8")
 
-    for label in ("诉讼与执行", "缴费跟踪", "还款与仲裁", "沟通提醒", "金山结果", "系统管理"):
+    for label in ("缴费跟踪", "法律文书", "还款与仲裁", "沟通提醒", "金山台账", "系统管理"):
         assert label in html
+    assert "诉讼与执行" not in html
+    assert 'data-view="cases"' not in html
     assert '["capture_only", "仅采集"]' in script
     assert "不识别、不提醒、不写表" in script
+    assert "/api/v1/legal/ocr-reviews/enforcement-documents" in script
+    overview = script[script.index("async function renderOverview()") : script.index("function wecomApiStageLabel")]
+    assert "待确认案件" not in overview
 
 
 def test_compose_contains_only_current_runtime_services():
