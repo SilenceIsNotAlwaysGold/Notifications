@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>法务群自动化管理后台</title>
-    <link rel="stylesheet" href="/admin/styles.css?v=20260729-01" />
+    <link rel="stylesheet" href="/admin/styles.css?v=20260729-02" />
   </head>
   <body>
     <div class="app-shell">
@@ -18,11 +18,12 @@
         </div>
         <nav class="nav">
           <button class="nav-item active" data-section="workbench" data-view="overview">工作台</button>
-          <button class="nav-item" data-section="cases" data-view="cases">案件与群</button>
-          <button class="nav-item" data-section="materials" data-view="ocr-reviews">资料处理</button>
-          <button class="nav-item" data-section="reminders" data-view="reminders">提醒任务</button>
+          <button class="nav-item" data-section="litigation" data-view="cases">诉讼与执行</button>
+          <button class="nav-item" data-section="payments" data-view="payment-trackings">缴费跟踪</button>
+          <button class="nav-item" data-section="repayment" data-view="repayment-materials">还款与仲裁</button>
+          <button class="nav-item" data-section="communication" data-view="merchant-questions">沟通提醒</button>
           <button class="nav-item" data-section="kdocs" data-view="kdocs-browser">金山结果</button>
-          <button class="nav-item" data-section="settings" data-view="recognition-settings">系统配置</button>
+          <button class="nav-item" data-section="system" data-view="archive-groups">系统管理</button>
         </nav>
       </aside>
 
@@ -50,6 +51,6 @@
       <div class="empty-state">暂无数据</div>
     </template>
 
-    <script src="/admin/admin.js?v=20260729-01"></script>
+    <script src="/admin/admin.js?v=20260729-02"></script>
   </body>
 </html>

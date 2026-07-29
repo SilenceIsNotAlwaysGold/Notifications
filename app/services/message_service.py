@@ -43,6 +43,26 @@ class MessageService:
 
     def handle_incoming_message(self, payload: MockMessageCreate) -> dict[str, Any]:
         group_message = self._save_group_message(payload)
+        archive_group = WeComArchiveGroupService(self.db).get_group(group_message.group_id)
+        if archive_group and archive_group.status == "capture_only":
+            self.db.flush()
+            return {
+                "group_message_id": group_message.id,
+                "case_id": None,
+                "event_ids": [],
+                "reminder_ids": [],
+                "extracted": {
+                    "case_no": None,
+                    "amounts": [],
+                    "amount": None,
+                    "keywords": [],
+                    "event_type": "unknown",
+                    "event_types": [],
+                    "extracted_text": payload.content or "",
+                    "metadata": {"parser": "capture_only", "business_processing_skipped": True},
+                },
+                "linked_media_file_id": None,
+            }
         if self._is_platform_generated_message(payload.content):
             self.db.flush()
             return {

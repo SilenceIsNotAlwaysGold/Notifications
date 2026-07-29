@@ -73,6 +73,16 @@ def test_unmapped_group_test_send_explains_required_mapping():
     assert 'row.wecomapi_room_id ? "" : "disabled"' not in content
 
 
+def test_admin_separates_business_workflows_and_exposes_capture_only_groups():
+    html = (ROOT / "app/static/admin/index.html").read_text(encoding="utf-8")
+    script = (ROOT / "app/static/admin/admin.js").read_text(encoding="utf-8")
+
+    for label in ("诉讼与执行", "缴费跟踪", "还款与仲裁", "沟通提醒", "金山结果", "系统管理"):
+        assert label in html
+    assert '["capture_only", "仅采集"]' in script
+    assert "不识别、不提醒、不写表" in script
+
+
 def test_compose_contains_only_current_runtime_services():
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     for service in ("api:", "ocr-sidecar:", "archive-sidecar:", "migrate:", "backup:"):

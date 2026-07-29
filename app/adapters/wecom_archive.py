@@ -137,7 +137,7 @@ class WeComArchiveAdapter:
                         if update_seq:
                             self.seq_store.write(last_seq)
                         continue
-                    if archive_group.status != "enabled":
+                    if archive_group.status not in {"enabled", "capture_only"}:
                         skipped += 1
                         last_seq = max(last_seq, seq)
                         if update_seq:

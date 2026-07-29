@@ -688,6 +688,34 @@ button.danger-button {
   font-weight: 800;
 }
 
+.stat-help {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.capture-only-note {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 14px 0;
+  padding: 12px 14px;
+  border: 1px solid #b8d8d3;
+  border-radius: 6px;
+  background: #f1faf8;
+}
+
+.capture-only-note strong {
+  flex: 0 0 auto;
+  color: #0b6157;
+}
+
+.capture-only-note span {
+  color: #475467;
+  font-size: 13px;
+}
+
 .status-ok {
   color: var(--ok);
 }
@@ -2471,6 +2499,95 @@ tr:hover td {
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 14px;
+}
+
+.repayment-lifecycle {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  margin: 14px 18px 0;
+  border: 1px solid var(--line);
+  background: var(--line);
+}
+
+.repayment-stage {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  background: #fff;
+}
+
+.repayment-stage > span {
+  display: grid;
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border: 1px solid #cbd5e1;
+  border-radius: 50%;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.repayment-stage.active > span {
+  border-color: #128275;
+  background: #128275;
+  color: #fff;
+}
+
+.repayment-stage div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.repayment-stage strong,
+.repayment-stage small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repayment-stage strong {
+  font-size: 13px;
+}
+
+.repayment-stage small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.repayment-ledger-title {
+  margin-top: 18px;
+}
+
+.repayment-ledger-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-top: 1px solid var(--line);
+  border-left: 1px solid var(--line);
+}
+
+.repayment-ledger-grid > div {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 10px 12px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.repayment-ledger-grid span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.repayment-ledger-grid strong {
+  overflow-wrap: anywhere;
+  font-size: 13px;
 }
 
 .review-audit {

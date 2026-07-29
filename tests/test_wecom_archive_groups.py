@@ -4,7 +4,9 @@ from sqlalchemy import select
 
 from app.adapters.wecom_archive import WeComArchiveAdapter
 from app.models.group_message import GroupMessage
+from app.models.legal_event import LegalEvent
 from app.models.media_file import MediaFile
+from app.models.reminder import Reminder
 from app.models.wecom_archive_group import WeComArchiveGroup
 from app.schemas.legal import WeComArchiveGroupCreate, WeComArchiveGroupUpdate
 from app.services.wecom_archive_group_service import WeComArchiveGroupService
@@ -107,6 +109,37 @@ def test_disabled_group_skips_media_before_download(db_session, tmp_path):
     assert result["skipped"] == 1
     assert db_session.scalar(select(GroupMessage)) is None
     assert db_session.scalar(select(MediaFile)) is None
+
+
+def test_capture_only_group_stores_source_without_business_processing(db_session, tmp_path):
+    WeComArchiveGroupService(db_session).create_group(
+        WeComArchiveGroupCreate(room_id="wr_capture_only", status="capture_only")
+    )
+    db_session.commit()
+
+    result = _adapter(tmp_path).process_messages(
+        db_session,
+        [
+            _message(31, room_id="wr_capture_only"),
+            _message(32, room_id="wr_capture_only", msgtype="image"),
+        ],
+        enforce_group_scope=True,
+    )
+    db_session.commit()
+
+    messages = list(
+        db_session.scalars(
+            select(GroupMessage)
+            .where(GroupMessage.group_id == "wr_capture_only")
+            .order_by(GroupMessage.id)
+        ).all()
+    )
+    assert result["processed"] == 2
+    assert result["skipped"] == 0
+    assert [message.msg_type for message in messages] == ["text", "image"]
+    assert db_session.scalar(select(MediaFile)) is None
+    assert db_session.scalar(select(LegalEvent)) is None
+    assert db_session.scalar(select(Reminder)) is None
 
 
 def test_direct_message_without_room_id_is_skipped_without_discovery(db_session, tmp_path):

@@ -45,16 +45,16 @@ const state = {
 
 const titles = {
   overview: ["工作台", "集中处理待办、失败任务和业务异常"],
-  cases: ["案件", "确认自动识别的案件并管理正式案件"],
+  cases: ["案件台账", "管理需要案件归属的诉讼与执行事项"],
   "case-workspace": ["案件工作台", "集中查看案件事实、资料、付款、提醒和外部同步"],
-  attribution: ["待归属", "批量确认资料和事件所属案件"],
+  attribution: ["案件待归属", "仅处理确实需要关联案件的资料和事件"],
   messages: ["来源消息", "查看进入自动化链路的企业微信消息"],
-  "archive-groups": ["企业微信群", "管理会话发现、案件识别和发送目标映射"],
-  "ocr-reviews": ["人工复核", "核对识别结果并控制业务同步"],
+  "archive-groups": ["企业微信群", "配置正式处理、仅采集、待确认和停用范围"],
+  "ocr-reviews": ["执行文书复核", "核对判决书、调解书和裁定书后写入执行台账"],
   "court-summons": ["开庭传票", "补全传票信息并写入金山开庭时间表"],
-  "repayment-materials": ["还款与仲裁", "处理还款协议、分期履约和回款登记"],
+  "repayment-materials": ["还款与仲裁", "跟踪协议归档、分期履约、实际回款、违约结清和仲裁推进"],
   "recognition-settings": ["识别与 AI", "配置腾讯 OCR 和法律文书结构化模型"],
-  reminders: ["提醒任务", "查看、编辑和执行企业微信提醒"],
+  reminders: ["人工提醒", "查看、编辑和执行非自动业务提醒"],
   "payment-trackings": ["缴费信息跟踪", "按缴费通知汇总支付状态、催促进度和凭证"],
   "merchant-questions": ["商家待回复", "跟踪外部消息回复时效"],
   "send-platform": ["发送通道", "配置 wecomapi token、guid 和公网回调地址"],
@@ -71,35 +71,33 @@ const sections = {
     defaultView: "overview",
     views: [{ view: "overview", label: "任务总览" }],
   },
-  cases: {
-    label: "案件与群",
+  litigation: {
+    label: "诉讼与执行",
     defaultView: "cases",
     views: [
-      { view: "cases", label: "案件" },
+      { view: "cases", label: "案件台账" },
       { view: "case-workspace", label: "案件工作台" },
-      { view: "archive-groups", label: "企业微信群" },
-    ],
-  },
-  materials: {
-    label: "资料处理",
-    defaultView: "ocr-reviews",
-    views: [
-      { view: "attribution", label: "待归属" },
+      { view: "attribution", label: "案件待归属" },
       { view: "court-summons", label: "开庭传票" },
-      { view: "repayment-materials", label: "还款与仲裁" },
-      { view: "ocr-reviews", label: "人工复核" },
-      { view: "media", label: "附件记录" },
-      { view: "messages", label: "来源消息" },
-      { view: "events", label: "识别记录" },
+      { view: "ocr-reviews", label: "执行文书" },
     ],
   },
-  reminders: {
-    label: "提醒任务",
-    defaultView: "reminders",
+  payments: {
+    label: "缴费跟踪",
+    defaultView: "payment-trackings",
+    views: [{ view: "payment-trackings", label: "缴费任务" }],
+  },
+  repayment: {
+    label: "还款与仲裁",
+    defaultView: "repayment-materials",
+    views: [{ view: "repayment-materials", label: "履约台账" }],
+  },
+  communication: {
+    label: "沟通提醒",
+    defaultView: "merchant-questions",
     views: [
-      { view: "payment-trackings", label: "缴费跟踪" },
-      { view: "reminders", label: "提醒任务" },
       { view: "merchant-questions", label: "商家待回复" },
+      { view: "reminders", label: "人工提醒" },
     ],
   },
   kdocs: {
@@ -110,10 +108,14 @@ const sections = {
       { view: "sync", label: "写入记录" },
     ],
   },
-  settings: {
-    label: "系统配置",
-    defaultView: "recognition-settings",
+  system: {
+    label: "系统管理",
+    defaultView: "archive-groups",
     views: [
+      { view: "archive-groups", label: "群接入" },
+      { view: "messages", label: "来源消息" },
+      { view: "media", label: "附件记录" },
+      { view: "events", label: "识别记录" },
       { view: "recognition-settings", label: "识别与 AI" },
       { view: "send-platform", label: "发送通道" },
       { view: "system-alerts", label: "系统异常" },
@@ -1144,7 +1146,8 @@ async function renderMessages() {
 function archiveGroupStatusOptions(selected) {
   const options = [
     ["discovered", "待确认"],
-    ["enabled", "已启用"],
+    ["enabled", "正式处理"],
+    ["capture_only", "仅采集"],
     ["disabled", "已停用"],
   ];
   return options
@@ -1190,7 +1193,7 @@ async function renderArchiveGroups() {
       result[group.status] = (result[group.status] || 0) + 1;
       return result;
     },
-    { discovered: 0, enabled: 0, disabled: 0 },
+    { discovered: 0, enabled: 0, capture_only: 0, disabled: 0 },
   );
   const callbackUrl = `${window.location.origin}/api/v1/wecomapi/callback`;
   const platformGroups = state.wecomPlatformGroups || [];
@@ -1198,11 +1201,13 @@ async function renderArchiveGroups() {
     .map((room) => `<option value="${escapeHtml(room.room_id)}">${escapeHtml(room.room_name || "未命名群")} · ${escapeHtml(room.member_count ?? "-")} 人</option>`)
     .join("");
   $("#content").innerHTML = `
-    <div class="grid cols-3">
+    <div class="grid cols-4 group-status-grid">
       <div class="panel stat"><div class="stat-label">待确认</div><div class="stat-value status-warning">${counts.discovered}</div></div>
-      <div class="panel stat"><div class="stat-label">已启用</div><div class="stat-value status-ok">${counts.enabled}</div></div>
+      <div class="panel stat"><div class="stat-label">正式处理</div><div class="stat-value status-ok">${counts.enabled}</div></div>
+      <div class="panel stat"><div class="stat-label">仅采集</div><div class="stat-value">${counts.capture_only}</div><div class="stat-help">保存消息，不识别、不提醒、不写表</div></div>
       <div class="panel stat"><div class="stat-label">已停用</div><div class="stat-value">${counts.disabled}</div></div>
     </div>
+    <div class="capture-only-note"><strong>测试与需求沟通群请使用“仅采集”</strong><span>消息原文仍可在“系统管理 → 来源消息”查看，但不会触发 OCR、AI、案件、缴费、还款、提醒或金山写入。</span></div>
     <div class="integration-note">
       <div>
         <div class="integration-note-title">第三方 wecomapi 发送平台</div>
@@ -1773,14 +1778,41 @@ function repaymentProgressRows(progress) {
   return `<div class="repayment-progress-summary"><div><span>协议金额</span><strong>${escapeHtml(progress.total_debt)} 元</strong></div><div><span>累计还款</span><strong>${escapeHtml(progress.total_paid)} 元</strong></div><div><span>剩余金额</span><strong>${escapeHtml(progress.outstanding)} 元</strong></div><div><span>履约状态</span><strong>${escapeHtml(progress.status)}</strong></div></div><div class="repayment-plan-list">${(progress.installments || []).map((item) => `<div><strong>第 ${escapeHtml(item.sequence)} 期</strong><span>${escapeHtml(item.due_date)}</span><span>${escapeHtml(item.paid)} / ${escapeHtml(item.amount)} 元 · ${escapeHtml(labels[item.status] || item.status)}</span></div>`).join("")}</div>`;
 }
 
+function repaymentLifecycle(review, result) {
+  const structured = ((result.metadata || {}).structured_fields || {});
+  const performance = review.progress?.status || (review.workflow_status === "written" ? "tracking" : "pending");
+  const steps = [
+    { label: "协议归档", detail: result.plaintiff && result.defendant ? "当事人已识别" : "等待补全当事人", active: Boolean(result.plaintiff && result.defendant) },
+    { label: "分期履约", detail: review.progress ? `累计 ${review.progress.total_paid} 元` : "等待协议批准", active: Boolean(review.progress) },
+    { label: "违约 / 结清", detail: performance === "completed" ? "已结清" : performance === "defaulted" ? "已违约" : "持续观察群消息", active: ["completed", "defaulted"].includes(performance) },
+    { label: "仲裁推进", detail: structured.arbitration_case_no || structured.arbitration_institution || "尚未进入仲裁", active: Boolean(structured.arbitration_case_no) },
+  ];
+  return `<div class="repayment-lifecycle">${steps.map((step, index) => `<div class="repayment-stage ${step.active ? "active" : ""}"><span>${index + 1}</span><div><strong>${escapeHtml(step.label)}</strong><small>${escapeHtml(step.detail)}</small></div></div>`).join("")}</div>`;
+}
+
+function repaymentLedgerSummary(review, result) {
+  const structured = ((result.metadata || {}).structured_fields || {});
+  const values = [
+    ["证据情况", review.material_kind === "agreement" ? "协议原件已留存" : "回款凭证已留存"],
+    ["履约状态", review.progress?.status || "待建立履约进度"],
+    ["仲裁机构", structured.arbitration_institution || "待补充"],
+    ["仲裁案号", structured.arbitration_case_no || "尚未提交"],
+    ["金山行号", review.external_row_index == null ? "尚未写入" : `第 ${review.external_row_index} 行`],
+    ["合计还款", review.progress ? `${review.progress.total_paid} 元` : "0.00 元"],
+  ];
+  return `<div class="repayment-ledger-grid">${values.map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("")}</div>`;
+}
+
 function repaymentMaterialDetail(review) {
   const result = review.final_result || review.ocr_result || {};
   const editable = review.review_status === "pending";
   const kindLabel = review.material_kind === "agreement" ? "还款协议" : "还款凭证";
   return `<div class="review-detail-header"><div class="summons-heading"><span class="eyebrow">${escapeHtml(review.group_name || "未命名群")} · ${kindLabel}</span><strong>${escapeHtml(review.original_filename || `资料 ${review.media_file_id}`)}</strong><div class="muted mono">${escapeHtml(review.group_id)} · ${escapeHtml(review.msg_id || "无消息 ID")}</div></div><div class="review-header-actions">${badge(repaymentWorkflowLabels[review.workflow_status] || review.workflow_status)}</div></div>
+    ${repaymentLifecycle(review, result)}
     <div class="review-detail-grid"><section class="review-preview"><div id="review-preview" class="preview-placeholder">加载预览中...</div></section><section class="review-fields">
-      <form id="repayment-form"><div class="summons-callout">还款协议无需绑定案件。确认后上传原文件，并写入金山“提交仲裁情况合集”；后续回款凭证会更新同一行。</div><div class="form-grid review-form-grid"><div class="field"><label>债权人</label><input name="plaintiff" required value="${escapeHtml(result.plaintiff || "")}" ${editable ? "" : "disabled"} /></div><div class="field"><label>债务人</label><input name="defendant" required value="${escapeHtml(result.defendant || "")}" ${editable ? "" : "disabled"} /></div><div class="field"><label>${review.material_kind === "agreement" ? "协议总额" : "本次还款"}</label><input name="amount" type="number" min="0" step="0.01" required value="${escapeHtml(result.amount == null ? "" : result.amount)}" ${editable ? "" : "disabled"} /></div><div class="field wide"><label>复核备注</label><textarea name="note" ${editable ? "" : "disabled"}>${escapeHtml(review.review_note || "")}</textarea></div></div>
+      <form id="repayment-form"><div class="summons-callout">本流程不依赖案件绑定。协议、实际回款、违约/结清话术和仲裁进度按债权人 + 债务人关联到同一条金山台账。</div><div class="form-grid review-form-grid"><div class="field"><label>债权人</label><input name="plaintiff" required value="${escapeHtml(result.plaintiff || "")}" ${editable ? "" : "disabled"} /></div><div class="field"><label>债务人</label><input name="defendant" required value="${escapeHtml(result.defendant || "")}" ${editable ? "" : "disabled"} /></div><div class="field"><label>${review.material_kind === "agreement" ? "协议总额" : "本次还款"}</label><input name="amount" type="number" min="0" step="0.01" required value="${escapeHtml(result.amount == null ? "" : result.amount)}" ${editable ? "" : "disabled"} /></div><div class="field wide"><label>复核备注</label><textarea name="note" ${editable ? "" : "disabled"}>${escapeHtml(review.review_note || "")}</textarea></div></div>
       <div class="field-label">${review.material_kind === "agreement" ? "分期还款方案" : "匹配协议履约情况"}</div>${review.material_kind === "agreement" ? repaymentPlanRows(result) : repaymentProgressRows(review.progress)}
+      <div class="field-label repayment-ledger-title">仲裁推进台账</div>${repaymentLedgerSummary(review, result)}
       <div class="review-actions">${editable ? '<button type="button" data-repayment-approve>批准并写入</button><button type="button" class="ghost" data-repayment-correct>保存修正并写入</button><button type="button" class="ghost" data-repayment-reanalyze>重新识别</button><button type="button" class="danger-button" data-repayment-reject>非还款资料</button>' : ""}${review.workflow_status === "write_failed" ? '<button type="button" data-repayment-retry>重试金山写入</button>' : ""}</div></form>
       <div class="summons-sync-summary"><div><span>金山状态</span><strong>${escapeHtml(review.sync_status || "尚未写入")}</strong></div><div><span>目标子表行号</span><strong>${escapeHtml(review.external_row_index == null ? "-" : review.external_row_index)}</strong></div><div><span>写入错误</span><strong>${escapeHtml(review.sync_error || "-")}</strong></div></div>
       <div class="ocr-text-block"><div class="field-label">OCR 原文</div><pre>${escapeHtml(review.extracted_text || "无识别文本")}</pre></div></section></div>`;

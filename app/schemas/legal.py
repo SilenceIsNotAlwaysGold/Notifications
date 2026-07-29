@@ -383,7 +383,7 @@ class WeComArchiveGroupCreate(BaseModel):
     wecomapi_room_id: str | None = Field(default=None, max_length=128)
     display_name: str | None = Field(default=None, max_length=255)
     tenant_id: str | None = Field(default=None, max_length=128)
-    status: Literal["discovered", "enabled", "disabled"] = "enabled"
+    status: Literal["discovered", "enabled", "capture_only", "disabled"] = "enabled"
     group_type: Literal["merchant", "debtor", "internal", "other"] = "other"
     access_policy: Literal["auto", "whitelist", "blacklist"] = "auto"
     features: dict[str, bool] = Field(default_factory=dict)
@@ -396,7 +396,7 @@ class WeComArchiveGroupUpdate(BaseModel):
     wecomapi_room_id: str | None = Field(default=None, max_length=128)
     display_name: str | None = Field(default=None, max_length=255)
     tenant_id: str | None = Field(default=None, max_length=128)
-    status: Literal["discovered", "enabled", "disabled"] | None = None
+    status: Literal["discovered", "enabled", "capture_only", "disabled"] | None = None
     group_type: Literal["merchant", "debtor", "internal", "other"] | None = None
     access_policy: Literal["auto", "whitelist", "blacklist"] | None = None
     features: dict[str, bool] | None = None

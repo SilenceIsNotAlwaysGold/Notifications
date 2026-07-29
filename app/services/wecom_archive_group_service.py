@@ -10,7 +10,7 @@ from app.schemas.legal import WeComArchiveGroupCreate, WeComArchiveGroupUpdate
 from app.utils.datetime_utils import ensure_aware, now_tz
 
 
-ARCHIVE_GROUP_STATUSES = {"discovered", "enabled", "disabled"}
+ARCHIVE_GROUP_STATUSES = {"discovered", "enabled", "capture_only", "disabled"}
 ARCHIVE_GROUP_TYPES = {"merchant", "debtor", "internal", "other"}
 ARCHIVE_ACCESS_POLICIES = {"auto", "whitelist", "blacklist"}
 GROUP_FEATURE_DEFAULTS = {
@@ -162,6 +162,8 @@ class WeComArchiveGroupService:
         if group.access_policy == "whitelist":
             group.status = "enabled"
             return
+        if group.status == "capture_only":
+            return
         name = group.display_name or ""
         if "还款对接群" in name:
             group.status = "enabled"
@@ -203,7 +205,7 @@ class WeComArchiveGroupService:
     @staticmethod
     def _validate_status(status: str) -> None:
         if status not in ARCHIVE_GROUP_STATUSES:
-            raise ValueError("群状态必须是 discovered、enabled 或 disabled")
+            raise ValueError("群状态必须是 discovered、enabled、capture_only 或 disabled")
 
     @staticmethod
     def _validate_group_type(group_type: str) -> None:
