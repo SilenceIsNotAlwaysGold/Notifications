@@ -13,6 +13,7 @@ from app.models.media_file import MediaFile
 from app.models.reminder import Reminder
 from app.services.business_application_service import BusinessApplicationService
 from app.services.legal_text_extraction_service import LegalTextExtractionService
+from app.services.media_file_service import MediaFileService
 from app.services.repayment_tracking_service import RepaymentTrackingService
 from app.utils.datetime_utils import app_timezone, now_tz
 
@@ -108,6 +109,20 @@ def test_real_agreement_text_extracts_complete_schedule_without_llm():
         "due_date": "2026-10-25",
         "amount": Decimal("668.35"),
     }
+
+
+def test_manually_corrected_chat_screenshot_is_case_independent_repayment_material(tmp_path):
+    result = agreement_result()
+    result["metadata"]["review_decision"] = "corrected"
+    path = tmp_path / "repayment-chat.jpg"
+    path.write_bytes(b"image")
+    media = MediaFile(group_id="group", media_type="file", local_path=str(path))
+
+    assert MediaFileService._is_case_independent_repayment_material(
+        media,
+        result,
+        "聊天截图，仅展示双方签署内容",
+    )
 
 
 def test_repayment_kdocs_merge_preserves_manual_arbitration_fields():

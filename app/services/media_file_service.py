@@ -1013,13 +1013,16 @@ class MediaFileService:
     ) -> bool:
         if result.get("event_type") == "repayment_agreement":
             normalized = re.sub(r"\s+", "", extracted_text or "")
+            metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+            agreement_signal = any(value in normalized for value in ("还款协议", "还款方案", "仲裁协议"))
+            manually_confirmed = metadata.get("review_decision") in {"approved", "corrected"}
             return bool(
                 media_file.local_path
                 and result.get("plaintiff")
                 and result.get("defendant")
                 and result.get("amount") is not None
                 and RepaymentTrackingService.valid_plan(result)
-                and "还款协议" in normalized
+                and (agreement_signal or manually_confirmed)
             )
         if result.get("event_type") == "payment_screenshot":
             metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
