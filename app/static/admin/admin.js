@@ -1519,8 +1519,10 @@ async function loadReviewPreview(review) {
     container.textContent = "预览加载失败";
     return;
   }
-  state.reviewPreviewUrl = URL.createObjectURL(await response.blob());
-  if ((review.mime_type || "").startsWith("image/")) {
+  const previewBlob = await response.blob();
+  const previewType = previewBlob.type || review.mime_type || "";
+  state.reviewPreviewUrl = URL.createObjectURL(previewBlob);
+  if (previewType.startsWith("image/")) {
     container.innerHTML = `<img src="${state.reviewPreviewUrl}" alt="待复核原图" />`;
     state.reviewPreviewRotation = 0;
     const image = container.querySelector("img");
@@ -1540,8 +1542,13 @@ async function loadReviewPreview(review) {
         applyRotation();
       });
     });
-  } else {
+  } else if (previewType === "application/pdf") {
     container.innerHTML = `<iframe src="${state.reviewPreviewUrl}" title="待复核 PDF"></iframe>`;
+    document.querySelector(".preview-toolbar")?.classList.add("hidden");
+  } else {
+    URL.revokeObjectURL(state.reviewPreviewUrl);
+    state.reviewPreviewUrl = null;
+    container.textContent = "该文件不支持在线预览";
     document.querySelector(".preview-toolbar")?.classList.add("hidden");
   }
 }
@@ -1842,7 +1849,12 @@ async function renderRepaymentMaterials() {
   const selected = items.find((item) => item.media_file_id === state.selectedRepaymentId) || null;
   $("#content").innerHTML = `<div class="review-toolbar"><label for="repayment-status-filter">处理状态</label><select id="repayment-status-filter">${[["pending_review","待复核"],["incomplete","待补全"],["pending_write","待写入"],["written","已写入"],["write_failed","写入失败"],["rejected","非还款资料"],["","全部"]].map(([value,label]) => `<option value="${value}" ${state.repaymentStatusFilter === value ? "selected" : ""}>${label}</option>`).join("")}</select><span class="muted">${data.total} 条</span></div><div class="review-workspace"><aside class="review-list-pane">${items.length ? items.map((item) => `<button class="review-list-item ${item.media_file_id === state.selectedRepaymentId ? "active" : ""}" data-repayment-id="${item.media_file_id}"><span>${escapeHtml(item.original_filename || `资料 ${item.media_file_id}`)}</span><small>${item.material_kind === "agreement" ? "还款协议" : "回款凭证"} · ${escapeHtml(repaymentWorkflowLabels[item.workflow_status] || item.workflow_status)}</small></button>`).join("") : '<div class="empty-state">当前状态暂无还款资料</div>'}</aside><main class="review-detail-pane">${selected ? repaymentMaterialDetail(selected) : '<div class="empty-state">请选择还款资料</div>'}</main></div>`;
   $("#repayment-status-filter").addEventListener("change", (event) => { state.repaymentStatusFilter = event.target.value; state.selectedRepaymentId = null; renderRepaymentMaterials(); });
-  document.querySelectorAll("[data-repayment-id]").forEach((button) => button.addEventListener("click", () => { state.selectedRepaymentId = Number(button.dataset.repaymentId); renderRepaymentMaterials(); }));
+  document.querySelectorAll("[data-repayment-id]").forEach((button) => button.addEventListener("click", () => {
+    const repaymentId = Number(button.dataset.repaymentId);
+    if (repaymentId === state.selectedRepaymentId) return;
+    state.selectedRepaymentId = repaymentId;
+    renderRepaymentMaterials();
+  }));
   if (!selected) return;
   document.querySelector("[data-repayment-approve]")?.addEventListener("click", () => submitRepaymentMaterial(selected, "approved"));
   document.querySelector("[data-repayment-correct]")?.addEventListener("click", () => submitRepaymentMaterial(selected, "corrected"));

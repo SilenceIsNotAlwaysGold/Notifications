@@ -1,3 +1,5 @@
+import mimetypes
+
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy.orm import Session
@@ -76,6 +78,7 @@ def download_media_file(media_file_id: int, db: Session = Depends(get_db)):
 @router.get("/{media_file_id}/content")
 def preview_media_file(
     media_file_id: int,
+    download: bool = Query(default=False),
     db: Session = Depends(get_db),
     operator_info: dict[str, object] = Depends(get_current_operator),
 ):
@@ -92,7 +95,15 @@ def preview_media_file(
         raise_fail(str(exc), code=403, status_code=403)
     if not path.is_file():
         raise_fail("媒体文件不存在", code=1404, status_code=404)
-    return FileResponse(path, media_type=media_file.mime_type or "application/octet-stream")
+    media_type = media_file.mime_type
+    if not media_type or media_type == "application/octet-stream":
+        media_type = mimetypes.guess_type(media_file.original_filename or path.name)[0]
+    return FileResponse(
+        path,
+        media_type=media_type or "application/octet-stream",
+        filename=media_file.original_filename or path.name,
+        content_disposition_type="attachment" if download else "inline",
+    )
 
 
 @router.post("/{media_file_id}/ocr")

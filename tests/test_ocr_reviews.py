@@ -170,6 +170,29 @@ def test_review_preview_rejects_path_outside_storage(client, db_session, tmp_pat
     assert response.status_code == 403
 
 
+def test_review_preview_infers_pdf_type_and_uses_inline_disposition(client, db_session):
+    _replay_pdf(client, "review_inline_pdf", 809)
+    media_file = db_session.scalar(select(MediaFile).where(MediaFile.msg_id == "review_inline_pdf"))
+    media_file.mime_type = "application/octet-stream"
+    db_session.commit()
+
+    response = client.get(f"/api/v1/legal/media-files/{media_file.id}/content")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.headers["content-disposition"].startswith("inline;")
+
+
+def test_review_file_download_requires_explicit_query(client, db_session):
+    _replay_pdf(client, "review_download_pdf", 810)
+    media_file = db_session.scalar(select(MediaFile).where(MediaFile.msg_id == "review_download_pdf"))
+
+    response = client.get(f"/api/v1/legal/media-files/{media_file.id}/content?download=true")
+
+    assert response.status_code == 200
+    assert response.headers["content-disposition"].startswith("attachment;")
+
+
 def test_review_detail_returns_ai_context_snapshot(client, db_session):
     _replay_pdf(client, "review_context", 806)
     media_file = db_session.scalar(select(MediaFile).where(MediaFile.msg_id == "review_context"))
