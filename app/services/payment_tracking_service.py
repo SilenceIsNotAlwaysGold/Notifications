@@ -73,6 +73,7 @@ class PaymentTrackingService:
                 .where(
                     GroupMessage.group_id == message.group_id,
                     LegalEvent.event_type == "payment_notice",
+                    LegalEvent.business_status != "rejected",
                 )
                 .order_by(LegalEvent.id.desc())
                 .limit(100)

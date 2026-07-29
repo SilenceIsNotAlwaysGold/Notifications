@@ -137,6 +137,32 @@ def test_late_confirmation_records_payment_after_all_followups_were_sent(db_sess
     assert {item.status for item in reminders} == {"sent"}
 
 
+def test_rejected_duplicate_notice_does_not_make_confirmation_ambiguous(db_session):
+    notice = _send(db_session, "李立迁，案号：（2026）冀0109民初7702号，案件受理费25元，请缴费")
+    notice_event = db_session.get(LegalEvent, notice["event_ids"][0])
+    rejected_event = LegalEvent(
+        group_message_id=notice_event.group_message_id,
+        event_type="payment_notice",
+        amount=notice_event.amount,
+        extracted_text=notice_event.extracted_text,
+        metadata_json=notice_event.metadata_json,
+        attribution_status="not_required",
+        business_status="rejected",
+    )
+    db_session.add(rejected_event)
+    db_session.flush()
+
+    _send(
+        db_session,
+        "李立迁，案号：（2026）冀0109民初7702号，诉讼费已代缴",
+        sender="ShanShan",
+        minutes=10,
+    )
+
+    event = db_session.get(LegalEvent, notice["event_ids"][0])
+    assert json.loads(event.metadata_json)["standalone_payment_confirmation"]["message_id"] > 0
+
+
 def test_multiple_open_notices_are_matched_by_party_and_case_number(db_session):
     first = _send(db_session, "李江胜，案号：（2026）桂0702民初5834号，案件受理费25元，请缴费")
     second = _send(db_session, "王成，案号：（2026）浙0102民初1234号，公告费400元，请缴费", minutes=1)
