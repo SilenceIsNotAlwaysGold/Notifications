@@ -1,3 +1,4 @@
+import json
 from datetime import timedelta
 
 from sqlalchemy import select
@@ -63,6 +64,77 @@ def test_confirmation_by_any_group_member_closes_standalone_notice(db_session):
     assert all(item.status == "cancelled" for item in reminders)
     assert all("明确确认缴费" in (item.cancel_reason or "") for item in reminders)
     assert db_session.scalar(select(PaymentRecord.id)) is None
+
+
+def test_quoted_payment_confirmation_closes_original_notice_without_creating_followups(db_session):
+    original = "李立迁，案号：（2026）冀0109民初7702号，案件受理费25元，请缴费"
+    notice = _send(db_session, original)
+
+    result = _send(
+        db_session,
+        "这是一条引用/回复消息：\n"
+        f'“法务调解 森：\n@致和法务-钧 【缴费待确认】{original}。请付款后回复“已缴费/已代缴/已收款”。”\n'
+        "------\n"
+        "这个被告的诉讼费已代缴",
+        sender="ShanShan",
+        minutes=10,
+    )
+
+    original_reminders = list(
+        db_session.scalars(select(Reminder).where(Reminder.source_event_id == notice["event_ids"][0])).all()
+    )
+    assert all(item.status == "cancelled" for item in original_reminders)
+    assert len(_reminders(db_session)) == 2
+    assert result["reminder_ids"] == [item.id for item in original_reminders]
+    confirmation = db_session.get(LegalEvent, result["event_ids"][0])
+    assert confirmation.event_type == "payment_screenshot"
+
+
+def test_quoted_payment_reminder_with_non_confirmation_reply_does_not_create_or_close_notice(db_session):
+    original = "李立迁，案号：（2026）冀0109民初7702号，案件受理费25元，请缴费"
+    notice = _send(db_session, original)
+
+    result = _send(
+        db_session,
+        "这是一条引用/回复消息：\n"
+        f'“法务调解 森：\n@致和法务-钧 【缴费待确认】{original}。请付款后回复“已缴费/已代缴/已收款”。”\n'
+        "------\n"
+        "稍等，我核实一下",
+        sender="ShanShan",
+        minutes=10,
+    )
+
+    original_reminders = list(
+        db_session.scalars(select(Reminder).where(Reminder.source_event_id == notice["event_ids"][0])).all()
+    )
+    assert {item.status for item in original_reminders} == {"pending"}
+    assert len(_reminders(db_session)) == 2
+    assert result["reminder_ids"] == []
+    assert result["event_ids"] == []
+
+
+def test_late_confirmation_records_payment_after_all_followups_were_sent(db_session):
+    notice = _send(db_session, "李立迁，案号：（2026）冀0109民初7702号，案件受理费25元，请缴费")
+    reminders = _reminders(db_session)
+    for reminder in reminders:
+        reminder.status = "sent"
+        reminder.sent_at = reminder.remind_at
+
+    result = _send(
+        db_session,
+        "这是一条引用/回复消息：\n"
+        "“法务调解 森：\n@致和法务-钧 【缴费待确认】李立迁，案号：（2026）冀0109民初7702号，案件受理费25元。”\n"
+        "------\n"
+        "这个被告的诉讼费已代缴",
+        sender="ShanShan",
+        minutes=100,
+    )
+
+    event = db_session.get(LegalEvent, notice["event_ids"][0])
+    metadata = json.loads(event.metadata_json)
+    assert metadata["standalone_payment_confirmation"]["message_id"] > 0
+    assert result["reminder_ids"] == []
+    assert {item.status for item in reminders} == {"sent"}
 
 
 def test_multiple_open_notices_are_matched_by_party_and_case_number(db_session):

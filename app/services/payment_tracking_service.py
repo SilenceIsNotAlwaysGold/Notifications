@@ -66,21 +66,24 @@ class PaymentTrackingService:
         return message.group_id, (contact.wecomapi_user_id if contact and contact.wecomapi_user_id else sender_id)
 
     def confirm_standalone_notice(self, message: GroupMessage, extracted: dict[str, Any]) -> list[int]:
-        rows = self.db.execute(
-            select(LegalEvent, Reminder)
-            .join(Reminder, Reminder.source_event_id == LegalEvent.id)
-            .join(GroupMessage, GroupMessage.id == LegalEvent.group_message_id)
-            .where(
-                GroupMessage.group_id == message.group_id,
-                LegalEvent.event_type == "payment_notice",
-                Reminder.reminder_type == "payment_confirmation",
-                Reminder.status == "pending",
-            )
-            .order_by(LegalEvent.id.desc(), Reminder.id.asc())
-        ).all()
-        events: dict[int, LegalEvent] = {}
-        for event, _reminder in rows:
-            events[event.id] = event
+        candidates = list(
+            self.db.scalars(
+                select(LegalEvent)
+                .join(GroupMessage, GroupMessage.id == LegalEvent.group_message_id)
+                .where(
+                    GroupMessage.group_id == message.group_id,
+                    LegalEvent.event_type == "payment_notice",
+                )
+                .order_by(LegalEvent.id.desc())
+                .limit(100)
+            ).all()
+        )
+        events = {
+            event.id: event
+            for event in candidates
+            if not self._metadata(event).get("standalone_payment_confirmation")
+            and not self._metadata(event).get("superseded_by_payment_notice_event_id")
+        }
         if not events:
             return []
 

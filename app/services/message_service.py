@@ -24,7 +24,6 @@ from app.services.reminder_service import ReminderService
 from app.services.tenant_settings_service import TenantSettingsService
 from app.services.wecom_archive_group_service import WeComArchiveGroupService
 from app.utils.datetime_utils import ensure_aware, now_tz, today_tz
-from app.utils.regex_parser import is_payment_done_text
 from app.utils.repayment_annotation import parse_repayment_annotation
 
 logger = logging.getLogger(__name__)
@@ -65,6 +64,25 @@ class MessageService:
             }
         MerchantQuestionService(self.db).handle_message(group_message)
         extracted = self._extract(payload, group_message.tenant_id)
+        confirmation_text, is_quoted_reply = self._reply_body(payload.content)
+        ignore_quoted_payment_prompt = False
+        if payload.msg_type == "text" and is_quoted_reply and extracted.get("event_type") in {
+            "payment_notice",
+            "payment_screenshot",
+        }:
+            reply_extracted = self.ocr_service.extract_from_text(
+                confirmation_text,
+                tenant_id=group_message.tenant_id,
+            )
+            reply_event_type = reply_extracted.get("event_type") or "unknown"
+            extracted["event_type"] = reply_event_type
+            extracted["event_types"] = [] if reply_event_type == "unknown" else [reply_event_type]
+            metadata = dict(extracted.get("metadata") or {})
+            metadata["quoted_reply_body_used_for_payment_intent"] = True
+            metadata["quoted_reply_intent_parser"] = (reply_extracted.get("metadata") or {}).get("parser")
+            metadata["quoted_reply_intent_llm_status"] = (reply_extracted.get("metadata") or {}).get("llm_status")
+            extracted["metadata"] = metadata
+            ignore_quoted_payment_prompt = reply_event_type == "unknown"
         repayment_annotation = parse_repayment_annotation(payload.content) if payload.msg_type == "text" else None
         if repayment_annotation:
             extracted = self._apply_repayment_annotation(extracted, repayment_annotation, group_message.id)
@@ -99,7 +117,11 @@ class MessageService:
                 )
             except Exception:
                 logger.exception("还款说明文字绑定截图失败 group_message_id=%s", group_message.id)
-        event_types = [] if payload.msg_type in {"image", "file", "pdf"} or linked_media else (extracted.get("event_types") or ["unknown"])
+        event_types = (
+            []
+            if payload.msg_type in {"image", "file", "pdf"} or linked_media or ignore_quoted_payment_prompt
+            else (extracted.get("event_types") or ["unknown"])
+        )
 
         event_ids: list[int] = []
         if linked_media and linked_media.get("event_id"):
@@ -136,7 +158,7 @@ class MessageService:
                     extracted,
                 )
                 reminder_ids.extend(reminder.id for reminder in reminders)
-            if events_by_type.get("payment_screenshot") is not None and is_payment_done_text(payload.content or ""):
+            if events_by_type.get("payment_screenshot") is not None and repayment_annotation is None:
                 reminder_ids.extend(
                     PaymentTrackingService(self.db).confirm_standalone_notice(group_message, extracted)
                 )
@@ -167,6 +189,19 @@ class MessageService:
                 normalized,
             )
         )
+
+    @staticmethod
+    def _reply_body(content: str | None) -> tuple[str, bool]:
+        text = content or ""
+        lines = text.splitlines()
+        separator_index = None
+        for index, line in enumerate(lines):
+            if re.fullmatch(r"\s*(?:-\s*){3,}\s*", line):
+                separator_index = index
+        if separator_index is None:
+            return text, False
+        reply = "\n".join(lines[separator_index + 1 :]).strip()
+        return (reply or text), bool(reply)
 
     @staticmethod
     def _event_metadata(extracted: dict[str, Any]) -> dict[str, Any]:
