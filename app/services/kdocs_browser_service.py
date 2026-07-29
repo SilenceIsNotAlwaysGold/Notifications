@@ -62,6 +62,17 @@ TARGETS: dict[KDocsTarget, TargetDefinition] = {
         worksheet_id_setting="kdocs_payment_worksheet_id",
         headers=("日期", "原告", "被告", "案号", "缴费信息", "支付情况", "跟踪情况", "剩余缴费时间", "缴费截图上传"),
     ),
+    "repayment": TargetDefinition(
+        key="repayment",
+        name="还款与仲裁",
+        file_id_setting="kdocs_enforcement_file_id",
+        worksheet_id_setting="kdocs_repayment_worksheet_id",
+        headers=(
+            "甲方（债权人）", "乙方（债务人）", "协议文本", "证据情况", "提交 履约情况", "仲裁机构",
+            "仲裁案号", "审核意见", "提交时间", "通过日期", "仲裁案件进度", "缴费情况", "还款方案",
+            "还款情况", "合计还款",
+        ),
+    ),
 }
 
 

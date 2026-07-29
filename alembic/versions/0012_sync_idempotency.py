@@ -10,6 +10,8 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 
+from app.db.migration_helpers import index_details
+
 revision: str = "0012_sync_idempotency"
 down_revision: Union[str, Sequence[str], None] = "0011_business_rules"
 branch_labels: Union[str, Sequence[str], None] = None
@@ -56,13 +58,13 @@ def upgrade() -> None:
                 {"legacy_key": legacy_key[:255], "log_id": log_id},
             )
 
-    with op.batch_alter_table("document_sync_logs") as batch_op:
-        batch_op.drop_index(op.f("ix_document_sync_logs_idempotency_key"))
-        batch_op.create_index(
-            op.f("ix_document_sync_logs_idempotency_key"),
-            ["idempotency_key"],
-            unique=True,
-        )
+    index_name = op.f("ix_document_sync_logs_idempotency_key")
+    existing_index = index_details(connection, "document_sync_logs").get(index_name)
+    if not existing_index or not existing_index.get("unique"):
+        with op.batch_alter_table("document_sync_logs") as batch_op:
+            if existing_index:
+                batch_op.drop_index(index_name)
+            batch_op.create_index(index_name, ["idempotency_key"], unique=True)
 
 
 def downgrade() -> None:

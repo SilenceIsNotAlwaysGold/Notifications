@@ -5,6 +5,7 @@ from decimal import Decimal
 from app.core.config import Settings
 from app.models.group_message import GroupMessage
 from app.models.legal_case import LegalCase
+from app.models.legal_event import LegalEvent
 from app.models.media_file import MediaFile
 from app.schemas.legal import MockMessageCreate
 from app.services.case_service import CaseService
@@ -94,11 +95,11 @@ def test_annotation_after_image_overrides_ocr_payment_fields():
     assert result["metadata"]["repayment_annotation"]["message_id"] == 22
 
 
-def test_payment_screenshot_waits_for_annotation_before_auto_processing():
+def test_repayment_screenshot_always_waits_for_human_review():
     assert MediaFileService._result_requires_review(
         {"event_type": "payment_screenshot", "requires_review": False, "metadata": {}}
     )
-    assert not MediaFileService._result_requires_review(
+    assert MediaFileService._result_requires_review(
         {
             "event_type": "payment_screenshot",
             "requires_review": False,
@@ -216,6 +217,27 @@ def test_linked_annotation_does_not_create_duplicate_text_event(db_session, monk
     assert result["event_ids"] == [77]
     assert result["linked_media_file_id"] == 12
     assert result["extracted"]["event_types"] == ["payment_screenshot"]
+
+
+def test_unlinked_annotation_is_context_only_until_a_receipt_exists(db_session, monkeypatch):
+    monkeypatch.setattr(
+        MediaFileService,
+        "reanalyze_repayment_screenshot_annotation",
+        lambda self, message, annotation: None,
+    )
+
+    result = MessageService(db_session).handle_incoming_message(
+        MockMessageCreate(
+            group_id="repayment_group",
+            sender_id="operator",
+            msg_type="text",
+            content="甲公司+张三+第4期还款+900元",
+        )
+    )
+
+    assert result["event_ids"] == []
+    assert result["linked_media_file_id"] is None
+    assert db_session.query(LegalEvent).count() == 0
 
 
 def test_reanalysis_plan_pairs_text_before_image_and_uses_each_image_once(db_session):

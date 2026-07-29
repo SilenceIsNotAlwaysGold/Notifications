@@ -218,11 +218,13 @@ class DocumentSyncService:
         )
 
     def sync_repayment_agreement(self, event: LegalEvent, row: dict[str, Any]) -> DocumentSyncLog:
-        row_key = f"{row.get('甲方（债权人）') or ''}|{row.get('乙方（债务人）') or ''}"
+        row = {**row, "_agreement_event_id": event.id}
+        row_key = f"agreement:{event.id}"
         payload = {
             "tenant_id": event.tenant_id,
             "space_id": self.settings.kdocs_space_id,
             "sheet_id": self.settings.kdocs_repayment_sheet_id,
+            "agreement_event_id": event.id,
             "row": row,
         }
         return self._execute_once(
@@ -243,7 +245,23 @@ class DocumentSyncService:
         agreement_event: LegalEvent,
         row: dict[str, Any],
     ) -> DocumentSyncLog:
-        row_key = f"{row.get('甲方（债权人）') or ''}|{row.get('乙方（债务人）') or ''}"
+        row = dict(row)
+        agreement_log = self.db.scalar(
+            select(DocumentSyncLog)
+            .where(DocumentSyncLog.sync_type == "repayment_agreement")
+            .where(DocumentSyncLog.idempotency_key.like(f"kdocs:repayment_agreement:{agreement_event.id}:%"))
+            .where(DocumentSyncLog.outcome == "applied")
+            .order_by(DocumentSyncLog.id.desc())
+        )
+        if agreement_log:
+            if agreement_log.external_row_index is not None:
+                row["_target_row_index"] = agreement_log.external_row_index
+            agreement_payload = json.loads(agreement_log.request_payload_json or "{}").get("payload") or {}
+            agreement_row = agreement_payload.get("row") or {}
+            if agreement_row.get("协议文本"):
+                row["协议文本"] = agreement_row["协议文本"]
+        row["_agreement_event_id"] = agreement_event.id
+        row_key = f"agreement:{agreement_event.id}"
         payload = {
             "tenant_id": payment_event.tenant_id,
             "space_id": self.settings.kdocs_space_id,

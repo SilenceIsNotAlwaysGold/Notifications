@@ -7,11 +7,22 @@ const state = {
   selectedReviewId: null,
   reviewStatusFilter: "pending",
   selectedSummonsId: null,
-  summonsStatusFilter: "incomplete",
+  summonsStatusFilter: "attention",
   selectedRepaymentId: null,
-  repaymentStatusFilter: "pending_review",
+  repaymentStatusFilter: "attention",
+  repaymentKindFilter: "",
+  repaymentInboxPage: 1,
+  repaymentInboxPageSize: 30,
+  repaymentLedgerStatus: "",
+  repaymentLedgerFocus: "",
+  repaymentLedgerQuery: "",
+  repaymentLedgerPage: 1,
+  repaymentLedgerPageSize: 30,
+  selectedRepaymentAgreementId: null,
+  repaymentRenderToken: 0,
   reviewPreviewUrl: null,
   reviewPreviewRotation: 0,
+  reviewPreviewController: null,
   editingReminderId: null,
   kdocsTarget: "enforcement",
   kdocsPage: 1,
@@ -52,7 +63,8 @@ const titles = {
   "archive-groups": ["企业微信群", "配置正式处理、仅采集、待确认和停用范围"],
   "ocr-reviews": ["执行文书复核", "核对判决书、调解书和裁定书后写入执行台账"],
   "court-summons": ["开庭传票", "补全传票信息并写入金山开庭时间表"],
-  "repayment-materials": ["还款与仲裁", "跟踪协议归档、分期履约、实际回款、违约结清和仲裁推进"],
+  "repayment-ledger": ["协议履约台账", "查看每份协议的分期、回款、逾期、提醒和金山写入结果"],
+  "repayment-materials": ["还款资料待办", "人工确认还款协议和回款凭证，确认前不记账、不提醒、不写金山"],
   "recognition-settings": ["识别与 AI", "配置腾讯 OCR 和法律文书结构化模型"],
   reminders: ["人工提醒", "查看、编辑和执行非自动业务提醒"],
   "payment-trackings": ["缴费信息跟踪", "按缴费通知汇总支付状态、催促进度和凭证"],
@@ -85,9 +97,12 @@ const sections = {
     views: [{ view: "payment-trackings", label: "缴费任务" }],
   },
   repayment: {
-    label: "还款与仲裁",
-    defaultView: "repayment-materials",
-    views: [{ view: "repayment-materials", label: "履约台账" }],
+    label: "还款管理",
+    defaultView: "repayment-ledger",
+    views: [
+      { view: "repayment-ledger", label: "协议履约" },
+      { view: "repayment-materials", label: "资料待办" },
+    ],
   },
   communication: {
     label: "沟通提醒",
@@ -164,6 +179,14 @@ async function api(path, options = {}) {
   return body && Object.prototype.hasOwnProperty.call(body, "data") ? body.data : body;
 }
 
+async function optionalApi(path, fallback) {
+  try {
+    return { ok: true, data: await api(path), error: null };
+  } catch (error) {
+    return { ok: false, data: fallback, error };
+  }
+}
+
 function normalizedView(view) {
   const canonicalView = viewAliases[view] || view;
   return Object.prototype.hasOwnProperty.call(titles, canonicalView) ? canonicalView : "overview";
@@ -194,7 +217,12 @@ function renderSectionTabs(view) {
 
 function setView(view, { syncLocation = true, replaceLocation = false } = {}) {
   const nextView = normalizedView(view);
+  if (state.view !== nextView) {
+    releaseReviewPreview();
+    state.repaymentRenderToken += 1;
+  }
   state.view = nextView;
+  document.body.dataset.view = nextView;
   localStorage.setItem("legal_wecom_view", nextView);
   if (syncLocation && window.location.hash !== `#${nextView}`) {
     const method = replaceLocation ? "replaceState" : "pushState";
@@ -235,6 +263,20 @@ function escapeHtml(value) {
 function fmt(value) {
   if (value === null || value === undefined || value === "") return '<span class="muted">-</span>';
   return escapeHtml(value);
+}
+
+function formatDateTime(value) {
+  if (!value) return "-";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return String(value);
+  return parsed.toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
 }
 
 function safeExternalUrl(value) {
@@ -324,20 +366,32 @@ function workbenchConnection(label, status, note) {
 }
 
 async function renderOverview() {
-  const [paymentsData, documentsData, summonsData, repaymentData, questionsData, syncData, alertsData, detail] = await Promise.all([
-    api("/api/v1/legal/payment-trackings?limit=200"),
-    api("/api/v1/legal/ocr-reviews/enforcement-documents?review_status=pending&page_size=100"),
-    api("/api/v1/legal/ocr-reviews/court-summons?page_size=100"),
-    api("/api/v1/legal/ocr-reviews/repayment-materials?page_size=100"),
-    api("/api/v1/legal/merchant-questions?status=open&limit=200"),
-    api("/api/v1/legal/document-sync-logs?status=failed&page_size=100"),
-    api("/api/v1/legal/system-alerts?status=open&page_size=200"),
-    api("/api/v1/health/detail"),
+  const sources = await Promise.all([
+    optionalApi("/api/v1/legal/payment-trackings?limit=100", { total: 0, items: [] }),
+    optionalApi("/api/v1/legal/ocr-reviews/enforcement-documents?review_status=pending&page_size=100", { total: 0, items: [] }),
+    optionalApi("/api/v1/legal/ocr-reviews/court-summons?workflow_status=attention&page_size=100", { total: 0, items: [] }),
+    optionalApi("/api/v1/legal/ocr-reviews/repayment-materials?workflow_status=attention&page_size=100", { total: 0, items: [] }),
+    optionalApi("/api/v1/legal/ocr-reviews/repayment-agreements?page_size=100", { total: 0, items: [] }),
+    optionalApi("/api/v1/legal/merchant-questions?status=open&limit=100", { total: 0, items: [] }),
+    optionalApi("/api/v1/legal/document-sync-logs?status=failed&page_size=100", { total: 0, items: [] }),
+    optionalApi("/api/v1/legal/system-alerts?status=open&page_size=100", { total: 0, items: [] }),
+    optionalApi("/api/v1/health/detail", { config: { items: [] }, sender: { status: "error", message: "状态暂不可用" } }),
   ]);
+  const [paymentsResult, documentsResult, summonsResult, repaymentResult, agreementsResult, questionsResult, syncResult, alertsResult, detailResult] = sources;
+  const paymentsData = paymentsResult.data;
+  const documentsData = documentsResult.data;
+  const summonsData = summonsResult.data;
+  const repaymentData = repaymentResult.data;
+  const agreementsData = agreementsResult.data;
+  const questionsData = questionsResult.data;
+  const syncData = syncResult.data;
+  const alertsData = alertsResult.data;
+  const detail = detailResult.data;
   const paymentItems = (paymentsData.items || []).filter((item) => item.payment_status !== "paid");
   const documentItems = documentsData.items || [];
-  const summonsItems = (summonsData.items || []).filter((item) => ["incomplete", "pending_review", "pending_write", "write_failed"].includes(item.workflow_status));
-  const repaymentItems = (repaymentData.items || []).filter((item) => ["incomplete", "pending_review", "pending_write", "write_failed"].includes(item.workflow_status));
+  const summonsItems = summonsData.items || [];
+  const repaymentItems = repaymentData.items || [];
+  const defaultedAgreements = (agreementsData.items || []).filter((item) => item.status === "defaulted");
   const questionItems = questionsData.items || [];
   const syncItems = syncData.items || [];
   const configItems = (detail.config && detail.config.items) || [];
@@ -348,12 +402,14 @@ async function renderOverview() {
   const kdocs = configByName("KDOCS_MODE");
   const sender = detail.sender || { status: "disabled", message: "发送通道未启用" };
   const actionRows = [
-    ...paymentItems.slice(0, 2).map((item) => ({ view: "payment-trackings", label: "缴费待确认", title: [item.defendant, item.payment_type, item.required_amount == null ? null : `${item.required_amount} 元`].filter(Boolean).join(" · "), detail: item.source_group_name || item.source_group_id || item.case_no || "来源群待确认" })),
-    ...documentItems.slice(0, 2).map((item) => ({ view: "ocr-reviews", label: "执行文书待复核", title: item.original_filename || `资料 ${item.media_file_id}`, detail: (item.ocr_result || {}).document_type || "文书类型待确认" })),
-    ...summonsItems.slice(0, 2).map((item) => ({ view: "court-summons", label: "传票待处理", title: item.original_filename || `资料 ${item.media_file_id}`, detail: item.group_name || item.group_id })),
-    ...repaymentItems.slice(0, 2).map((item) => ({ view: "repayment-materials", label: "还款仲裁待处理", title: item.original_filename || `资料 ${item.media_file_id}`, detail: item.group_name || item.group_id })),
-    ...questionItems.slice(0, 2).map((item) => ({ view: "merchant-questions", label: "商家待回复", title: String(item.content || item.question_text || "待回复消息").slice(0, 80), detail: item.group_id })),
-  ].slice(0, 8);
+    ...paymentItems.map((item) => ({ priority: item.payment_status === "overdue" ? 100 : 65, view: "payment-trackings", label: item.payment_status === "overdue" ? "缴费已逾期" : "缴费待确认", title: [item.defendant, item.payment_type, item.required_amount == null ? null : `${item.required_amount} 元`].filter(Boolean).join(" · "), detail: item.source_group_name || item.source_group_id || item.case_no || "来源群待确认", updatedAt: item.payment_deadline })),
+    ...documentItems.map((item) => ({ priority: 75, view: "ocr-reviews", label: "执行文书待复核", title: item.original_filename || `资料 ${item.media_file_id}`, detail: (item.ocr_result || {}).document_type || "文书类型待确认", updatedAt: item.updated_at })),
+    ...summonsItems.map((item) => ({ priority: item.workflow_status === "write_failed" ? 110 : 80, view: "court-summons", label: item.workflow_status === "write_failed" ? "传票写入失败" : "传票待处理", title: item.original_filename || `资料 ${item.media_file_id}`, detail: item.group_name || item.group_id, updatedAt: item.updated_at })),
+    ...repaymentItems.map((item) => ({ priority: item.workflow_status === "write_failed" ? 110 : 78, view: "repayment-materials", label: item.workflow_status === "write_failed" ? "还款资料写入失败" : "还款资料待处理", title: item.original_filename || `资料 ${item.media_file_id}`, detail: item.group_name || item.group_id, updatedAt: item.updated_at })),
+    ...defaultedAgreements.map((item) => ({ priority: 105, view: "repayment-ledger", label: "协议已逾期", title: `${item.debtor} · 剩余 ${item.outstanding} 元`, detail: item.group_name || item.group_id, updatedAt: item.next_due_date })),
+    ...questionItems.map((item) => ({ priority: item.status === "escalated" ? 95 : 70, view: "merchant-questions", label: "商家待回复", title: String(item.content || item.question_text || "待回复消息").slice(0, 80), detail: item.group_id, updatedAt: item.asked_at })),
+  ].sort((left, right) => right.priority - left.priority || String(left.updatedAt || "").localeCompare(String(right.updatedAt || ""))).slice(0, 10);
+  const unavailableCount = sources.filter((item) => !item.ok).length;
 
   $("#content").innerHTML = `
     <section class="workbench" data-business-workbench>
@@ -361,11 +417,12 @@ async function renderOverview() {
         <div><h2>业务行动队列</h2><p>只显示需要人工处理或外部写入失败的事项。</p></div>
         <span class="workbench-updated">刚刚刷新</span>
       </div>
+      ${unavailableCount ? `<div class="workbench-partial-warning">${unavailableCount} 个数据源暂时不可用，其余业务队列仍可继续处理。</div>` : ""}
       <div class="workbench-summary">
         ${workbenchTaskCard({ label: "缴费待确认", count: paymentItems.length, note: "未收到明确缴费结果", view: "payment-trackings", tone: paymentItems.length ? "warning" : "clear" })}
         ${workbenchTaskCard({ label: "执行文书待复核", count: documentsData.total ?? documentItems.length, note: "判决书、调解书、裁定书", view: "ocr-reviews", tone: documentItems.length ? "warning" : "clear" })}
         ${workbenchTaskCard({ label: "传票待处理", count: summonsItems.length, note: "补全开庭信息并写表", view: "court-summons", tone: summonsItems.length ? "warning" : "clear" })}
-        ${workbenchTaskCard({ label: "还款仲裁待处理", count: repaymentItems.length, note: "协议、回款、违约和仲裁", view: "repayment-materials", tone: repaymentItems.length ? "warning" : "clear" })}
+        ${workbenchTaskCard({ label: "还款待处理 / 逾期", count: repaymentItems.length + defaultedAgreements.length, note: `${repaymentItems.length} 份资料 · ${defaultedAgreements.length} 份协议逾期`, view: defaultedAgreements.length ? "repayment-ledger" : "repayment-materials", tone: repaymentItems.length || defaultedAgreements.length ? "warning" : "clear" })}
         ${workbenchTaskCard({ label: "商家待回复", count: questionsData.total ?? questionItems.length, note: "尚未收到有效回答", view: "merchant-questions", tone: questionItems.length ? "warning" : "clear" })}
         ${workbenchTaskCard({ label: "金山写入失败", count: syncData.total ?? syncItems.length, note: "检查失败原因并重试", view: "sync", tone: syncItems.length ? "danger" : "clear" })}
       </div>
@@ -394,7 +451,9 @@ async function renderOverview() {
     </section>
   `;
   document.querySelectorAll("[data-workbench-view]").forEach((button) => {
-    button.addEventListener("click", () => setView(button.dataset.workbenchView));
+    button.addEventListener("click", () => {
+      setView(button.dataset.workbenchView);
+    });
   });
 }
 
@@ -1475,7 +1534,7 @@ function reviewDetail(review) {
       </section>
       <section class="review-fields">
         <form id="review-form" data-media-id="${review.media_file_id}">
-          <div class="summons-callout">执行文书直接写入强制执行进度表并上传原文件，不要求先建立平台案件。</div>
+          <div class="summons-callout">业务去向：强制执行进度表 · 原文件归档</div>
           <div class="form-grid review-form-grid">
             <input type="hidden" name="event_type" value="judgment" />
             <div class="field"><label>案号 ${fieldSources.case_no ? `<span class="field-source">${escapeHtml(fieldSources.case_no)}</span>` : ""}</label><input name="case_no" value="${escapeHtml(reviewFieldValue(result, "case_no"))}" ${editable ? "" : "disabled"} /></div>
@@ -1506,23 +1565,32 @@ function reviewDetail(review) {
   `;
 }
 
+function releaseReviewPreview() {
+  if (state.reviewPreviewController) state.reviewPreviewController.abort();
+  state.reviewPreviewController = null;
+  if (state.reviewPreviewUrl) URL.revokeObjectURL(state.reviewPreviewUrl);
+  state.reviewPreviewUrl = null;
+  state.reviewPreviewRotation = 0;
+}
+
 async function loadReviewPreview(review) {
   const container = $("#review-preview");
   if (!container || !review.preview_url) {
     if (container) container.textContent = "无可预览文件";
     return;
   }
-  if (state.reviewPreviewUrl) URL.revokeObjectURL(state.reviewPreviewUrl);
+  releaseReviewPreview();
+  const controller = new AbortController();
+  state.reviewPreviewController = controller;
   const headers = state.apiKey ? { "X-API-Key": state.apiKey } : {};
-  const response = await fetch(review.preview_url, { headers });
-  if (!response.ok) {
-    container.textContent = "预览加载失败";
-    return;
-  }
-  const previewBlob = await response.blob();
-  const previewType = previewBlob.type || review.mime_type || "";
-  state.reviewPreviewUrl = URL.createObjectURL(previewBlob);
-  if (previewType.startsWith("image/")) {
+  try {
+    const response = await fetch(review.preview_url, { headers, signal: controller.signal });
+    if (!response.ok) throw new Error(`预览请求失败：${response.status}`);
+    const previewBlob = await response.blob();
+    if (controller.signal.aborted || state.reviewPreviewController !== controller) return;
+    const previewType = previewBlob.type || review.mime_type || "";
+    state.reviewPreviewUrl = URL.createObjectURL(previewBlob);
+    if (previewType.startsWith("image/")) {
     container.innerHTML = `<img src="${state.reviewPreviewUrl}" alt="待复核原图" />`;
     state.reviewPreviewRotation = 0;
     const image = container.querySelector("img");
@@ -1542,14 +1610,21 @@ async function loadReviewPreview(review) {
         applyRotation();
       });
     });
-  } else if (previewType === "application/pdf") {
-    container.innerHTML = `<iframe src="${state.reviewPreviewUrl}" title="待复核 PDF"></iframe>`;
-    document.querySelector(".preview-toolbar")?.classList.add("hidden");
-  } else {
-    URL.revokeObjectURL(state.reviewPreviewUrl);
-    state.reviewPreviewUrl = null;
-    container.textContent = "该文件不支持在线预览";
-    document.querySelector(".preview-toolbar")?.classList.add("hidden");
+    } else if (previewType === "application/pdf") {
+      container.innerHTML = `<iframe src="${state.reviewPreviewUrl}" title="待复核 PDF"></iframe>`;
+      document.querySelector(".preview-toolbar")?.classList.add("hidden");
+    } else {
+      URL.revokeObjectURL(state.reviewPreviewUrl);
+      state.reviewPreviewUrl = null;
+      container.textContent = "该文件不支持在线预览";
+      document.querySelector(".preview-toolbar")?.classList.add("hidden");
+    }
+  } catch (error) {
+    if (error.name !== "AbortError" && state.reviewPreviewController === controller) {
+      container.textContent = "预览加载失败，可刷新后重试";
+    }
+  } finally {
+    if (state.reviewPreviewController === controller) state.reviewPreviewController = null;
   }
 }
 
@@ -1596,9 +1671,6 @@ async function renderOCRReviews() {
     state.selectedReviewId = items[0] ? items[0].media_file_id : null;
   }
   const selectedSummary = items.find((item) => item.media_file_id === state.selectedReviewId);
-  const selected = selectedSummary
-    ? await api(`/api/v1/legal/ocr-reviews/${selectedSummary.media_file_id}`)
-    : null;
   $("#content").innerHTML = `
     <div class="review-toolbar">
       <label for="review-status-filter">状态</label>
@@ -1623,7 +1695,7 @@ async function renderOCRReviews() {
             : '<div class="empty-state">当前状态暂无判决书、调解书或裁定书</div>'
         }
       </aside>
-      <main class="review-detail-pane">${selected ? reviewDetail(selected) : '<div class="empty-state">请选择待复核材料</div>'}</main>
+      <main class="review-detail-pane">${selectedSummary ? '<div class="detail-loading">正在加载文书...</div>' : '<div class="empty-state">请选择待复核材料</div>'}</main>
     </div>
   `;
   $("#review-status-filter").addEventListener("change", (event) => {
@@ -1633,18 +1705,25 @@ async function renderOCRReviews() {
   });
   document.querySelectorAll("[data-review-id]").forEach((button) => {
     button.addEventListener("click", () => {
-      state.selectedReviewId = Number(button.dataset.reviewId);
-      renderOCRReviews();
+      const summary = items.find((item) => item.media_file_id === Number(button.dataset.reviewId));
+      if (summary && summary.media_file_id !== state.selectedReviewId) selectOCRReview(summary).catch((error) => showAlert(error.message, "error"));
     });
   });
-  document.querySelectorAll("[data-review-decision]").forEach((button) => {
-    button.addEventListener("click", () => submitReviewDecision(selected, button.dataset.reviewDecision));
-  });
+  if (selectedSummary) await selectOCRReview(selectedSummary);
+}
+
+async function selectOCRReview(summary) {
+  state.selectedReviewId = summary.media_file_id;
+  document.querySelectorAll("[data-review-id]").forEach((button) => button.classList.toggle("active", Number(button.dataset.reviewId) === summary.media_file_id));
+  const pane = $(".review-detail-pane");
+  pane.innerHTML = '<div class="detail-loading">正在加载文书...</div>';
+  const selected = await api(`/api/v1/legal/ocr-reviews/${summary.media_file_id}`);
+  if (state.selectedReviewId !== summary.media_file_id || state.view !== "ocr-reviews") return;
+  pane.innerHTML = reviewDetail(selected);
+  document.querySelectorAll("[data-review-decision]").forEach((button) => button.addEventListener("click", () => submitReviewDecision(selected, button.dataset.reviewDecision)));
   const reanalyzeButton = document.querySelector("[data-review-reanalyze]");
-  if (reanalyzeButton && selected) {
-    reanalyzeButton.addEventListener("click", () => reanalyzeReview(selected, reanalyzeButton));
-  }
-  if (selected) await loadReviewPreview(selected);
+  if (reanalyzeButton) reanalyzeButton.addEventListener("click", () => reanalyzeReview(selected, reanalyzeButton));
+  await loadReviewPreview(selected);
 }
 
 const summonsWorkflowLabels = {
@@ -1736,22 +1815,32 @@ async function renderCourtSummons() {
   const items = data.items || [];
   if (!items.some((item) => item.media_file_id === state.selectedSummonsId)) state.selectedSummonsId = items[0]?.media_file_id || null;
   const summary = items.find((item) => item.media_file_id === state.selectedSummonsId);
-  const selected = summary ? { ...summary, ...(await api(`/api/v1/legal/ocr-reviews/${summary.media_file_id}`)) } : null;
   $("#content").innerHTML = `
     <div class="review-toolbar">
       <label for="summons-status-filter">处理状态</label>
       <select id="summons-status-filter">
-        ${[["incomplete","待识别 / 待补全"],["pending_review","待复核"],["pending_write","待写入"],["written","已写入"],["write_failed","写入失败"],["rejected","非传票"],["","全部"]].map(([value,label]) => `<option value="${value}" ${state.summonsStatusFilter === value ? "selected" : ""}>${label}</option>`).join("")}
+        ${[["attention","需要处理"],["incomplete","待识别 / 待补全"],["pending_review","待复核"],["write_failed","写入失败"],["pending_write","写入中"],["written","已完成"],["rejected","非传票"],["","全部"]].map(([value,label]) => `<option value="${value}" ${state.summonsStatusFilter === value ? "selected" : ""}>${label}</option>`).join("")}
       </select>
       <span class="muted">${data.total} 条</span>
     </div>
     <div class="review-workspace court-summons-workspace">
       <aside class="review-list-pane">${items.length ? items.map((item) => `<button class="review-list-item ${item.media_file_id === state.selectedSummonsId ? "active" : ""}" data-summons-id="${item.media_file_id}"><span>${escapeHtml(item.original_filename || `传票 ${item.media_file_id}`)}</span><small>${escapeHtml(item.group_name || item.group_id)} · ${escapeHtml(summonsWorkflowLabels[item.workflow_status] || item.workflow_status)}</small></button>`).join("") : '<div class="empty-state">当前状态暂无传票</div>'}</aside>
-      <main class="review-detail-pane">${selected ? courtSummonsDetail(selected) : '<div class="empty-state">请选择开庭传票</div>'}</main>
+      <main class="review-detail-pane">${summary ? '<div class="detail-loading">正在加载传票...</div>' : '<div class="empty-state">请选择开庭传票</div>'}</main>
     </div>`;
   $("#summons-status-filter").addEventListener("change", (event) => { state.summonsStatusFilter = event.target.value; state.selectedSummonsId = null; renderCourtSummons(); });
-  document.querySelectorAll("[data-summons-id]").forEach((button) => button.addEventListener("click", () => { state.selectedSummonsId = Number(button.dataset.summonsId); renderCourtSummons(); }));
-  if (!selected) return;
+  document.querySelectorAll("[data-summons-id]").forEach((button) => button.addEventListener("click", () => { const item = items.find((row) => row.media_file_id === Number(button.dataset.summonsId)); if (item && item.media_file_id !== state.selectedSummonsId) selectCourtSummons(item).catch((error) => showAlert(error.message, "error")); }));
+  if (summary) await selectCourtSummons(summary);
+}
+
+async function selectCourtSummons(summary) {
+  state.selectedSummonsId = summary.media_file_id;
+  document.querySelectorAll("[data-summons-id]").forEach((button) => button.classList.toggle("active", Number(button.dataset.summonsId) === summary.media_file_id));
+  const pane = $(".review-detail-pane");
+  pane.innerHTML = '<div class="detail-loading">正在加载传票...</div>';
+  const detail = await api(`/api/v1/legal/ocr-reviews/${summary.media_file_id}`);
+  if (state.selectedSummonsId !== summary.media_file_id || state.view !== "court-summons") return;
+  const selected = { ...summary, ...detail };
+  pane.innerHTML = courtSummonsDetail(selected);
   document.querySelector("[data-summons-save]")?.addEventListener("click", () => submitCourtSummons(selected, "corrected"));
   document.querySelector("[data-summons-reject]")?.addEventListener("click", () => submitCourtSummons(selected, "rejected"));
   document.querySelector("[data-summons-reanalyze]")?.addEventListener("click", async () => { await api(`/api/v1/legal/media-files/${selected.media_file_id}/ocr?force_reprocess=true`, { method: "POST" }); showAlert("已重新识别传票"); await renderCourtSummons(); });
@@ -1768,56 +1857,173 @@ const repaymentWorkflowLabels = {
   rejected: "非还款资料",
 };
 
-function repaymentPlanRows(result) {
+const repaymentProgressLabels = {
+  active: "履约中",
+  partial: "部分还款",
+  defaulted: "已逾期",
+  completed: "已结清",
+  paid: "已完成",
+  pending: "待还款",
+  overdue: "已逾期",
+};
+
+const repaymentSyncLabels = {
+  applied: "已写入",
+  skipped: "已跳过",
+  failed: "写入失败",
+  superseded: "已失效",
+  pending: "等待写入",
+  retry: "等待重试",
+};
+
+function repaymentPlanItems(result) {
   const plan = ((result.metadata || {}).structured_fields || {}).repayment_plan || {};
-  const installments = plan.installments || [];
-  if (!installments.length) return '<div class="empty-state">未提取到分期计划，请重新识别</div>';
-  return `<div class="repayment-plan-list">${installments.map((item, index) => `<div><strong>第 ${escapeHtml(item.sequence || index + 1)} 期</strong><span>${escapeHtml(item.due_date || "日期待确认")}</span><span>${escapeHtml(item.amount == null ? "金额待确认" : `${item.amount} 元`)}</span></div>`).join("")}</div>`;
+  return Array.isArray(plan.installments) ? plan.installments : [];
+}
+
+function repaymentPlanEditor(result, editable) {
+  const installments = repaymentPlanItems(result);
+  if (!editable && !installments.length) return '<div class="empty-state">未提取到分期计划</div>';
+  const rows = installments.length ? installments : [{ sequence: 1, due_date: "", amount: result.amount || "" }];
+  const initialAmounts = rows.map((item) => Number(item.amount));
+  const initialTotal = initialAmounts.every((amount) => Number.isFinite(amount) && amount > 0)
+    ? initialAmounts.reduce((sum, amount) => sum + amount, 0)
+    : null;
+  const initialDifference = initialTotal == null ? null : Math.round((initialTotal - Number(result.amount)) * 100) / 100;
+  const initialBalanceText = initialDifference == null || !Number.isFinite(initialDifference)
+    ? ""
+    : Math.abs(initialDifference) <= 0.01
+      ? "与协议总额一致"
+      : `与协议总额相差 ${Math.abs(initialDifference).toFixed(2)} 元`;
+  return `<div id="repayment-plan-editor" class="repayment-plan-editor">${rows.map((item, index) => `
+    <div class="repayment-plan-row">
+      <label><span>期数</span><input type="number" min="1" max="100" data-plan-sequence value="${escapeHtml(item.sequence || index + 1)}" ${editable ? "" : "disabled"} /></label>
+      <label><span>应还日期</span><input type="date" data-plan-due-date value="${escapeHtml(String(item.due_date || "").slice(0, 10))}" ${editable ? "" : "disabled"} /></label>
+      <label><span>应还金额</span><input type="number" min="0.01" step="0.01" data-plan-amount value="${escapeHtml(item.amount ?? "")}" ${editable ? "" : "disabled"} /></label>
+      ${editable ? '<button type="button" class="plan-remove-button" data-plan-remove title="删除本期" aria-label="删除本期">×</button>' : ""}
+    </div>`).join("")}</div><div class="repayment-plan-total"><span>分期合计</span><strong id="repayment-plan-total">${initialTotal == null ? "待补全" : `${initialTotal.toFixed(2)} 元`}</strong><small id="repayment-plan-balance" class="${initialDifference != null && Math.abs(initialDifference) <= 0.01 ? "ok" : initialBalanceText ? "error" : ""}">${escapeHtml(initialBalanceText)}</small></div>${editable ? '<button type="button" class="ghost small" data-plan-add>增加一期</button>' : ""}`;
+}
+
+function bindRepaymentPlanEditor() {
+  const editor = $("#repayment-plan-editor");
+  editor?.addEventListener("input", updateRepaymentPlanTotal);
+  $("#repayment-form input[name='amount']")?.addEventListener("input", updateRepaymentPlanTotal);
+  document.querySelector("[data-plan-add]")?.addEventListener("click", () => {
+    const sequence = editor.querySelectorAll(".repayment-plan-row").length + 1;
+    editor.insertAdjacentHTML("beforeend", `<div class="repayment-plan-row"><label><span>期数</span><input type="number" min="1" max="100" data-plan-sequence value="${sequence}" /></label><label><span>应还日期</span><input type="date" data-plan-due-date /></label><label><span>应还金额</span><input type="number" min="0.01" step="0.01" data-plan-amount /></label><button type="button" class="plan-remove-button" data-plan-remove title="删除本期" aria-label="删除本期">×</button></div>`);
+    bindRepaymentPlanRemoveButtons();
+    updateRepaymentPlanTotal();
+  });
+  bindRepaymentPlanRemoveButtons();
+  updateRepaymentPlanTotal();
+}
+
+function bindRepaymentPlanRemoveButtons() {
+  document.querySelectorAll("[data-plan-remove]").forEach((button) => {
+    button.onclick = () => {
+      const rows = document.querySelectorAll(".repayment-plan-row");
+      if (rows.length <= 1) return showAlert("分期计划至少保留一期", "error");
+      button.closest(".repayment-plan-row").remove();
+      updateRepaymentPlanTotal();
+    };
+  });
+}
+
+function updateRepaymentPlanTotal() {
+  const totalElement = $("#repayment-plan-total");
+  const balanceElement = $("#repayment-plan-balance");
+  if (!totalElement || !balanceElement) return;
+  const amounts = [...document.querySelectorAll("[data-plan-amount]")].map((input) => Number(input.value));
+  const planTotal = amounts.every((amount) => Number.isFinite(amount) && amount > 0)
+    ? amounts.reduce((sum, amount) => sum + amount, 0)
+    : null;
+  const agreementTotal = Number($("#repayment-form input[name='amount']")?.value);
+  totalElement.textContent = planTotal == null ? "待补全" : `${planTotal.toFixed(2)} 元`;
+  if (planTotal == null || !Number.isFinite(agreementTotal)) {
+    balanceElement.textContent = "";
+    balanceElement.className = "";
+    return;
+  }
+  const difference = Math.round((planTotal - agreementTotal) * 100) / 100;
+  balanceElement.textContent = Math.abs(difference) <= 0.01
+    ? "与协议总额一致"
+    : `与协议总额相差 ${Math.abs(difference).toFixed(2)} 元`;
+  balanceElement.className = Math.abs(difference) <= 0.01 ? "ok" : "error";
+}
+
+function collectRepaymentPlan() {
+  return [...document.querySelectorAll(".repayment-plan-row")].map((row) => ({
+    sequence: Number(row.querySelector("[data-plan-sequence]").value),
+    due_date: row.querySelector("[data-plan-due-date]").value,
+    amount: row.querySelector("[data-plan-amount]").value,
+  }));
 }
 
 function repaymentProgressRows(progress) {
   if (!progress) return '<div class="muted">批准协议后生成履约进度</div>';
-  const labels = { paid: "已完成", partial: "部分还款", pending: "待还款", overdue: "已逾期" };
-  return `<div class="repayment-progress-summary"><div><span>协议金额</span><strong>${escapeHtml(progress.total_debt)} 元</strong></div><div><span>累计还款</span><strong>${escapeHtml(progress.total_paid)} 元</strong></div><div><span>剩余金额</span><strong>${escapeHtml(progress.outstanding)} 元</strong></div><div><span>履约状态</span><strong>${escapeHtml(progress.status)}</strong></div></div><div class="repayment-plan-list">${(progress.installments || []).map((item) => `<div><strong>第 ${escapeHtml(item.sequence)} 期</strong><span>${escapeHtml(item.due_date)}</span><span>${escapeHtml(item.paid)} / ${escapeHtml(item.amount)} 元 · ${escapeHtml(labels[item.status] || item.status)}</span></div>`).join("")}</div>`;
+  return `<div class="repayment-progress-summary"><div><span>协议金额</span><strong>${escapeHtml(progress.total_debt)} 元</strong></div><div><span>累计还款</span><strong>${escapeHtml(progress.total_paid)} 元</strong></div><div><span>剩余金额</span><strong>${escapeHtml(progress.outstanding)} 元</strong></div><div><span>履约状态</span><strong>${escapeHtml(repaymentProgressLabels[progress.status] || progress.status)}</strong></div></div><div class="repayment-plan-list">${(progress.installments || []).map((item) => `<div><strong>第 ${escapeHtml(item.sequence)} 期</strong><span>${escapeHtml(item.due_date)}</span><span>${escapeHtml(item.paid)} / ${escapeHtml(item.amount)} 元 · ${escapeHtml(repaymentProgressLabels[item.status] || item.status)}</span></div>`).join("")}</div>`;
 }
 
-function repaymentLifecycle(review, result) {
-  const structured = ((result.metadata || {}).structured_fields || {});
-  const performance = review.progress?.status || (review.workflow_status === "written" ? "tracking" : "pending");
-  const steps = [
-    { label: "协议归档", detail: result.plaintiff && result.defendant ? "当事人已识别" : "等待补全当事人", active: Boolean(result.plaintiff && result.defendant) },
-    { label: "分期履约", detail: review.progress ? `累计 ${review.progress.total_paid} 元` : "等待协议批准", active: Boolean(review.progress) },
-    { label: "违约 / 结清", detail: performance === "completed" ? "已结清" : performance === "defaulted" ? "已违约" : "持续观察群消息", active: ["completed", "defaulted"].includes(performance) },
-    { label: "仲裁推进", detail: structured.arbitration_case_no || structured.arbitration_institution || "尚未进入仲裁", active: Boolean(structured.arbitration_case_no) },
-  ];
-  return `<div class="repayment-lifecycle">${steps.map((step, index) => `<div class="repayment-stage ${step.active ? "active" : ""}"><span>${index + 1}</span><div><strong>${escapeHtml(step.label)}</strong><small>${escapeHtml(step.detail)}</small></div></div>`).join("")}</div>`;
+function repaymentLifecycle(review) {
+  const isAgreement = review.material_kind === "agreement";
+  const status = review.workflow_status;
+  const reviewed = !["incomplete", "pending_review"].includes(status);
+  const writing = status === "pending_write";
+  const written = status === "written";
+  const failed = status === "write_failed";
+  const rejected = status === "rejected";
+  const steps = isAgreement
+    ? [
+        { label: "资料识别", detail: "协议与分期字段", state: "done" },
+        { label: "人工确认", detail: rejected ? "已判定为非还款资料" : reviewed ? "已确认协议内容" : "等待核对原件", state: rejected || reviewed ? "done" : "current" },
+        { label: "建立履约", detail: written ? "履约计划已生效" : writing ? "正在生成履约记录" : "确认后开始跟踪", state: written ? "done" : writing ? "current" : failed ? "error" : "" },
+        { label: "金山写入", detail: written ? "已完成" : failed ? "写入失败" : "等待业务确认", state: written ? "done" : failed ? "error" : "" },
+      ]
+    : [
+        { label: "凭证识别", detail: "金额与当事人", state: "done" },
+        { label: "人工确认", detail: rejected ? "已判定为非还款资料" : reviewed ? "已确认回款归属" : "等待关联协议", state: rejected || reviewed ? "done" : "current" },
+        { label: "更新履约", detail: written ? "余额和期次已更新" : writing ? "正在登记回款" : "确认后登记", state: written ? "done" : writing ? "current" : failed ? "error" : "" },
+        { label: "同步台账", detail: written ? "已完成" : failed ? "写入失败" : "等待业务确认", state: written ? "done" : failed ? "error" : "" },
+      ];
+  return `<div class="repayment-lifecycle">${steps.map((step, index) => `<div class="repayment-stage ${step.state}"><span>${index + 1}</span><div><strong>${escapeHtml(step.label)}</strong><small>${escapeHtml(step.detail)}</small></div></div>`).join("")}</div>`;
 }
 
-function repaymentLedgerSummary(review, result) {
-  const structured = ((result.metadata || {}).structured_fields || {});
-  const values = [
-    ["证据情况", review.material_kind === "agreement" ? "协议原件已留存" : "回款凭证已留存"],
-    ["履约状态", review.progress?.status || "待建立履约进度"],
-    ["仲裁机构", structured.arbitration_institution || "待补充"],
-    ["仲裁案号", structured.arbitration_case_no || "尚未提交"],
-    ["金山行号", review.external_row_index == null ? "尚未写入" : `第 ${review.external_row_index} 行`],
-    ["合计还款", review.progress ? `${review.progress.total_paid} 元` : "0.00 元"],
-  ];
-  return `<div class="repayment-ledger-grid">${values.map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("")}</div>`;
+function repaymentEffectPreview(review, agreements, selectedAgreementId) {
+  const result = review.final_result || review.ocr_result || {};
+  if (review.material_kind === "agreement") {
+    const installmentCount = repaymentPlanItems(result).length;
+    return `<div class="repayment-effect-preview"><span>本次确认将执行</span><strong>建立 1 份履约协议</strong><ul><li>登记 ${installmentCount || "待补全"} 期还款计划</li><li>归档协议原件并写入金山还款台账</li><li>按未来到期日生成分期提醒</li></ul></div>`;
+  }
+  const agreement = agreements.find((item) => item.event_id === Number(selectedAgreementId));
+  const agreementLabel = agreement
+    ? `${agreement.creditor} → ${agreement.debtor} · 剩余 ${agreement.outstanding} 元`
+    : "尚未选择履约协议";
+  return `<div class="repayment-effect-preview ${agreement ? "" : "warning"}"><span>本次确认将执行</span><strong id="repayment-effect-agreement">${escapeHtml(agreementLabel)}</strong><ul><li>登记本次回款并重新计算各期余额</li><li>取消已经足额履行期次的待发送提醒</li><li>更新金山还款情况和合计回款</li></ul></div>`;
 }
 
-function repaymentMaterialDetail(review) {
+function repaymentMaterialDetail(review, agreements) {
   const result = review.final_result || review.ocr_result || {};
   const editable = review.review_status === "pending";
   const kindLabel = review.material_kind === "agreement" ? "还款协议" : "还款凭证";
+  const structured = ((result.metadata || {}).structured_fields || {});
+  const sameGroupAgreements = agreements.filter((item) => item.group_id === review.group_id);
+  const selectedAgreementId = review.agreement_event_id || (result.metadata || {}).repayment_agreement_event_id || "";
+  const primaryLabel = review.material_kind === "agreement" ? "确认协议并开始跟踪" : "确认本次回款";
+  const agreementOptions = sameGroupAgreements.length
+    ? sameGroupAgreements.map((item) => `<option value="${item.event_id}" ${Number(selectedAgreementId) === item.event_id ? "selected" : ""}>${escapeHtml(`${item.creditor} → ${item.debtor} · 剩余 ${item.outstanding} 元`)}</option>`).join("")
+    : '<option value="">该群暂无已确认协议</option>';
+  const syncSummary = review.workflow_status === "pending_review" || review.workflow_status === "incomplete"
+    ? ""
+    : `<div class="summons-sync-summary"><div><span>金山状态</span><strong>${escapeHtml(repaymentSyncLabels[review.sync_status] || review.sync_status || "等待写入")}</strong></div><div><span>目标子表行号</span><strong>${escapeHtml(review.external_row_index == null ? "-" : review.external_row_index)}</strong></div><div><span>写入错误</span><strong>${escapeHtml(review.sync_error || "-")}</strong></div></div>`;
   return `<div class="review-detail-header"><div class="summons-heading"><span class="eyebrow">${escapeHtml(review.group_name || "未命名群")} · ${kindLabel}</span><strong>${escapeHtml(review.original_filename || `资料 ${review.media_file_id}`)}</strong><div class="muted mono">${escapeHtml(review.group_id)} · ${escapeHtml(review.msg_id || "无消息 ID")}</div></div><div class="review-header-actions">${badge(repaymentWorkflowLabels[review.workflow_status] || review.workflow_status)}</div></div>
-    ${repaymentLifecycle(review, result)}
-    <div class="review-detail-grid"><section class="review-preview"><div id="review-preview" class="preview-placeholder">加载预览中...</div></section><section class="review-fields">
-      <form id="repayment-form"><div class="summons-callout">本流程不依赖案件绑定。协议、实际回款、违约/结清话术和仲裁进度按债权人 + 债务人关联到同一条金山台账。</div><div class="form-grid review-form-grid"><div class="field"><label>债权人</label><input name="plaintiff" required value="${escapeHtml(result.plaintiff || "")}" ${editable ? "" : "disabled"} /></div><div class="field"><label>债务人</label><input name="defendant" required value="${escapeHtml(result.defendant || "")}" ${editable ? "" : "disabled"} /></div><div class="field"><label>${review.material_kind === "agreement" ? "协议总额" : "本次还款"}</label><input name="amount" type="number" min="0" step="0.01" required value="${escapeHtml(result.amount == null ? "" : result.amount)}" ${editable ? "" : "disabled"} /></div><div class="field wide"><label>复核备注</label><textarea name="note" ${editable ? "" : "disabled"}>${escapeHtml(review.review_note || "")}</textarea></div></div>
-      <div class="field-label">${review.material_kind === "agreement" ? "分期还款方案" : "匹配协议履约情况"}</div>${review.material_kind === "agreement" ? repaymentPlanRows(result) : repaymentProgressRows(review.progress)}
-      <div class="field-label repayment-ledger-title">仲裁推进台账</div>${repaymentLedgerSummary(review, result)}
-      <div class="review-actions">${editable ? '<button type="button" data-repayment-approve>批准并写入</button><button type="button" class="ghost" data-repayment-correct>保存修正并写入</button><button type="button" class="ghost" data-repayment-reanalyze>重新识别</button><button type="button" class="danger-button" data-repayment-reject>非还款资料</button>' : ""}${review.workflow_status === "write_failed" ? '<button type="button" data-repayment-retry>重试金山写入</button>' : ""}</div></form>
-      <div class="summons-sync-summary"><div><span>金山状态</span><strong>${escapeHtml(review.sync_status || "尚未写入")}</strong></div><div><span>目标子表行号</span><strong>${escapeHtml(review.external_row_index == null ? "-" : review.external_row_index)}</strong></div><div><span>写入错误</span><strong>${escapeHtml(review.sync_error || "-")}</strong></div></div>
+    ${repaymentLifecycle(review)}
+    <div class="review-detail-grid"><section class="review-preview"><div class="preview-toolbar" aria-label="原图旋转工具"><button type="button" class="preview-tool-button" data-preview-rotate="-90" title="向左旋转 90 度" aria-label="向左旋转 90 度">↶</button><span id="preview-rotation-label">0°</span><button type="button" class="preview-tool-button" data-preview-rotate="90" title="向右旋转 90 度" aria-label="向右旋转 90 度">↷</button></div><div id="review-preview" class="preview-placeholder">加载预览中...</div></section><section class="review-fields">
+      <form id="repayment-form"><div class="summons-callout">${review.material_kind === "agreement" ? "业务去向：协议履约台账" : "业务去向：关联协议的回款记录"}</div><div class="form-grid review-form-grid"><div class="field"><label>债权人</label><input name="plaintiff" required value="${escapeHtml(result.plaintiff || "")}" ${editable ? "" : "disabled"} /></div><div class="field"><label>债务人</label><input name="defendant" required value="${escapeHtml(result.defendant || "")}" ${editable ? "" : "disabled"} /></div><div class="field"><label>${review.material_kind === "agreement" ? "协议总额" : "本次回款"}</label><input name="amount" type="number" min="0.01" step="0.01" required value="${escapeHtml(result.amount == null ? "" : result.amount)}" ${editable ? "" : "disabled"} /></div>${review.material_kind === "agreement" ? `<div class="field"><label>仲裁机构</label><input name="arbitration_institution" value="${escapeHtml(structured.arbitration_institution || "")}" ${editable ? "" : "disabled"} /></div><div class="field"><label>仲裁案号</label><input name="arbitration_case_no" value="${escapeHtml(structured.arbitration_case_no || "")}" ${editable ? "" : "disabled"} /></div>` : `<div class="field"><label>关联协议 <span class="required">必选</span></label><select name="repayment_agreement_event_id" ${editable ? "" : "disabled"}><option value="">选择同群协议</option>${agreementOptions}</select></div><div class="field"><label>对应期数</label><input name="installment_sequence" type="number" min="1" max="100" value="${escapeHtml(structured.installment_sequence || "")}" ${editable ? "" : "disabled"} /></div>`}<div class="field wide"><label>复核备注</label><textarea name="note" ${editable ? "" : "disabled"}>${escapeHtml(review.review_note || "")}</textarea></div></div>
+      <div class="field-label">${review.material_kind === "agreement" ? "分期还款方案" : "当前协议履约情况"}</div>${review.material_kind === "agreement" ? repaymentPlanEditor(result, editable) : repaymentProgressRows(review.progress)}
+      ${editable ? repaymentEffectPreview(review, sameGroupAgreements, selectedAgreementId) : ""}
+      <div class="review-actions">${editable ? `<button type="button" data-repayment-confirm>${primaryLabel}</button><button type="button" class="ghost" data-repayment-reanalyze>重新识别</button><button type="button" class="danger-button" data-repayment-reject>不是还款资料</button>` : `<span class="review-audit">复核人：${escapeHtml(review.reviewed_by || "-")} · ${escapeHtml(formatDateTime(review.reviewed_at))}</span>`}${review.workflow_status === "write_failed" ? '<button type="button" data-repayment-retry>重试金山写入</button>' : ""}</div></form>
+      ${syncSummary}
+      <div class="review-context-block"><div class="context-heading"><div><div class="field-label">相邻群聊上下文</div><span>${(review.context_messages || review.available_context_messages || []).length} 条消息</span></div></div>${reviewContextTimeline(review)}</div>
       <div class="ocr-text-block"><div class="field-label">OCR 原文</div><pre>${escapeHtml(review.extracted_text || "无识别文本")}</pre></div></section></div>`;
 }
 
@@ -1831,37 +2037,230 @@ async function submitRepaymentMaterial(review, decision) {
     showAlert("标记为非还款资料时请填写原因", "error");
     return;
   }
+  if (decision === "corrected" && review.material_kind === "payment" && !values.repayment_agreement_event_id) {
+    showAlert("请选择该回款凭证对应的同群协议", "error");
+    return;
+  }
+  let repaymentPlan = null;
+  if (decision === "corrected" && review.material_kind === "agreement") {
+    repaymentPlan = collectRepaymentPlan();
+    if (!repaymentPlan.length || repaymentPlan.some((item) => !item.sequence || !item.due_date || !item.amount)) {
+      showAlert("请补全每一期的期数、应还日期和金额", "error");
+      return;
+    }
+    if (new Set(repaymentPlan.map((item) => item.sequence)).size !== repaymentPlan.length) {
+      showAlert("分期期数不能重复", "error");
+      return;
+    }
+    const installmentTotal = repaymentPlan.reduce((sum, item) => sum + Number(item.amount), 0);
+    if (Math.abs(installmentTotal - Number(values.amount)) > 0.01) {
+      showAlert(`分期金额合计 ${installmentTotal.toFixed(2)} 元，与协议总额不一致`, "error");
+      return;
+    }
+  }
   const payload = decision === "rejected"
     ? { decision, note: values.note.trim() }
     : decision === "corrected"
-      ? { decision, event_type: review.material_kind === "agreement" ? "repayment_agreement" : "payment_screenshot", plaintiff: values.plaintiff.trim(), defendant: values.defendant.trim(), amount: values.amount, note: values.note.trim() || null }
+      ? {
+          decision,
+          event_type: review.material_kind === "agreement" ? "repayment_agreement" : "payment_screenshot",
+          plaintiff: values.plaintiff.trim(),
+          defendant: values.defendant.trim(),
+          amount: values.amount,
+          note: values.note.trim() || null,
+          ...(review.material_kind === "agreement" ? {
+            repayment_plan: repaymentPlan,
+            arbitration_institution: values.arbitration_institution.trim() || null,
+            arbitration_case_no: values.arbitration_case_no.trim() || null,
+          } : {
+            repayment_agreement_event_id: Number(values.repayment_agreement_event_id),
+            ...(values.installment_sequence ? { installment_sequence: Number(values.installment_sequence) } : {}),
+          }),
+        }
       : { decision, note: values.note.trim() || null };
-  await api(`/api/v1/legal/ocr-reviews/${review.media_file_id}/decision`, { method: "POST", body: JSON.stringify(payload) });
-  showAlert("还款资料已批准，正在进入金山写入队列");
-  await renderRepaymentMaterials();
+  const actionButton = decision === "rejected"
+    ? document.querySelector("[data-repayment-reject]")
+    : document.querySelector("[data-repayment-confirm]");
+  const originalLabel = actionButton?.textContent;
+  if (actionButton) {
+    actionButton.disabled = true;
+    actionButton.textContent = decision === "rejected" ? "正在移出..." : "正在确认...";
+  }
+  try {
+    await api(`/api/v1/legal/ocr-reviews/${review.media_file_id}/decision`, { method: "POST", body: JSON.stringify(payload) });
+    state.selectedRepaymentId = null;
+    releaseReviewPreview();
+    showAlert(
+      decision === "rejected"
+        ? "资料已移出还款待办"
+        : review.material_kind === "agreement"
+          ? "协议已确认，履约计划正在生成"
+          : "回款已确认，余额和提醒正在更新",
+    );
+    await renderRepaymentMaterials();
+  } catch (error) {
+    showAlert(error.message, "error");
+    if (actionButton) {
+      actionButton.disabled = false;
+      actionButton.textContent = originalLabel;
+    }
+  }
+}
+
+async function selectRepaymentInboxItem(summary) {
+  releaseReviewPreview();
+  state.selectedRepaymentId = summary.media_file_id;
+  document.querySelectorAll("[data-repayment-id]").forEach((button) => button.classList.toggle("active", Number(button.dataset.repaymentId) === summary.media_file_id));
+  const pane = $(".review-detail-pane");
+  pane.innerHTML = '<div class="detail-loading">正在加载资料...</div>';
+  const [detail, agreementData] = await Promise.all([
+    api(`/api/v1/legal/ocr-reviews/${summary.media_file_id}`),
+    summary.material_kind === "payment"
+      ? api(`/api/v1/legal/ocr-reviews/repayment-agreements?group_id=${encodeURIComponent(summary.group_id)}&page_size=100`)
+      : Promise.resolve({ items: [] }),
+  ]);
+  if (state.selectedRepaymentId !== summary.media_file_id || state.view !== "repayment-materials") return;
+  const agreements = agreementData.items || [];
+  const selected = { ...summary, ...detail };
+  pane.innerHTML = repaymentMaterialDetail(selected, agreements);
+  if (selected.material_kind === "agreement" && selected.review_status === "pending") bindRepaymentPlanEditor();
+  document.querySelector("[data-repayment-confirm]")?.addEventListener("click", () => submitRepaymentMaterial(selected, "corrected"));
+  document.querySelector("[data-repayment-reject]")?.addEventListener("click", () => submitRepaymentMaterial(selected, "rejected"));
+  document.querySelector("[name='repayment_agreement_event_id']")?.addEventListener("change", (event) => {
+    const agreement = agreements.find((item) => item.event_id === Number(event.target.value));
+    const target = $("#repayment-effect-agreement");
+    if (target) target.textContent = agreement ? `${agreement.creditor} → ${agreement.debtor} · 剩余 ${agreement.outstanding} 元` : "尚未选择履约协议";
+    target?.closest(".repayment-effect-preview")?.classList.toggle("warning", !agreement);
+  });
+  document.querySelector("[data-repayment-reanalyze]")?.addEventListener("click", async () => { await api(`/api/v1/legal/media-files/${selected.media_file_id}/ocr?force_reprocess=true`, { method: "POST" }); state.selectedRepaymentId = null; showAlert("已重新识别还款资料"); await renderRepaymentMaterials(); });
+  document.querySelector("[data-repayment-retry]")?.addEventListener("click", async () => { await api(`/api/v1/legal/ocr-reviews/repayment-materials/${selected.media_file_id}/retry`, { method: "POST" }); showAlert("已重试金山写入"); await renderRepaymentMaterials(); });
+  await loadReviewPreview(selected);
+}
+
+function repaymentAgreementDetail(agreement) {
+  const statusLabel = repaymentProgressLabels[agreement.status] || agreement.status;
+  const hasOverpayment = Number(agreement.overpayment || 0) > 0;
+  const balanceLabel = hasOverpayment ? "超额回款" : "剩余金额";
+  const balanceValue = hasOverpayment ? agreement.overpayment : agreement.outstanding;
+  const nextAction = agreement.status === "completed"
+    ? { tone: "complete", title: "履约已结清", detail: hasOverpayment ? `已超额回款 ${agreement.overpayment} 元，请核对是否需要退款或冲正。` : "对应分期提醒已结束，保留协议和回款凭证供后续核对。" }
+    : agreement.status === "defaulted"
+      ? { tone: "danger", title: `${agreement.overdue_count} 期已逾期`, detail: "先核对群内是否存在未关联回款凭证；确认未付款后再推进逾期提醒或仲裁。" }
+      : { tone: "normal", title: agreement.next_due_date ? `下一期 ${agreement.next_due_date}` : "等待后续履约", detail: agreement.next_due_date ? `应还 ${agreement.next_due_amount} 元，下一条计划提醒：${agreement.next_remind_at ? formatDateTime(agreement.next_remind_at) : "暂无"}` : "当前没有未结分期。" };
+  const lifecycle = [
+    ["协议归档", agreement.original_filename || "协议原件"],
+    ["分期履约", `${agreement.total_paid} / ${agreement.total_debt} 元`],
+    ["履约结果", ["completed", "defaulted"].includes(agreement.status) ? statusLabel : "持续履约中"],
+    ["仲裁推进", agreement.arbitration_case_no || agreement.arbitration_institution || "尚未提交"],
+  ];
+  return `<div class="review-detail-header"><div class="summons-heading"><span class="eyebrow">${escapeHtml(agreement.group_name || "未命名群")}</span><strong>${escapeHtml(`${agreement.creditor} → ${agreement.debtor}`)}</strong><div class="muted mono">协议事件 #${agreement.event_id} · ${escapeHtml(agreement.group_id)}</div></div><div class="review-header-actions"><span class="badge ${agreement.status === "completed" ? "ok" : agreement.status === "defaulted" ? "danger" : "warn"}">${escapeHtml(statusLabel)}</span>${agreement.preview_url ? `<button type="button" class="ghost small" data-open-repayment-agreement="${escapeHtml(agreement.preview_url)}">查看协议原件</button>` : ""}<button type="button" class="ghost small" data-open-repayment-kdocs>查看金山台账</button></div></div>
+    <div class="repayment-lifecycle">${lifecycle.map(([label, detail], index) => `<div class="repayment-stage ${index < 2 || agreement.status === "completed" || (index === 3 && agreement.arbitration_case_no) ? "active" : ""}"><span>${index + 1}</span><div><strong>${escapeHtml(label)}</strong><small>${escapeHtml(detail)}</small></div></div>`).join("")}</div>
+    <div class="repayment-ledger-body">
+      <div class="repayment-action-strip ${escapeHtml(nextAction.tone)}"><div><span>当前动作</span><strong>${escapeHtml(nextAction.title)}</strong></div><p>${escapeHtml(nextAction.detail)}</p></div>
+      <div class="repayment-progress-summary"><div><span>协议总额</span><strong>${escapeHtml(agreement.total_debt)} 元</strong></div><div><span>累计回款</span><strong>${escapeHtml(agreement.total_paid)} 元</strong></div><div><span>${escapeHtml(balanceLabel)}</span><strong>${escapeHtml(balanceValue)} 元</strong></div><div><span>下一期</span><strong>${escapeHtml(agreement.next_due_date ? `${agreement.next_due_date} · ${agreement.next_due_amount} 元` : "无待还款")}</strong></div></div>
+      <div class="repayment-ledger-meta"><div><span>待发送提醒</span><strong>${escapeHtml(agreement.pending_reminder_count)} 条</strong><small>${escapeHtml(agreement.next_remind_at ? formatDateTime(agreement.next_remind_at) : "无后续提醒")}</small></div><div><span>逾期期数</span><strong>${escapeHtml(agreement.overdue_count)} 期</strong></div><div><span>金山写入</span><strong>${escapeHtml(repaymentSyncLabels[agreement.sync_status] || agreement.sync_status || "待核对")}</strong><small>${escapeHtml(agreement.external_row_index == null ? "未取得行号" : `第 ${agreement.external_row_index} 行`)}</small></div><div><span>仲裁信息</span><strong>${escapeHtml(agreement.arbitration_case_no || agreement.arbitration_institution || "尚未提交")}</strong></div></div>
+      <div class="field-label repayment-ledger-title">分期履约</div><div class="repayment-plan-list">${agreement.installments.length ? agreement.installments.map((item) => `<div class="installment-${escapeHtml(item.status)}"><strong>第 ${escapeHtml(item.sequence)} 期</strong><span>${escapeHtml(item.due_date)}</span><span>已还 ${escapeHtml(item.paid)} / ${escapeHtml(item.amount)} 元 · ${escapeHtml(repaymentProgressLabels[item.status] || item.status)}</span></div>`).join("") : '<div class="empty-state">暂无分期计划</div>'}</div>
+      <div class="field-label repayment-ledger-title">回款记录</div><div class="repayment-payment-timeline">${agreement.payments.length ? agreement.payments.map((item) => `<div><span>${escapeHtml(item.payment_date)}</span><strong>${escapeHtml(item.amount)} 元</strong><small>${item.installment_sequence ? `第 ${escapeHtml(item.installment_sequence)} 期` : "自动按最早未结期分配"}</small>${item.preview_url ? `<button type="button" class="ghost small" data-repayment-receipt="${escapeHtml(item.preview_url)}">查看凭证</button>` : ""}</div>`).join("") : '<div class="empty-state">尚未确认回款</div>'}</div>
+      ${agreement.sync_error ? `<div class="sync-error-block"><strong>金山写入异常</strong><span>${escapeHtml(agreement.sync_error)}</span></div>` : ""}
+    </div>`;
+}
+
+function repaymentStatsStrip(stats) {
+  const values = stats || {};
+  return `<div class="repayment-stats-strip">
+    <div><span>协议总数</span><strong>${escapeHtml(values.total || 0)}</strong></div>
+    <div><span>履约中</span><strong>${escapeHtml(values.in_progress || 0)}</strong></div>
+    <button type="button" class="${state.repaymentLedgerStatus === "defaulted" ? "active danger" : ""}" data-repayment-stat-status="defaulted"><span>已逾期</span><strong>${escapeHtml(values.defaulted || 0)}</strong></button>
+    <button type="button" class="${state.repaymentLedgerFocus === "due_soon" ? "active" : ""}" data-repayment-stat-focus="due_soon"><span>7 日内到期</span><strong>${escapeHtml(values.due_soon || 0)}</strong></button>
+    <button type="button" class="${state.repaymentLedgerStatus === "completed" ? "active" : ""}" data-repayment-stat-status="completed"><span>已结清</span><strong>${escapeHtml(values.completed || 0)}</strong></button>
+    <button type="button" class="${state.repaymentLedgerFocus === "sync_failed" ? "active danger" : ""}" data-repayment-stat-focus="sync_failed"><span>写入异常</span><strong>${escapeHtml(values.sync_failed || 0)}</strong></button>
+    <div><span>未回款合计</span><strong>${escapeHtml(values.outstanding_total || "0.00")} 元</strong></div>
+  </div>`;
+}
+
+function repaymentDueLabel(agreement) {
+  if (!agreement.next_due_date) return "无待还款";
+  const due = new Date(`${agreement.next_due_date}T00:00:00`);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const days = Math.round((due.getTime() - today.getTime()) / 86400000);
+  if (days < 0) return `逾期 ${Math.abs(days)} 天`;
+  if (days === 0) return "今日到期";
+  if (days <= 7) return `${days} 天后到期`;
+  return `下期 ${agreement.next_due_date}`;
+}
+
+function repaymentMaterialListItem(item) {
+  const result = item.final_result || item.ocr_result || {};
+  const kindLabel = item.material_kind === "agreement" ? "协议" : "回款";
+  const subject = result.defendant || item.original_filename || `资料 ${item.media_file_id}`;
+  const amount = result.amount == null ? "金额待补全" : `${result.amount} 元`;
+  return `<button class="review-list-item" data-repayment-id="${item.media_file_id}"><span>${escapeHtml(`${kindLabel} · ${subject}`)}</span><small>${escapeHtml(item.group_name || item.group_id)} · ${escapeHtml(amount)}</small><em>${escapeHtml(repaymentWorkflowLabels[item.workflow_status] || item.workflow_status)}</em></button>`;
+}
+
+async function renderRepaymentLedger() {
+  releaseReviewPreview();
+  const renderToken = ++state.repaymentRenderToken;
+  const ledgerQuery = new URLSearchParams({
+    page: String(state.repaymentLedgerPage),
+    page_size: String(state.repaymentLedgerPageSize),
+  });
+  if (state.repaymentLedgerStatus) ledgerQuery.set("status", state.repaymentLedgerStatus);
+  if (state.repaymentLedgerFocus) ledgerQuery.set("focus", state.repaymentLedgerFocus);
+  if (state.repaymentLedgerQuery) ledgerQuery.set("query", state.repaymentLedgerQuery);
+  const ledgerData = await api(`/api/v1/legal/ocr-reviews/repayment-agreements?${ledgerQuery}`);
+  if (renderToken !== state.repaymentRenderToken || state.view !== "repayment-ledger") return;
+  const totalPages = Math.max(1, Math.ceil((ledgerData.total || 0) / state.repaymentLedgerPageSize));
+  if (state.repaymentLedgerPage > totalPages) {
+    state.repaymentLedgerPage = totalPages;
+    await renderRepaymentLedger();
+    return;
+  }
+  const items = ledgerData.items || [];
+  if (!items.some((item) => item.event_id === state.selectedRepaymentAgreementId)) state.selectedRepaymentAgreementId = items[0]?.event_id || null;
+  const selected = items.find((item) => item.event_id === state.selectedRepaymentAgreementId) || null;
+  $("#content").innerHTML = `<div class="repayment-topbar"><form id="repayment-ledger-filter" class="repayment-ledger-filter"><select name="status"><option value="">全部履约状态</option>${[["defaulted","已逾期"],["partial","部分回款"],["active","尚未回款"],["completed","已结清"]].map(([value,label]) => `<option value="${value}" ${state.repaymentLedgerStatus === value ? "selected" : ""}>${label}</option>`).join("")}</select><input name="query" value="${escapeHtml(state.repaymentLedgerQuery)}" placeholder="债权人、债务人或群名" /><button type="submit">查询</button><button type="button" class="ghost" data-repayment-filter-reset>清除</button></form></div>${repaymentStatsStrip(ledgerData.stats)}<div class="review-workspace repayment-ledger-workspace"><aside class="review-list-pane">${items.length ? items.map((item) => `<button class="review-list-item ${item.event_id === state.selectedRepaymentAgreementId ? "active" : ""}" data-agreement-id="${item.event_id}"><span>${escapeHtml(item.debtor || "债务人待确认")}</span><small>${escapeHtml(item.creditor)} · 剩余 ${escapeHtml(item.outstanding)} 元</small><em class="${item.status === "defaulted" ? "danger" : ""}">${escapeHtml(repaymentDueLabel(item))}</em></button>`).join("") : '<div class="empty-state">当前筛选下暂无协议</div>'}</aside><main class="review-detail-pane">${selected ? repaymentAgreementDetail(selected) : '<div class="empty-state">暂无符合条件的履约协议</div>'}</main></div><div class="kdocs-pagination"><span>共 ${escapeHtml(ledgerData.total || 0)} 份协议，第 ${state.repaymentLedgerPage} / ${totalPages} 页</span><button type="button" class="ghost small" data-repayment-ledger-prev ${state.repaymentLedgerPage <= 1 ? "disabled" : ""}>上一页</button><button type="button" class="ghost small" data-repayment-ledger-next ${state.repaymentLedgerPage >= totalPages ? "disabled" : ""}>下一页</button></div>`;
+  $("#repayment-ledger-filter").addEventListener("submit", async (event) => { event.preventDefault(); const values = Object.fromEntries(new FormData(event.currentTarget).entries()); state.repaymentLedgerStatus = values.status; state.repaymentLedgerFocus = ""; state.repaymentLedgerQuery = values.query.trim(); state.repaymentLedgerPage = 1; state.selectedRepaymentAgreementId = null; await renderRepaymentLedger(); });
+  document.querySelector("[data-repayment-filter-reset]").addEventListener("click", async () => { state.repaymentLedgerStatus = ""; state.repaymentLedgerFocus = ""; state.repaymentLedgerQuery = ""; state.repaymentLedgerPage = 1; state.selectedRepaymentAgreementId = null; await renderRepaymentLedger(); });
+  document.querySelectorAll("[data-repayment-stat-status]").forEach((button) => button.addEventListener("click", async () => { state.repaymentLedgerStatus = state.repaymentLedgerStatus === button.dataset.repaymentStatStatus ? "" : button.dataset.repaymentStatStatus; state.repaymentLedgerFocus = ""; state.repaymentLedgerPage = 1; state.selectedRepaymentAgreementId = null; await renderRepaymentLedger(); }));
+  document.querySelectorAll("[data-repayment-stat-focus]").forEach((button) => button.addEventListener("click", async () => { state.repaymentLedgerFocus = state.repaymentLedgerFocus === button.dataset.repaymentStatFocus ? "" : button.dataset.repaymentStatFocus; state.repaymentLedgerStatus = ""; state.repaymentLedgerPage = 1; state.selectedRepaymentAgreementId = null; await renderRepaymentLedger(); }));
+  document.querySelectorAll("[data-agreement-id]").forEach((button) => button.addEventListener("click", () => { const eventId = Number(button.dataset.agreementId); if (eventId === state.selectedRepaymentAgreementId) return; state.selectedRepaymentAgreementId = eventId; document.querySelectorAll("[data-agreement-id]").forEach((item) => item.classList.toggle("active", Number(item.dataset.agreementId) === eventId)); const item = items.find((row) => row.event_id === eventId); $(".review-detail-pane").innerHTML = repaymentAgreementDetail(item); bindRepaymentLedgerActions(item); }));
+  document.querySelector("[data-repayment-ledger-prev]")?.addEventListener("click", async () => { state.repaymentLedgerPage -= 1; state.selectedRepaymentAgreementId = null; await renderRepaymentLedger(); });
+  document.querySelector("[data-repayment-ledger-next]")?.addEventListener("click", async () => { state.repaymentLedgerPage += 1; state.selectedRepaymentAgreementId = null; await renderRepaymentLedger(); });
+  if (selected) bindRepaymentLedgerActions(selected);
 }
 
 async function renderRepaymentMaterials() {
-  const query = state.repaymentStatusFilter ? `?workflow_status=${encodeURIComponent(state.repaymentStatusFilter)}&page_size=100` : "?page_size=100";
-  const data = await api(`/api/v1/legal/ocr-reviews/repayment-materials${query}`);
-  const items = data.items || [];
-  if (!items.some((item) => item.media_file_id === state.selectedRepaymentId)) state.selectedRepaymentId = items[0]?.media_file_id || null;
-  const selected = items.find((item) => item.media_file_id === state.selectedRepaymentId) || null;
-  $("#content").innerHTML = `<div class="review-toolbar"><label for="repayment-status-filter">处理状态</label><select id="repayment-status-filter">${[["pending_review","待复核"],["incomplete","待补全"],["pending_write","待写入"],["written","已写入"],["write_failed","写入失败"],["rejected","非还款资料"],["","全部"]].map(([value,label]) => `<option value="${value}" ${state.repaymentStatusFilter === value ? "selected" : ""}>${label}</option>`).join("")}</select><span class="muted">${data.total} 条</span></div><div class="review-workspace"><aside class="review-list-pane">${items.length ? items.map((item) => `<button class="review-list-item ${item.media_file_id === state.selectedRepaymentId ? "active" : ""}" data-repayment-id="${item.media_file_id}"><span>${escapeHtml(item.original_filename || `资料 ${item.media_file_id}`)}</span><small>${item.material_kind === "agreement" ? "还款协议" : "回款凭证"} · ${escapeHtml(repaymentWorkflowLabels[item.workflow_status] || item.workflow_status)}</small></button>`).join("") : '<div class="empty-state">当前状态暂无还款资料</div>'}</aside><main class="review-detail-pane">${selected ? repaymentMaterialDetail(selected) : '<div class="empty-state">请选择还款资料</div>'}</main></div>`;
-  $("#repayment-status-filter").addEventListener("change", (event) => { state.repaymentStatusFilter = event.target.value; state.selectedRepaymentId = null; renderRepaymentMaterials(); });
-  document.querySelectorAll("[data-repayment-id]").forEach((button) => button.addEventListener("click", () => {
-    const repaymentId = Number(button.dataset.repaymentId);
-    if (repaymentId === state.selectedRepaymentId) return;
-    state.selectedRepaymentId = repaymentId;
-    renderRepaymentMaterials();
-  }));
-  if (!selected) return;
-  document.querySelector("[data-repayment-approve]")?.addEventListener("click", () => submitRepaymentMaterial(selected, "approved"));
-  document.querySelector("[data-repayment-correct]")?.addEventListener("click", () => submitRepaymentMaterial(selected, "corrected"));
-  document.querySelector("[data-repayment-reject]")?.addEventListener("click", () => submitRepaymentMaterial(selected, "rejected"));
-  document.querySelector("[data-repayment-reanalyze]")?.addEventListener("click", async () => { await api(`/api/v1/legal/media-files/${selected.media_file_id}/ocr?force_reprocess=true`, { method: "POST" }); showAlert("已重新识别还款资料"); await renderRepaymentMaterials(); });
-  document.querySelector("[data-repayment-retry]")?.addEventListener("click", async () => { await api(`/api/v1/legal/ocr-reviews/repayment-materials/${selected.media_file_id}/retry`, { method: "POST" }); showAlert("已重试金山写入"); await renderRepaymentMaterials(); });
-  await loadReviewPreview(selected);
+  releaseReviewPreview();
+  const renderToken = ++state.repaymentRenderToken;
+  const materialQuery = new URLSearchParams({
+    page: String(state.repaymentInboxPage),
+    page_size: String(state.repaymentInboxPageSize),
+  });
+  if (state.repaymentStatusFilter) materialQuery.set("workflow_status", state.repaymentStatusFilter);
+  if (state.repaymentKindFilter) materialQuery.set("material_kind", state.repaymentKindFilter);
+  const materialData = await api(`/api/v1/legal/ocr-reviews/repayment-materials?${materialQuery}`);
+  if (renderToken !== state.repaymentRenderToken || state.view !== "repayment-materials") return;
+  const totalPages = Math.max(1, Math.ceil((materialData.total || 0) / state.repaymentInboxPageSize));
+  if (state.repaymentInboxPage > totalPages) {
+    state.repaymentInboxPage = totalPages;
+    await renderRepaymentMaterials();
+    return;
+  }
+  const materials = materialData.items || [];
+  state.selectedRepaymentId = null;
+  $("#content").innerHTML = `<div class="repayment-topbar"><div class="review-toolbar repayment-inbox-filter"><label for="repayment-kind-filter">资料类型</label><select id="repayment-kind-filter">${[["","全部"],["agreement","还款协议"],["payment","回款凭证"]].map(([value,label]) => `<option value="${value}" ${state.repaymentKindFilter === value ? "selected" : ""}>${label}</option>`).join("")}</select><label for="repayment-status-filter">处理状态</label><select id="repayment-status-filter">${[["attention","需要处理"],["incomplete","待补全"],["pending_review","待复核"],["write_failed","写入失败"],["pending_write","写入中"],["written","已完成"],["rejected","非还款资料"],["","全部"]].map(([value,label]) => `<option value="${value}" ${state.repaymentStatusFilter === value ? "selected" : ""}>${label}</option>`).join("")}</select><span class="muted">${materialData.total} 条</span></div></div><div class="review-workspace repayment-inbox-workspace"><aside class="review-list-pane">${materials.length ? materials.map(repaymentMaterialListItem).join("") : '<div class="empty-state">当前没有符合条件的还款资料</div>'}</aside><main class="review-detail-pane"><div class="repayment-selection-empty"><strong>当前未选择资料</strong><span>原件未打开</span></div></main></div><div class="kdocs-pagination"><span>共 ${escapeHtml(materialData.total || 0)} 份资料，第 ${state.repaymentInboxPage} / ${totalPages} 页</span><button type="button" class="ghost small" data-repayment-inbox-prev ${state.repaymentInboxPage <= 1 ? "disabled" : ""}>上一页</button><button type="button" class="ghost small" data-repayment-inbox-next ${state.repaymentInboxPage >= totalPages ? "disabled" : ""}>下一页</button></div>`;
+  $("#repayment-status-filter").addEventListener("change", async (event) => { state.repaymentStatusFilter = event.target.value; state.repaymentInboxPage = 1; await renderRepaymentMaterials(); });
+  $("#repayment-kind-filter").addEventListener("change", async (event) => { state.repaymentKindFilter = event.target.value; state.repaymentInboxPage = 1; await renderRepaymentMaterials(); });
+  document.querySelectorAll("[data-repayment-id]").forEach((button) => button.addEventListener("click", () => { const item = materials.find((row) => row.media_file_id === Number(button.dataset.repaymentId)); if (item && item.media_file_id !== state.selectedRepaymentId) selectRepaymentInboxItem(item).catch((error) => showAlert(error.message, "error")); }));
+  document.querySelector("[data-repayment-inbox-prev]")?.addEventListener("click", async () => { state.repaymentInboxPage -= 1; await renderRepaymentMaterials(); });
+  document.querySelector("[data-repayment-inbox-next]")?.addEventListener("click", async () => { state.repaymentInboxPage += 1; await renderRepaymentMaterials(); });
+}
+
+function bindRepaymentLedgerActions(agreement) {
+  document.querySelector("[data-open-repayment-kdocs]")?.addEventListener("click", () => { state.kdocsTarget = "repayment"; state.kdocsPage = 1; setView("kdocs-browser"); });
+  document.querySelector("[data-open-repayment-agreement]")?.addEventListener("click", (event) => openProtectedMedia(event.currentTarget.dataset.openRepaymentAgreement).catch((error) => showAlert(error.message, "error")));
+  document.querySelectorAll("[data-repayment-receipt]").forEach((button) => button.addEventListener("click", () => openProtectedMedia(button.dataset.repaymentReceipt).catch((error) => showAlert(error.message, "error"))));
 }
 
 async function renderReminders() {
@@ -2019,7 +2418,7 @@ async function openProtectedMedia(url) {
   try {
     const headers = state.apiKey ? { "X-API-Key": state.apiKey } : {};
     const response = await fetch(url, { headers });
-    if (!response.ok) throw new Error("缴费截图加载失败");
+    if (!response.ok) throw new Error("资料预览加载失败");
     const objectUrl = URL.createObjectURL(await response.blob());
     if (target) target.location = objectUrl;
     else window.open(objectUrl, "_blank");
@@ -2399,6 +2798,7 @@ const kdocsVisibleColumns = {
   enforcement: ["原告主体", "被告", "文书执行类型", "上传文件", "应还款时间", "民初案号", "总金额", "已还欠款", "案件状态", "备注"],
   court: ["开庭时间", "时间", "公司（原告）", "民初案号", "被告", "开庭方式", "跟进人", "金额", "传票", "核对"],
   payment: ["日期", "原告", "被告", "案号", "缴费信息", "支付情况", "跟踪情况", "剩余缴费时间", "缴费截图上传"],
+  repayment: ["甲方（债权人）", "乙方（债务人）", "协议文本", "提交 履约情况", "仲裁机构", "仲裁案号", "仲裁案件进度", "还款方案", "还款情况", "合计还款"],
 };
 
 function kdocsValue(value) {
@@ -2926,6 +3326,7 @@ async function loadView() {
     if (state.view === "archive-groups") await renderArchiveGroups();
     if (state.view === "ocr-reviews") await renderOCRReviews();
     if (state.view === "court-summons") await renderCourtSummons();
+    if (state.view === "repayment-ledger") await renderRepaymentLedger();
     if (state.view === "repayment-materials") await renderRepaymentMaterials();
     if (state.view === "recognition-settings") await renderRecognitionSettings();
     if (state.view === "payment-trackings") await renderPaymentTrackings();

@@ -77,15 +77,37 @@ def test_admin_separates_business_workflows_and_exposes_capture_only_groups():
     html = (ROOT / "app/static/admin/index.html").read_text(encoding="utf-8")
     script = (ROOT / "app/static/admin/admin.js").read_text(encoding="utf-8")
 
-    for label in ("缴费跟踪", "法律文书", "还款与仲裁", "沟通提醒", "金山台账", "系统管理"):
+    for label in ("缴费跟踪", "法律文书", "还款管理", "沟通提醒", "金山台账", "系统管理"):
         assert label in html
     assert "诉讼与执行" not in html
     assert 'data-view="cases"' not in html
     assert '["capture_only", "仅采集"]' in script
     assert "不识别、不提醒、不写表" in script
     assert "/api/v1/legal/ocr-reviews/enforcement-documents" in script
+    assert "/api/v1/legal/ocr-reviews/repayment-agreements" in script
+    assert '{ view: "repayment-ledger", label: "协议履约" }' in script
+    assert '{ view: "repayment-materials", label: "资料待办" }' in script
+    assert "data-repayment-mode" not in script
+    assert 'repayment: ["甲方（债权人）"' in script
     overview = script[script.index("async function renderOverview()") : script.index("function wecomApiStageLabel")]
     assert "待确认案件" not in overview
+
+
+def test_repayment_views_are_decoupled_and_only_load_media_after_selection():
+    script = (ROOT / "app/static/admin/admin.js").read_text(encoding="utf-8")
+    detail = script[script.index("function repaymentAgreementDetail") : script.index("async function renderRepaymentLedger")]
+    ledger_renderer = script[script.index("async function renderRepaymentLedger") : script.index("async function renderRepaymentMaterials")]
+    inbox_renderer = script[script.index("async function renderRepaymentMaterials") : script.index("function bindRepaymentLedgerActions")]
+    selector = script[script.index("async function selectRepaymentInboxItem") : script.index("function repaymentAgreementDetail")]
+
+    assert "data-open-repayment-agreement" in detail
+    assert "review-preview" not in detail
+    assert "repayment-materials?" not in ledger_renderer
+    assert "repayment-agreements?" not in inbox_renderer
+    assert "loadReviewPreview" not in ledger_renderer
+    assert "loadReviewPreview" not in inbox_renderer
+    assert "await selectRepaymentInboxItem" not in inbox_renderer
+    assert "await loadReviewPreview(selected)" in selector
 
 
 def test_compose_contains_only_current_runtime_services():

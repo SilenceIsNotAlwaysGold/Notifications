@@ -554,6 +554,12 @@ class MediaOCRResultOut(BaseModel):
     business_applied: bool = False
 
 
+class RepaymentInstallmentCorrection(BaseModel):
+    sequence: int = Field(ge=1, le=100)
+    due_date: date
+    amount: Decimal = Field(gt=0)
+
+
 class OCRReviewDecision(BaseModel):
     decision: Literal["approved", "corrected", "rejected"]
     note: str | None = Field(default=None, max_length=1000)
@@ -579,6 +585,11 @@ class OCRReviewDecision(BaseModel):
     identity_number: str | None = Field(default=None, max_length=32)
     document_date: date | None = None
     repayment_due_date: date | None = None
+    repayment_plan: list[RepaymentInstallmentCorrection] | None = Field(default=None, min_length=1, max_length=100)
+    repayment_agreement_event_id: int | None = Field(default=None, ge=1)
+    installment_sequence: int | None = Field(default=None, ge=1, le=100)
+    arbitration_institution: str | None = Field(default=None, max_length=255)
+    arbitration_case_no: str | None = Field(default=None, max_length=128)
     enforcement_case_no: str | None = Field(default=None, max_length=128)
     order_no: str | None = Field(default=None, max_length=128)
 
@@ -599,6 +610,11 @@ class OCRReviewDecision(BaseModel):
             "identity_number",
             "document_date",
             "repayment_due_date",
+            "repayment_plan",
+            "repayment_agreement_event_id",
+            "installment_sequence",
+            "arbitration_institution",
+            "arbitration_case_no",
             "enforcement_case_no",
             "order_no",
         }
@@ -670,6 +686,62 @@ class RepaymentMaterialOut(OCRReviewOut):
 class RepaymentMaterialListOut(BaseModel):
     total: int
     items: list[RepaymentMaterialOut]
+
+
+class RepaymentPaymentItemOut(BaseModel):
+    event_id: int
+    media_file_id: int | None = None
+    amount: Decimal
+    installment_sequence: int | None = None
+    payment_date: date
+    preview_url: str | None = None
+
+
+class RepaymentAgreementOut(BaseModel):
+    event_id: int
+    media_file_id: int | None = None
+    tenant_id: str | None = None
+    group_id: str
+    group_name: str | None = None
+    creditor: str
+    debtor: str
+    original_filename: str | None = None
+    mime_type: str | None = None
+    preview_url: str | None = None
+    status: Literal["active", "partial", "defaulted", "completed"]
+    total_debt: Decimal
+    total_paid: Decimal
+    outstanding: Decimal
+    overpayment: Decimal = Decimal("0.00")
+    installments: list[dict[str, Any]] = Field(default_factory=list)
+    payments: list[RepaymentPaymentItemOut] = Field(default_factory=list)
+    next_due_date: date | None = None
+    next_due_amount: Decimal | None = None
+    overdue_count: int = 0
+    pending_reminder_count: int = 0
+    next_remind_at: datetime | None = None
+    arbitration_institution: str | None = None
+    arbitration_case_no: str | None = None
+    sync_status: str | None = None
+    external_row_index: int | None = None
+    sync_error: str | None = None
+    created_at: datetime
+
+
+class RepaymentAgreementStatsOut(BaseModel):
+    total: int = 0
+    in_progress: int = 0
+    defaulted: int = 0
+    due_soon: int = 0
+    completed: int = 0
+    sync_failed: int = 0
+    outstanding_total: Decimal = Decimal("0.00")
+
+
+class RepaymentAgreementListOut(BaseModel):
+    total: int
+    items: list[RepaymentAgreementOut]
+    stats: RepaymentAgreementStatsOut = Field(default_factory=RepaymentAgreementStatsOut)
 
 
 class OCRReviewDecisionOut(BaseModel):

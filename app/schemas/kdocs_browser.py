@@ -3,7 +3,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 
-KDocsTarget = Literal["enforcement", "court", "payment"]
+KDocsTarget = Literal["enforcement", "court", "payment", "repayment"]
 
 
 class KDocsTargetOut(BaseModel):

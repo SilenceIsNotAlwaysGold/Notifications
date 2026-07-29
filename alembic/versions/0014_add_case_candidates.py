@@ -10,6 +10,8 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 
+from app.db.migration_helpers import table_exists
+
 revision: str = "0014_add_case_candidates"
 down_revision: Union[str, Sequence[str], None] = "0013_system_alerts"
 branch_labels: Union[str, Sequence[str], None] = None
@@ -17,6 +19,8 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    if table_exists(op.get_bind(), "case_candidates"):
+        return
     op.create_table(
         "case_candidates",
         sa.Column("id", sa.Integer(), nullable=False),

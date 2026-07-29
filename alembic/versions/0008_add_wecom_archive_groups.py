@@ -10,6 +10,8 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 
+from app.db.migration_helpers import require_columns, table_exists
+
 revision: str = "0008_add_wecom_archive_groups"
 down_revision: Union[str, Sequence[str], None] = "0007_add_tenant_settings"
 branch_labels: Union[str, Sequence[str], None] = None
@@ -17,6 +19,25 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    connection = op.get_bind()
+    if table_exists(connection, "wecom_archive_groups"):
+        require_columns(
+            connection,
+            "wecom_archive_groups",
+            {
+                "id",
+                "room_id",
+                "display_name",
+                "tenant_id",
+                "status",
+                "seen_message_count",
+                "first_seen_at",
+                "last_seen_at",
+                "created_at",
+                "updated_at",
+            },
+        )
+        return
     op.create_table(
         "wecom_archive_groups",
         sa.Column("id", sa.Integer(), nullable=False),

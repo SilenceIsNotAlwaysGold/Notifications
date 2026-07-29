@@ -1,4 +1,6 @@
 import json
+from datetime import timedelta
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
@@ -6,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps_auth import get_current_operator
 from app.api.v1.response import ok, raise_fail
-from app.core.resource_permissions import filter_by_case_or_group, has_media_access
+from app.core.resource_permissions import filter_by_case_or_group, has_group_access, has_media_access
 from app.db.session import get_db
 from app.models.media_file import MediaFile
 from app.models.legal_event import LegalEvent
@@ -21,10 +23,14 @@ from app.schemas.legal import (
     OCRReviewOut,
     RepaymentMaterialListOut,
     RepaymentMaterialOut,
+    RepaymentAgreementListOut,
+    RepaymentAgreementOut,
+    RepaymentAgreementStatsOut,
 )
 from app.services.group_context_service import GroupContextService
 from app.services.media_file_service import MediaFileService
 from app.services.repayment_tracking_service import RepaymentTrackingService
+from app.utils.datetime_utils import now_tz
 
 router = APIRouter(prefix="/legal/ocr-reviews", tags=["legal-ocr-reviews"])
 
@@ -173,7 +179,11 @@ def _repayment_material_out(
         else metadata.get("repayment_agreement_event_id")
     )
     agreement = db.get(LegalEvent, int(agreement_event_id)) if agreement_event_id else None
-    progress = RepaymentTrackingService(db).progress(agreement) if agreement else None
+    progress = (
+        RepaymentTrackingService(db).progress(agreement)
+        if agreement and agreement.business_status in {"approved", "applied"}
+        else None
+    )
     incomplete = (
         not result.get("plaintiff")
         or not result.get("defendant")
@@ -235,14 +245,14 @@ def list_ocr_reviews(
 def list_court_summons(
     workflow_status: str | None = Query(
         default=None,
-        pattern="^(incomplete|pending_review|pending_write|written|write_failed|rejected)$",
+        pattern="^(attention|incomplete|pending_review|pending_write|written|write_failed|rejected)$",
     ),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=100, ge=1, le=100),
     db: Session = Depends(get_db),
     operator_info: dict[str, object] = Depends(get_current_operator),
 ):
-    _total, media_files = MediaFileService(db).list_court_summons(page=page, page_size=page_size)
+    _total, media_files = MediaFileService(db).list_court_summons(page=1, page_size=None)
     media_files = filter_by_case_or_group(db, media_files, operator_info)
     groups = db.scalars(select(WeComArchiveGroup)).all()
     group_names = {
@@ -260,9 +270,13 @@ def list_court_summons(
         )
         for media_file in media_files
     ]
-    if workflow_status:
+    if workflow_status == "attention":
+        items = [item for item in items if item.workflow_status in {"incomplete", "pending_review", "write_failed"}]
+    elif workflow_status:
         items = [item for item in items if item.workflow_status == workflow_status]
-    return ok("开庭传票列表查询成功", CourtSummonsListOut(total=len(items), items=items))
+    total = len(items)
+    start = (page - 1) * page_size
+    return ok("开庭传票列表查询成功", CourtSummonsListOut(total=total, items=items[start : start + page_size]))
 
 
 @router.get("/enforcement-documents")
@@ -276,13 +290,15 @@ def list_enforcement_documents(
     db: Session = Depends(get_db),
     operator_info: dict[str, object] = Depends(get_current_operator),
 ):
-    _total, media_files = MediaFileService(db).list_enforcement_documents(page=page, page_size=page_size)
+    _total, media_files = MediaFileService(db).list_enforcement_documents(page=1, page_size=None)
     media_files = filter_by_case_or_group(db, media_files, operator_info)
     if review_status:
         media_files = [item for item in media_files if item.review_status == review_status]
+    total = len(media_files)
+    start = (page - 1) * page_size
     return ok(
         "执行文书列表查询成功",
-        OCRReviewListOut(total=len(media_files), items=[_review_out(item) for item in media_files]),
+        OCRReviewListOut(total=total, items=[_review_out(item) for item in media_files[start : start + page_size]]),
     )
 
 
@@ -290,14 +306,15 @@ def list_enforcement_documents(
 def list_repayment_materials(
     workflow_status: str | None = Query(
         default=None,
-        pattern="^(incomplete|pending_review|pending_write|written|write_failed|rejected)$",
+        pattern="^(attention|incomplete|pending_review|pending_write|written|write_failed|rejected)$",
     ),
+    material_kind: str | None = Query(default=None, pattern="^(agreement|payment)$"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=100, ge=1, le=100),
     db: Session = Depends(get_db),
     operator_info: dict[str, object] = Depends(get_current_operator),
 ):
-    _total, media_files = MediaFileService(db).list_repayment_materials(page=page, page_size=page_size)
+    _total, media_files = MediaFileService(db).list_repayment_materials(page=1, page_size=None)
     media_files = filter_by_case_or_group(db, media_files, operator_info)
     groups = db.scalars(select(WeComArchiveGroup)).all()
     group_names = {
@@ -316,9 +333,145 @@ def list_repayment_materials(
         )
         for media_file in media_files
     ]
-    if workflow_status:
+    if workflow_status == "attention":
+        items = [item for item in items if item.workflow_status in {"incomplete", "pending_review", "write_failed"}]
+    elif workflow_status:
         items = [item for item in items if item.workflow_status == workflow_status]
-    return ok("还款资料列表查询成功", RepaymentMaterialListOut(total=len(items), items=items))
+    if material_kind:
+        items = [item for item in items if item.material_kind == material_kind]
+    total = len(items)
+    start = (page - 1) * page_size
+    return ok("还款资料列表查询成功", RepaymentMaterialListOut(total=total, items=items[start : start + page_size]))
+
+
+@router.get("/repayment-agreements")
+def list_repayment_agreements(
+    status: str | None = Query(default=None, pattern="^(active|partial|defaulted|completed)$"),
+    focus: str | None = Query(default=None, pattern="^(due_soon|sync_failed)$"),
+    group_id: str | None = Query(default=None, max_length=128),
+    query: str | None = Query(default=None, max_length=100),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=100),
+    db: Session = Depends(get_db),
+    operator_info: dict[str, object] = Depends(get_current_operator),
+):
+    summaries = RepaymentTrackingService(db).agreement_summaries()
+    groups = list(db.scalars(select(WeComArchiveGroup)).all())
+    group_names = {
+        identifier: group.display_name
+        for group in groups
+        for identifier in (group.room_id, group.wecomapi_room_id)
+        if identifier
+    }
+    sync_logs = _repayment_sync_logs(db)
+    normalized_query = "".join((query or "").split()).casefold()
+    items: list[RepaymentAgreementOut] = []
+    for summary in summaries:
+        if not has_group_access(operator_info, summary["group_id"], summary["tenant_id"]):
+            continue
+        progress = summary["progress"]
+        media_file_id = int(summary["media_file_id"]) if summary["media_file_id"] else None
+        sync_log = sync_logs.get(media_file_id) if media_file_id else None
+        payments = [
+            {
+                "event_id": payment["event_id"],
+                "media_file_id": payment.get("media_file_id"),
+                "amount": payment["amount"],
+                "installment_sequence": payment.get("sequence"),
+                "payment_date": payment["payment_date"],
+                "preview_url": (
+                    f"/api/v1/legal/media-files/{payment['media_file_id']}/content"
+                    if payment.get("media_file_id")
+                    else None
+                ),
+            }
+            for payment in progress.get("payments") or []
+        ]
+        items.append(
+            RepaymentAgreementOut(
+                event_id=summary["event_id"],
+                media_file_id=media_file_id,
+                tenant_id=summary["tenant_id"],
+                group_id=summary["group_id"],
+                group_name=group_names.get(summary["group_id"]),
+                creditor=summary["creditor"],
+                debtor=summary["debtor"],
+                original_filename=summary["original_filename"],
+                mime_type=summary["mime_type"],
+                preview_url=(f"/api/v1/legal/media-files/{media_file_id}/content" if media_file_id else None),
+                status=progress["status"],
+                total_debt=progress["total_debt"],
+                total_paid=progress["total_paid"],
+                outstanding=progress["outstanding"],
+                overpayment=progress["overpayment"],
+                installments=progress["installments"],
+                payments=payments,
+                next_due_date=summary["next_due_date"],
+                next_due_amount=summary["next_due_amount"],
+                overdue_count=summary["overdue_count"],
+                pending_reminder_count=summary["pending_reminder_count"],
+                next_remind_at=summary["next_remind_at"],
+                arbitration_institution=summary["arbitration_institution"],
+                arbitration_case_no=summary["arbitration_case_no"],
+                sync_status=sync_log.status if sync_log else None,
+                external_row_index=sync_log.external_row_index if sync_log else None,
+                sync_error=sync_log.error_message if sync_log else None,
+                created_at=summary["created_at"],
+            )
+        )
+    today = now_tz().date()
+    due_soon_limit = today + timedelta(days=7)
+    stats = RepaymentAgreementStatsOut(
+        total=len(items),
+        in_progress=sum(item.status in {"active", "partial"} for item in items),
+        defaulted=sum(item.status == "defaulted" for item in items),
+        due_soon=sum(
+            item.status != "completed"
+            and item.next_due_date is not None
+            and today <= item.next_due_date <= due_soon_limit
+            for item in items
+        ),
+        completed=sum(item.status == "completed" for item in items),
+        sync_failed=sum(item.sync_status == "failed" for item in items),
+        outstanding_total=sum((item.outstanding for item in items), Decimal("0.00")),
+    )
+    if group_id:
+        items = [item for item in items if item.group_id == group_id]
+    if status:
+        items = [item for item in items if item.status == status]
+    if focus == "due_soon":
+        items = [
+            item
+            for item in items
+            if item.status != "completed"
+            and item.next_due_date is not None
+            and today <= item.next_due_date <= due_soon_limit
+        ]
+    elif focus == "sync_failed":
+        items = [item for item in items if item.sync_status == "failed"]
+    if normalized_query:
+        items = [
+            item
+            for item in items
+            if normalized_query
+            in "".join(
+                str(value or "")
+                for value in (
+                    item.creditor,
+                    item.debtor,
+                    item.group_name,
+                    item.group_id,
+                )
+            ).replace(" ", "").casefold()
+        ]
+    priority = {"defaulted": 0, "partial": 1, "active": 2, "completed": 3}
+    items.sort(key=lambda item: (priority[item.status], item.next_due_date or item.created_at.date(), -item.event_id))
+    total = len(items)
+    start = (page - 1) * page_size
+    return ok(
+        "还款协议履约台账查询成功",
+        RepaymentAgreementListOut(total=total, items=items[start : start + page_size], stats=stats),
+    )
 
 
 @router.post("/court-summons/{media_file_id}/retry")

@@ -9,6 +9,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.core.config import get_settings
 from app.db.base import Base
+from app.db.compat import ensure_sqlite_compat_columns
 from app.models.legal_case import LegalCase
 
 
@@ -75,6 +76,74 @@ def test_alembic_upgrade_head_succeeds_with_temp_sqlite(tmp_path, monkeypatch):
         assert "applies_to_event_id" in {column["name"] for column in inspector.get_columns("payment_records")}
         assert "processing_mode" in {column["name"] for column in inspector.get_columns("group_messages")}
         assert "live_since_at" in {column["name"] for column in inspector.get_columns("wecom_archive_groups")}
+    finally:
+        engine.dispose()
+        get_settings.cache_clear()
+
+
+def test_upgrade_repairs_legacy_database_with_autocreated_future_tables(tmp_path, monkeypatch):
+    database_url = f"sqlite:///{tmp_path / 'autocreated_drift.db'}"
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    get_settings.cache_clear()
+    config = _alembic_config(database_url)
+    command.upgrade(config, "0007_add_tenant_settings")
+
+    engine = create_engine(database_url, future=True)
+    try:
+        Base.metadata.create_all(engine)
+        ensure_sqlite_compat_columns(engine)
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO contacts "
+                    "(display_name,role,source,is_active,created_at,updated_at) "
+                    "VALUES ('迁移保留联系人','lawyer','legacy-autocreate',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO group_messages "
+                    "(group_id,sender_id,msg_type,content,raw_payload_json,received_at,created_at) "
+                    "VALUES ('legacy_drift_group','legacy_sender','text','案件受理费 25 元','{}',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)"
+                )
+            )
+            message_id = connection.execute(
+                text("SELECT id FROM group_messages WHERE group_id='legacy_drift_group'")
+            ).scalar_one()
+            connection.execute(
+                text(
+                    "INSERT INTO legal_events "
+                    "(group_message_id,event_type,amount,metadata_json,created_at) "
+                    "VALUES (:message_id,'payment_notice',25,'{}',CURRENT_TIMESTAMP)"
+                ),
+                {"message_id": message_id},
+            )
+
+        command.upgrade(config, "head")
+
+        inspector = inspect(engine)
+        with engine.connect() as connection:
+            revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+            contact = connection.execute(
+                text("SELECT display_name,source FROM contacts WHERE display_name='迁移保留联系人'")
+            ).mappings().one()
+            event = connection.execute(
+                text(
+                    "SELECT attribution_status,business_status FROM legal_events "
+                    "WHERE group_message_id=:message_id"
+                ),
+                {"message_id": message_id},
+            ).mappings().one()
+            attribution_count = connection.execute(
+                text("SELECT COUNT(*) FROM attribution_items WHERE subject_type='event'")
+            ).scalar_one()
+        assert revision == "0022_processing_modes"
+        assert dict(contact) == {"display_name": "迁移保留联系人", "source": "legacy-autocreate"}
+        assert dict(event) == {"attribution_status": "pending", "business_status": "staged"}
+        assert attribution_count == 1
+        assert "processing_mode" in {column["name"] for column in inspector.get_columns("group_messages")}
+        assert "target_contact_id" in {column["name"] for column in inspector.get_columns("reminders")}
+        assert "applies_to_event_id" in {column["name"] for column in inspector.get_columns("payment_records")}
     finally:
         engine.dispose()
         get_settings.cache_clear()

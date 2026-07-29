@@ -359,6 +359,48 @@ def test_real_mcp_payment_target_is_required_only_for_payment(monkeypatch):
     assert "KDOCS_PAYMENT_FILE_ID" in result["error"]
 
 
+def test_repayment_rows_use_agreement_file_or_explicit_row_instead_of_parties():
+    class FakeMcp:
+        def __init__(self):
+            self.writes = []
+            self.range_requests = []
+
+        def get_sheet_info(self, file_id, worksheet_id):
+            return {"rowTo": 5}
+
+        def get_range_data(self, file_id, worksheet_id, *, row_from, row_to, col_from, col_to):
+            self.range_requests.append((row_from, row_to, col_from, col_to))
+            if col_from == col_to == 2:
+                return [{"rowFrom": 4, "colFrom": 2, "cellText": "https://kdocs.test/old.pdf"}]
+            values = ["甲公司", "张三", "https://kdocs.test/old.pdf"] + [None] * 12
+            return [
+                {"rowFrom": row_from, "colFrom": index, "cellText": value}
+                for index, value in enumerate(values)
+                if value is not None
+            ]
+
+        def write_row(self, file_id, worksheet_id, row_index, values):
+            self.writes.append((row_index, values))
+            return {"ok": True}
+
+    adapter = KDocsAdapter()
+    adapter.mcp = FakeMcp()
+
+    second_agreement = adapter._mcp_upsert_repayment(
+        {"甲方（债权人）": "甲公司", "乙方（债务人）": "张三", "协议文本": "https://kdocs.test/new.pdf"}
+    )
+    progress = adapter._mcp_upsert_repayment(
+        {"甲方（债权人）": "甲公司", "乙方（债务人）": "张三", "合计还款": "500.00", "_target_row_index": 4}
+    )
+
+    assert second_agreement["created"] is True
+    assert second_agreement["row_index"] == 6
+    assert progress["created"] is False
+    assert progress["row_index"] == 4
+    assert [row_index for row_index, _values in adapter.mcp.writes] == [6, 4]
+    assert (1, 5, 0, 1) not in adapter.mcp.range_requests
+
+
 def test_real_mcp_payment_receipt_updates_original_case_row(monkeypatch):
     reset_kdocs_mcp(monkeypatch)
     monkeypatch.setenv("KDOCS_PAYMENT_FILE_ID", "payment-file")

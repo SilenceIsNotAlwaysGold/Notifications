@@ -149,7 +149,22 @@ def test_kdocs_browser_overview_reads_live_sheet_counts(monkeypatch):
         ("enforcement", 75),
         ("court", 20),
         ("payment", 3),
+        ("repayment", 75),
     ]
+
+
+def test_kdocs_browser_reads_repayment_child_sheet(monkeypatch):
+    client = FakeKDocsClient()
+    service = KDocsBrowserService(kdocs_settings(monkeypatch), client)
+
+    result = service.list_rows("repayment", page=1, page_size=30)
+
+    assert result.target_name == "还款与仲裁"
+    assert result.file_id == "enforcement-file"
+    assert result.worksheet_id == 12
+    assert "甲方（债权人）" in result.headers
+    assert "合计还款" in result.headers
+    assert client.range_calls == [("enforcement-file", 12, 1, 30, 0, 14)]
 
 
 def test_kdocs_browser_maps_sparse_cells_and_paginates(monkeypatch):

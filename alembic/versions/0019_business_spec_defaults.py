@@ -9,6 +9,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
+from app.db.migration_helpers import column_names, index_names
+
 
 revision: str = "0019_business_spec_defaults"
 down_revision: Union[str, Sequence[str], None] = "0018_kdocs_row_metadata"
@@ -17,11 +19,16 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    with op.batch_alter_table("wecom_archive_groups") as batch_op:
-        batch_op.add_column(sa.Column("access_policy", sa.String(length=32), nullable=False, server_default="auto"))
-        batch_op.create_index("ix_wecom_archive_groups_access_policy", ["access_policy"], unique=False)
-
     connection = op.get_bind()
+    needs_column = "access_policy" not in column_names(connection, "wecom_archive_groups")
+    needs_index = "ix_wecom_archive_groups_access_policy" not in index_names(connection, "wecom_archive_groups")
+    if needs_column or needs_index:
+        with op.batch_alter_table("wecom_archive_groups") as batch_op:
+            if needs_column:
+                batch_op.add_column(sa.Column("access_policy", sa.String(length=32), nullable=False, server_default="auto"))
+            if needs_index:
+                batch_op.create_index("ix_wecom_archive_groups_access_policy", ["access_policy"], unique=False)
+
     connection.execute(
         sa.text("UPDATE wecom_archive_groups SET access_policy='blacklist' WHERE status='disabled'")
     )

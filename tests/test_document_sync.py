@@ -321,6 +321,49 @@ class CountingKDocsAdapter:
         }
 
 
+class RecordingRepaymentAdapter:
+    def __init__(self):
+        self.rows = []
+
+    def upsert_repayment_tracking_row(self, row, tenant_id=None):
+        captured = dict(row)
+        self.rows.append(captured)
+        return {
+            "success": True,
+            "mode": "real",
+            "transport": "mcp",
+            "sync_target": "kdocs",
+            "operation": "upsert_repayment_tracking_row",
+            "request_payload": {"tenant_id": tenant_id, "sheet_id": "repayment-sheet", "row": captured},
+            "response": {"row_index": 12},
+            "error": None,
+        }
+
+
+def test_repayment_progress_reuses_exact_agreement_row(db_session):
+    agreement = LegalEvent(event_type="repayment_agreement", business_status="approved", metadata_json="{}")
+    payment = LegalEvent(event_type="payment_screenshot", business_status="approved", metadata_json="{}")
+    db_session.add_all([agreement, payment])
+    db_session.flush()
+    adapter = RecordingRepaymentAdapter()
+    service = DocumentSyncService(db_session, adapter=adapter)
+
+    agreement_log = service.sync_repayment_agreement(
+        agreement,
+        {"甲方（债权人）": "甲公司", "乙方（债务人）": "张三", "协议文本": "https://kdocs.test/a.pdf"},
+    )
+    progress_log = service.sync_repayment_progress(
+        payment,
+        agreement,
+        {"甲方（债权人）": "甲公司", "乙方（债务人）": "张三", "合计还款": "500.00"},
+    )
+
+    assert agreement_log.external_row_key == f"agreement:{agreement.id}"
+    assert progress_log.external_row_key == f"agreement:{agreement.id}"
+    assert adapter.rows[1]["_target_row_index"] == 12
+    assert adapter.rows[1]["协议文本"] == "https://kdocs.test/a.pdf"
+
+
 def test_duplicate_sync_returns_reserved_log_without_second_gateway_call(db_session):
     event = LegalEvent(event_type="court_notice", metadata_json="{}")
     db_session.add(event)

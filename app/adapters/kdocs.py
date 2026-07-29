@@ -293,10 +293,28 @@ class KDocsAdapter:
         debtor = str(self._pick(row, "乙方（债务人）", "被告", "defendant") or "").strip()
         if not creditor or not debtor:
             raise ValueError("还款协议缺少债权人或债务人，无法定位金山行")
+        agreement_url = str(self._pick(row, "协议文本", "文件链接", "file_url") or "").strip()
+        target_row_value = row.get("_target_row_index")
+        try:
+            explicit_target_row = int(target_row_value) if target_row_value is not None else None
+        except (TypeError, ValueError):
+            raise ValueError("还款台账目标行号无效") from None
+        if explicit_target_row is not None and explicit_target_row < 1:
+            raise ValueError("还款台账目标行号无效")
         with _MCP_WRITE_LOCK:
             sheet = self.mcp.get_sheet_info(file_id, worksheet_id)
             last_row = int(sheet.get("rowTo", 0))
-            target_row = self._mcp_find_repayment_row(file_id, worksheet_id, creditor, debtor, last_row)
+            if explicit_target_row is not None:
+                target_row = explicit_target_row
+            elif agreement_url:
+                target_row = self._mcp_find_repayment_row_by_agreement(
+                    file_id,
+                    worksheet_id,
+                    agreement_url,
+                    last_row,
+                )
+            else:
+                target_row = self._mcp_find_repayment_row(file_id, worksheet_id, creditor, debtor, last_row)
             created = target_row is None
             if target_row is None:
                 target_row = last_row + 1
@@ -312,6 +330,38 @@ class KDocsAdapter:
             "created": created,
             "write": write_result,
         }
+
+    def _mcp_find_repayment_row_by_agreement(
+        self,
+        file_id: str,
+        worksheet_id: int,
+        agreement_url: str,
+        last_row: int,
+    ) -> int | None:
+        assert self.mcp is not None
+        if last_row < 1:
+            return None
+        cells = self.mcp.get_range_data(
+            file_id,
+            worksheet_id,
+            row_from=1,
+            row_to=last_row,
+            col_from=2,
+            col_to=2,
+        )
+        expected = agreement_url.strip()
+        matches: list[int] = []
+        for cell in cells:
+            candidates = (
+                cell.get("cellText"),
+                cell.get("originalCellValue"),
+                cell.get("formula"),
+            )
+            if any(expected == str(value or "").strip() or expected in str(value or "") for value in candidates):
+                matches.append(int(cell.get("rowFrom", cell.get("originRow", -1))))
+        if len(matches) > 1:
+            raise ValueError("金山还款表存在多行相同协议文件，请先人工处理重复行")
+        return matches[0] if matches else None
 
     def _mcp_find_repayment_row(
         self,

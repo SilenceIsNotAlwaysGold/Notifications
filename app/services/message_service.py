@@ -150,7 +150,12 @@ class MessageService:
         extracted_event_types = extracted.get("event_types") or []
         event_types = (
             []
-            if payload.msg_type in {"image", "file", "pdf"} or linked_media or ignore_quoted_payment_prompt
+            if (
+                payload.msg_type in {"image", "file", "pdf"}
+                or linked_media
+                or repayment_annotation
+                or ignore_quoted_payment_prompt
+            )
             else [event_type for event_type in extracted_event_types if event_type not in {"unknown", "keyword"}]
         )
 

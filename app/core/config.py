@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     app_env: str = Field(default="local", alias="APP_ENV")
     debug: bool = Field(default=True, alias="DEBUG")
     database_url: str = Field(default="sqlite:///./legal_wecom.db", alias="DATABASE_URL")
-    db_auto_create: bool = Field(default=True, alias="DB_AUTO_CREATE")
+    db_auto_create: bool = Field(default=False, alias="DB_AUTO_CREATE")
     timezone: str = Field(default="Asia/Shanghai", alias="TIMEZONE")
     auth_enabled: bool = Field(default=False, alias="AUTH_ENABLED")
     admin_api_keys: str = Field(default="", alias="ADMIN_API_KEYS")

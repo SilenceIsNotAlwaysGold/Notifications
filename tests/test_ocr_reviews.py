@@ -7,11 +7,13 @@ from sqlalchemy import select
 
 from app.core.config import get_settings
 from app.models.document_sync_log import DocumentSyncLog
+from app.models.group_message import GroupMessage
 from app.models.legal_case import LegalCase
 from app.models.legal_event import LegalEvent
 from app.models.media_file import MediaFile
 from app.models.reminder import Reminder
 from app.models.wecom_archive_group import WeComArchiveGroup
+from app.utils.datetime_utils import now_tz
 
 
 def _create_case(client):
@@ -322,6 +324,155 @@ def test_enforcement_document_queue_excludes_other_business_materials(client, db
     data = response.json()["data"]
     assert data["total"] == 1
     assert data["items"][0]["media_file_id"] == judgment.id
+
+
+def test_repayment_attention_filter_runs_before_pagination(client, db_session):
+    incomplete = MediaFile(
+        group_id="repayment-filter-group",
+        msg_id="repayment-incomplete",
+        media_type="image",
+        ocr_status="processed",
+        review_status="pending",
+        ocr_result_json=json.dumps(
+            {"event_type": "repayment_agreement", "plaintiff": "甲公司", "metadata": {}},
+            ensure_ascii=False,
+        ),
+        source="test",
+    )
+    written = MediaFile(
+        group_id="repayment-filter-group",
+        msg_id="repayment-written",
+        media_type="pdf",
+        ocr_status="processed",
+        review_status="approved",
+        business_applied_at=now_tz(),
+        ocr_result_json=json.dumps(
+            {
+                "event_type": "repayment_agreement",
+                "plaintiff": "甲公司",
+                "defendant": "张三",
+                "amount": "100.00",
+                "metadata": {
+                    "structured_fields": {
+                        "repayment_plan": {
+                            "installments": [{"sequence": 1, "due_date": "2026-08-01", "amount": "100.00"}]
+                        }
+                    }
+                },
+            },
+            ensure_ascii=False,
+        ),
+        source="test",
+    )
+    db_session.add_all([incomplete, written])
+    db_session.commit()
+
+    response = client.get(
+        "/api/v1/legal/ocr-reviews/repayment-materials?workflow_status=attention&page_size=1"
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["total"] == 1
+    assert data["items"][0]["media_file_id"] == incomplete.id
+
+
+def test_repayment_material_kind_filter_separates_agreements_and_receipts(client, db_session):
+    agreement = MediaFile(
+        group_id="repayment-kind-group",
+        msg_id="agreement-kind",
+        media_type="pdf",
+        ocr_status="processed",
+        review_status="pending",
+        ocr_result_json=json.dumps(
+            {"event_type": "repayment_agreement", "plaintiff": "甲公司", "metadata": {}},
+            ensure_ascii=False,
+        ),
+        source="test",
+    )
+    receipt = MediaFile(
+        group_id="repayment-kind-group",
+        msg_id="receipt-kind",
+        media_type="image",
+        ocr_status="processed",
+        review_status="pending",
+        ocr_result_json=json.dumps(
+            {
+                "event_type": "payment_screenshot",
+                "plaintiff": "甲公司",
+                "defendant": "张三",
+                "amount": "100.00",
+                "metadata": {"repayment_annotation": {"payment_kind": "installment"}},
+            },
+            ensure_ascii=False,
+        ),
+        source="test",
+    )
+    db_session.add_all([agreement, receipt])
+    db_session.commit()
+
+    agreements = client.get("/api/v1/legal/ocr-reviews/repayment-materials?material_kind=agreement")
+    receipts = client.get("/api/v1/legal/ocr-reviews/repayment-materials?material_kind=payment")
+
+    assert agreements.status_code == 200
+    assert receipts.status_code == 200
+    assert [item["media_file_id"] for item in agreements.json()["data"]["items"]] == [agreement.id]
+    assert [item["media_file_id"] for item in receipts.json()["data"]["items"]] == [receipt.id]
+
+
+def test_pending_repayment_agreement_does_not_show_business_progress(client, db_session):
+    message = GroupMessage(
+        group_id="repayment-pending-group",
+        sender_id="lawyer",
+        msg_type="pdf",
+        raw_payload_json="{}",
+        received_at=now_tz(),
+    )
+    db_session.add(message)
+    db_session.flush()
+    result = {
+        "event_type": "repayment_agreement",
+        "plaintiff": "甲公司",
+        "defendant": "张三",
+        "amount": "100.00",
+        "metadata": {
+            "structured_fields": {
+                "repayment_plan": {
+                    "total_debt": "100.00",
+                    "installments": [{"sequence": 1, "due_date": "2020-01-01", "amount": "100.00"}],
+                }
+            }
+        },
+    }
+    event = LegalEvent(
+        group_message_id=message.id,
+        event_type="repayment_agreement",
+        attribution_status="not_required",
+        business_status="staged",
+        metadata_json=json.dumps({"plaintiff": "甲公司", "defendant": "张三", **result["metadata"]}, ensure_ascii=False),
+    )
+    db_session.add(event)
+    db_session.flush()
+    media = MediaFile(
+        group_message_id=message.id,
+        group_id=message.group_id,
+        msg_id="pending-agreement",
+        media_type="pdf",
+        ocr_status="processed",
+        review_status="pending",
+        review_event_id=event.id,
+        ocr_result_json=json.dumps(result, ensure_ascii=False),
+        source="test",
+    )
+    db_session.add(media)
+    db_session.commit()
+
+    response = client.get("/api/v1/legal/ocr-reviews/repayment-materials?workflow_status=pending_review")
+
+    assert response.status_code == 200
+    item = response.json()["data"]["items"][0]
+    assert item["media_file_id"] == media.id
+    assert item["progress"] is None
 
 
 def test_admin_has_dedicated_court_summons_workspace():

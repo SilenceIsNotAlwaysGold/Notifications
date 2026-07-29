@@ -34,7 +34,7 @@ from app.services.repayment_tracking_service import RepaymentTrackingService
 from app.services.system_run_log_service import SystemRunLogService
 from app.services.tenant_settings_service import TenantSettingsService
 from app.services.wecom_archive_group_service import WeComArchiveGroupService
-from app.utils.datetime_utils import now_tz
+from app.utils.datetime_utils import ensure_aware, now_tz
 from app.utils.repayment_annotation import parse_repayment_annotation
 from app.utils.media_storage import MediaStorage
 
@@ -346,7 +346,7 @@ class MediaFileService:
     def list_court_summons(
         self,
         page: int = 1,
-        page_size: int = 100,
+        page_size: int | None = 100,
     ) -> tuple[int, list[MediaFile]]:
         normalized_text = func.replace(func.replace(MediaFile.extracted_text, "\n", ""), " ", "")
         summons_layout = or_(
@@ -366,19 +366,16 @@ class MediaFileService:
             ),
         )
         total = int(self.db.scalar(select(func.count()).select_from(query.subquery())) or 0)
-        items = list(
-            self.db.scalars(
-                query.order_by(MediaFile.updated_at.desc(), MediaFile.id.desc())
-                .offset((page - 1) * page_size)
-                .limit(page_size)
-            ).all()
-        )
+        item_query = query.order_by(MediaFile.updated_at.desc(), MediaFile.id.desc())
+        if page_size is not None:
+            item_query = item_query.offset((page - 1) * page_size).limit(page_size)
+        items = list(self.db.scalars(item_query).all())
         return total, items
 
     def list_enforcement_documents(
         self,
         page: int = 1,
-        page_size: int = 100,
+        page_size: int | None = 100,
     ) -> tuple[int, list[MediaFile]]:
         query = select(MediaFile).where(
             MediaFile.ocr_result_json.is_not(None),
@@ -390,16 +387,13 @@ class MediaFileService:
             ),
         )
         total = int(self.db.scalar(select(func.count()).select_from(query.subquery())) or 0)
-        items = list(
-            self.db.scalars(
-                query.order_by(MediaFile.updated_at.desc(), MediaFile.id.desc())
-                .offset((page - 1) * page_size)
-                .limit(page_size)
-            ).all()
-        )
+        item_query = query.order_by(MediaFile.updated_at.desc(), MediaFile.id.desc())
+        if page_size is not None:
+            item_query = item_query.offset((page - 1) * page_size).limit(page_size)
+        items = list(self.db.scalars(item_query).all())
         return total, items
 
-    def list_repayment_materials(self, page: int = 1, page_size: int = 100) -> tuple[int, list[MediaFile]]:
+    def list_repayment_materials(self, page: int = 1, page_size: int | None = 100) -> tuple[int, list[MediaFile]]:
         query = select(MediaFile).where(
             MediaFile.ocr_result_json.is_not(None),
             or_(
@@ -411,13 +405,10 @@ class MediaFileService:
             ),
         )
         total = int(self.db.scalar(select(func.count()).select_from(query.subquery())) or 0)
-        items = list(
-            self.db.scalars(
-                query.order_by(MediaFile.updated_at.desc(), MediaFile.id.desc())
-                .offset((page - 1) * page_size)
-                .limit(page_size)
-            ).all()
-        )
+        item_query = query.order_by(MediaFile.updated_at.desc(), MediaFile.id.desc())
+        if page_size is not None:
+            item_query = item_query.offset((page - 1) * page_size).limit(page_size)
+        items = list(self.db.scalars(item_query).all())
         return total, items
 
     def retry_court_summons(self, media_file_id: int) -> MediaFile:
@@ -707,6 +698,8 @@ class MediaFileService:
 
         if decision == "corrected":
             corrections = dict(corrections or {})
+            repayment_plan = corrections.pop("repayment_plan", None)
+            repayment_agreement_event_id = corrections.pop("repayment_agreement_event_id", None)
             structured_corrections = {
                 key: corrections.pop(key)
                 for key in (
@@ -717,6 +710,9 @@ class MediaFileService:
                     "identity_number",
                     "document_date",
                     "repayment_due_date",
+                    "installment_sequence",
+                    "arbitration_institution",
+                    "arbitration_case_no",
                     "enforcement_case_no",
                     "order_no",
                 )
@@ -724,8 +720,18 @@ class MediaFileService:
             }
             for key, value in corrections.items():
                 result[key] = value
+            metadata = result.setdefault("metadata", {})
+            if repayment_agreement_event_id is not None:
+                metadata["repayment_agreement_event_id"] = repayment_agreement_event_id
+                metadata.setdefault("repayment_annotation", {"payment_kind": "manual_review"})
+            if repayment_plan is not None:
+                structured_corrections["repayment_plan"] = {
+                    "total_debt": result.get("amount"),
+                    "installment_count": len(repayment_plan),
+                    "installments": repayment_plan,
+                }
             if structured_corrections:
-                structured = result.setdefault("metadata", {}).setdefault("structured_fields", {})
+                structured = metadata.setdefault("structured_fields", {})
                 structured.update(structured_corrections)
         self._apply_court_party_defaults(result)
         if result.get("event_type") == "court_notice":
@@ -743,9 +749,23 @@ class MediaFileService:
             missing = [label for field, label in (("plaintiff", "债权人"), ("defendant", "债务人"), ("amount", "总欠款")) if not result.get(field)]
             if missing:
                 raise ValueError(f"还款协议缺少{'、'.join(missing)}，请修正后再确认")
-            if not RepaymentTrackingService.valid_plan(result):
+            plan = RepaymentTrackingService.valid_plan(result)
+            if not plan:
                 raise ValueError("还款协议缺少可执行的分期计划，请重新识别后再确认")
-        RepaymentTrackingService(self.db).link_payment_result(media_file, result)
+            agreement_total = Decimal(str(result["amount"])).quantize(Decimal("0.01"))
+            installment_total = RepaymentTrackingService.plan_total(result)
+            if installment_total is None or abs(installment_total - agreement_total) > Decimal("0.01"):
+                raise ValueError(
+                    f"分期金额合计 {installment_total or Decimal('0.00'):.2f} 元与协议总额 "
+                    f"{agreement_total:.2f} 元不一致"
+                )
+        linked_agreement = RepaymentTrackingService(self.db).link_payment_result(media_file, result)
+        if (
+            result.get("event_type") == "payment_screenshot"
+            and (result.get("metadata") or {}).get("repayment_annotation")
+            and linked_agreement is None
+        ):
+            raise ValueError("还款凭证尚未关联协议，请选择同群协议后再确认")
         PaymentTrackingService(self.db).link_media_receipt_result(media_file, result)
         duplicate_media = self._find_applied_duplicate_media(media_file, result)
         if duplicate_media:
@@ -1052,8 +1072,10 @@ class MediaFileService:
         repayment_annotation = metadata.get("repayment_annotation")
         return bool(result.get("requires_review")) or event_type in {"unknown", "repayment_agreement"} or (
             event_type == "payment_screenshot"
-            and not repayment_annotation
-            and not metadata.get("payment_notice_event_id")
+            and (
+                bool(repayment_annotation)
+                or not metadata.get("payment_notice_event_id")
+            )
         )
 
     @staticmethod
@@ -1164,25 +1186,10 @@ class MediaFileService:
         extracted_text: str,
     ) -> bool:
         if result.get("event_type") == "repayment_agreement":
-            normalized = re.sub(r"\s+", "", extracted_text or "")
-            metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
-            agreement_signal = any(value in normalized for value in ("还款协议", "还款方案", "仲裁协议"))
-            manually_confirmed = metadata.get("review_decision") in {"approved", "corrected"}
-            return bool(
-                media_file.local_path
-                and result.get("plaintiff")
-                and result.get("defendant")
-                and result.get("amount") is not None
-                and RepaymentTrackingService.valid_plan(result)
-                and (agreement_signal or manually_confirmed)
-            )
+            return True
         if result.get("event_type") == "payment_screenshot":
             metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
-            return bool(
-                metadata.get("repayment_annotation")
-                and metadata.get("repayment_agreement_event_id")
-                and result.get("amount") is not None
-            )
+            return bool(metadata.get("repayment_annotation") or metadata.get("repayment_agreement_event_id"))
         return False
 
     @classmethod
