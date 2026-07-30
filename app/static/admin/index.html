@@ -5,53 +5,85 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>法务群自动化管理后台</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='8' fill='%230f8c82'/%3E%3Ctext x='32' y='43' text-anchor='middle' font-size='34' fill='white'%3E%E6%B3%95%3C/text%3E%3C/svg%3E" />
-    <link rel="stylesheet" href="/admin/styles.css?v=20260730-09" />
+    <link rel="stylesheet" href="/admin/styles.css?v=20260730-15" />
   </head>
   <body>
     <div class="app-shell">
       <aside class="sidebar">
         <div class="brand">
-          <div class="brand-mark">法</div>
+          <div class="brand-mark" aria-hidden="true"><i data-lucide="scale"></i></div>
           <div>
-            <div class="brand-title">法务自动化</div>
-            <div class="brand-subtitle">WeCom Ops Console</div>
+            <div class="brand-title">致和法务</div>
+            <div class="brand-subtitle">业务自动化平台</div>
           </div>
         </div>
-        <nav class="nav">
-          <button class="nav-item active" data-section="workbench" data-view="overview">工作台</button>
-          <button class="nav-item" data-section="payments" data-view="payment-trackings">缴费跟踪</button>
-          <button class="nav-item" data-section="documents" data-view="ocr-reviews">法律文书</button>
-          <button class="nav-item" data-section="repayment" data-view="repayment-ledger">还款管理</button>
-          <button class="nav-item" data-section="communication" data-view="merchant-questions">沟通提醒</button>
-          <button class="nav-item" data-section="kdocs" data-view="kdocs-browser">金山台账</button>
-          <button class="nav-item" data-section="system" data-view="archive-groups">系统管理</button>
+        <nav class="nav" aria-label="主导航">
+          <button class="nav-item active" data-section="workbench" data-view="overview"><i data-lucide="layout-dashboard"></i><span>工作台</span></button>
+          <button class="nav-item" data-section="payments" data-view="payment-trackings"><i data-lucide="receipt-text"></i><span>缴费跟踪</span></button>
+          <button class="nav-item" data-section="documents" data-view="ocr-reviews"><i data-lucide="scale"></i><span>法律文书</span></button>
+          <button class="nav-item" data-section="repayment" data-view="repayment-ledger"><i data-lucide="calendar-sync"></i><span>还款管理</span></button>
+          <button class="nav-item" data-section="communication" data-view="merchant-questions"><i data-lucide="messages-square"></i><span>沟通提醒</span></button>
+          <button class="nav-item" data-section="kdocs" data-view="kdocs-browser"><i data-lucide="sheet"></i><span>金山台账</span></button>
+          <button class="nav-item" data-section="system" data-view="archive-groups"><i data-lucide="settings-2"></i><span>系统管理</span></button>
         </nav>
+        <div class="sidebar-footer"><span class="sidebar-footer-dot"></span><span>生产环境</span></div>
       </aside>
 
       <main class="main">
         <header class="topbar">
-          <div>
+          <div class="page-heading">
+            <span id="section-label" class="page-eyebrow">工作台</span>
             <h1 id="view-title">工作台</h1>
             <p id="view-subtitle">集中处理待办、失败任务和业务异常</p>
           </div>
-          <div class="key-panel">
-            <input id="api-key-input" type="password" placeholder="X-API-Key" autocomplete="off" />
-            <button id="save-key-btn">保存</button>
-            <button id="refresh-btn" class="ghost">刷新</button>
+          <div class="topbar-actions">
+            <button id="security-btn" class="security-button ghost" type="button">
+              <i data-lucide="shield-check"></i>
+              <span id="security-button-label">访问密钥</span>
+              <span id="security-key-dot" class="security-key-dot" aria-hidden="true"></span>
+            </button>
+            <button id="refresh-btn" class="icon-button ghost" type="button" title="刷新当前页面" aria-label="刷新当前页面"><i data-lucide="refresh-cw"></i></button>
           </div>
         </header>
 
         <nav id="section-tabs" class="section-tabs" aria-label="当前业务模块"></nav>
 
-        <section id="alert" class="alert hidden"></section>
+        <section id="alert" class="alert hidden" role="status" aria-live="polite"></section>
         <section id="content"></section>
       </main>
     </div>
+
+    <dialog id="security-dialog" class="settings-dialog" aria-labelledby="security-dialog-title">
+      <form id="security-form" class="settings-dialog-shell">
+        <header>
+          <div>
+            <span class="page-eyebrow">访问控制</span>
+            <h2 id="security-dialog-title">管理端密钥</h2>
+          </div>
+          <button id="security-close-btn" class="icon-button ghost" type="button" title="关闭" aria-label="关闭"><i data-lucide="x"></i></button>
+        </header>
+        <div class="settings-dialog-body">
+          <label class="field" for="api-key-input">
+            <span>API Key</span>
+            <input id="api-key-input" type="password" placeholder="输入 X-API-Key" autocomplete="off" />
+          </label>
+          <div id="api-key-status" class="credential-status"></div>
+        </div>
+        <footer>
+          <button id="clear-key-btn" class="ghost danger-text" type="button">清除</button>
+          <div>
+            <button id="security-cancel-btn" class="ghost" type="button">取消</button>
+            <button id="save-key-btn" type="submit">保存密钥</button>
+          </div>
+        </footer>
+      </form>
+    </dialog>
 
     <template id="empty-state-template">
       <div class="empty-state">暂无数据</div>
     </template>
 
-    <script src="/admin/admin.js?v=20260730-09"></script>
+    <script src="/admin/vendor/lucide.min.js?v=0.468.0"></script>
+    <script src="/admin/admin.js?v=20260730-15"></script>
   </body>
 </html>

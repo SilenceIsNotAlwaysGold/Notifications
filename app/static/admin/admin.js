@@ -151,6 +151,30 @@ const viewAliases = {};
 
 const $ = (selector) => document.querySelector(selector);
 
+function icon(name, className = "") {
+  return `<i data-lucide="${escapeHtml(name)}" class="${escapeHtml(className)}" aria-hidden="true"></i>`;
+}
+
+function refreshIcons() {
+  if (window.lucide?.createIcons) {
+    window.lucide.createIcons();
+  }
+}
+
+function updateSecurityState() {
+  const configured = Boolean(state.apiKey);
+  const buttonLabel = $("#security-button-label");
+  const dot = $("#security-key-dot");
+  const status = $("#api-key-status");
+  if (buttonLabel) buttonLabel.textContent = configured ? "密钥已配置" : "访问密钥";
+  if (dot) dot.classList.toggle("configured", configured);
+  if (status) {
+    status.className = `credential-status ${configured ? "configured" : ""}`;
+    status.innerHTML = `${icon(configured ? "circle-check" : "circle-alert")}<span>${configured ? "当前浏览器已保存访问密钥" : "当前浏览器尚未配置访问密钥"}</span>`;
+    refreshIcons(status);
+  }
+}
+
 function showAlert(message, type = "info") {
   const alert = $("#alert");
   if (!message) {
@@ -235,6 +259,8 @@ function setView(view, { syncLocation = true, replaceLocation = false } = {}) {
   $("#view-title").textContent = title;
   $("#view-subtitle").textContent = subtitle;
   const activeSection = sectionForView(nextView);
+  $("#section-label").textContent = sections[activeSection].label;
+  document.title = `${title} · 致和法务`;
   document.querySelectorAll(".nav-item").forEach((item) => {
     item.classList.toggle("active", item.dataset.section === activeSection);
   });
@@ -400,12 +426,22 @@ function table(columns, rows, className = "") {
 }
 
 function workbenchTaskCard({ label, count, note, view, tone = "" }) {
+  const taskIcons = {
+    "payment-trackings": "receipt-text",
+    "ocr-reviews": "file-check-2",
+    "court-summons": "calendar-clock",
+    "repayment-ledger": "calendar-sync",
+    "repayment-materials": "calendar-sync",
+    "merchant-questions": "message-circle-question",
+    sync: "sheet",
+  };
   return `
     <button class="workbench-task-card ${tone}" type="button" data-workbench-view="${view}">
+      <span class="workbench-task-icon">${icon(taskIcons[view] || "inbox")}</span>
       <span class="workbench-task-label">${escapeHtml(label)}</span>
       <strong>${count}</strong>
       <span class="workbench-task-note">${escapeHtml(note)}</span>
-      <span class="workbench-task-action">进入处理</span>
+      <span class="workbench-task-action">进入处理 ${icon("arrow-right")}</span>
     </button>
   `;
 }
@@ -417,7 +453,7 @@ function workbenchConnection(label, status, note) {
     <div class="workbench-connection">
       <span class="connection-dot ${normalizedStatus}"></span>
       <div><strong>${escapeHtml(label)}</strong><span>${escapeHtml(note || statusLabel)}</span></div>
-      <span class="connection-status ${normalizedStatus}">${statusLabel}</span>
+      <span class="connection-status ${normalizedStatus}">${escapeHtml(statusLabel)}</span>
     </div>
   `;
 }
@@ -490,7 +526,7 @@ async function renderOverview() {
           ${
             actionRows.length
               ? `<div class="workbench-queue-list">${actionRows
-                  .map((item) => `<button type="button" class="workbench-queue-row" data-workbench-view="${item.view}"><span class="queue-file">${escapeHtml(item.title || item.label)}</span><span class="queue-detail">${escapeHtml(item.label)} · ${escapeHtml(item.detail || "")}</span><span class="queue-action">处理</span></button>`)
+                  .map((item) => `<button type="button" class="workbench-queue-row ${item.priority >= 100 ? "critical" : ""}" data-workbench-view="${item.view}"><span class="queue-priority" aria-hidden="true"></span><span class="queue-copy"><strong class="queue-file">${escapeHtml(item.title || item.label)}</strong><span class="queue-detail">${escapeHtml(item.label)} · ${escapeHtml(item.detail || "")}</span></span><time class="queue-time">${escapeHtml(formatDateTime(item.updatedAt))}</time><span class="queue-action" aria-label="进入处理">${icon("chevron-right")}</span></button>`)
                   .join("")}</div>`
               : '<div class="workbench-empty"><strong>当前没有业务待办</strong><span>新的缴费、文书、还款或待回复事项进入后会显示在这里。</span></div>'
           }
@@ -1598,9 +1634,9 @@ function reviewDetail(review) {
     <div class="review-detail-grid">
       <section class="review-preview">
         <div class="preview-toolbar" aria-label="原图旋转工具">
-          <button type="button" class="preview-tool-button" data-preview-rotate="-90" title="向左旋转 90 度" aria-label="向左旋转 90 度">↶</button>
+          <button type="button" class="preview-tool-button" data-preview-rotate="-90" title="向左旋转 90 度" aria-label="向左旋转 90 度">${icon("rotate-ccw")}</button>
           <span id="preview-rotation-label">0°</span>
-          <button type="button" class="preview-tool-button" data-preview-rotate="90" title="向右旋转 90 度" aria-label="向右旋转 90 度">↷</button>
+          <button type="button" class="preview-tool-button" data-preview-rotate="90" title="向右旋转 90 度" aria-label="向右旋转 90 度">${icon("rotate-cw")}</button>
         </div>
         <div id="review-preview" class="preview-placeholder">加载预览中...</div>
       </section>
@@ -1794,6 +1830,7 @@ async function selectOCRReview(summary) {
   const selected = await api(`/api/v1/legal/ocr-reviews/${summary.media_file_id}`);
   if (state.selectedReviewId !== summary.media_file_id || state.view !== "ocr-reviews") return;
   pane.innerHTML = reviewDetail(selected);
+  refreshIcons();
   document.querySelectorAll("[data-review-decision]").forEach((button) => button.addEventListener("click", () => submitReviewDecision(selected, button.dataset.reviewDecision)));
   const reanalyzeButton = document.querySelector("[data-review-reanalyze]");
   if (reanalyzeButton) reanalyzeButton.addEventListener("click", () => reanalyzeReview(selected, reanalyzeButton));
@@ -1829,9 +1866,9 @@ function courtSummonsDetail(review) {
     <div class="review-detail-grid">
       <section class="review-preview">
         <div class="preview-toolbar" aria-label="原图旋转工具">
-          <button type="button" class="preview-tool-button" data-preview-rotate="-90" title="向左旋转 90 度" aria-label="向左旋转 90 度">↶</button>
+          <button type="button" class="preview-tool-button" data-preview-rotate="-90" title="向左旋转 90 度" aria-label="向左旋转 90 度">${icon("rotate-ccw")}</button>
           <span id="preview-rotation-label">0°</span>
-          <button type="button" class="preview-tool-button" data-preview-rotate="90" title="向右旋转 90 度" aria-label="向右旋转 90 度">↷</button>
+          <button type="button" class="preview-tool-button" data-preview-rotate="90" title="向右旋转 90 度" aria-label="向右旋转 90 度">${icon("rotate-cw")}</button>
         </div>
         <div id="review-preview" class="preview-placeholder">加载预览中...</div>
       </section>
@@ -1916,6 +1953,7 @@ async function selectCourtSummons(summary) {
   if (state.selectedSummonsId !== summary.media_file_id || state.view !== "court-summons") return;
   const selected = { ...summary, ...detail };
   pane.innerHTML = courtSummonsDetail(selected);
+  refreshIcons();
   document.querySelector("[data-summons-save]")?.addEventListener("click", () => submitCourtSummons(selected, "corrected"));
   document.querySelector("[data-summons-reject]")?.addEventListener("click", () => submitCourtSummons(selected, "rejected"));
   document.querySelector("[data-summons-reanalyze]")?.addEventListener("click", async () => { await api(`/api/v1/legal/media-files/${selected.media_file_id}/ocr?force_reprocess=true`, { method: "POST" }); showAlert("已重新识别传票"); await renderCourtSummons(); });
@@ -2092,7 +2130,7 @@ function repaymentMaterialDetail(review, agreements) {
     : `<div class="summons-sync-summary"><div><span>金山状态</span><strong>${escapeHtml(repaymentSyncLabels[review.sync_status] || review.sync_status || "等待写入")}</strong></div><div><span>目标子表行号</span><strong>${escapeHtml(review.external_row_index == null ? "-" : review.external_row_index)}</strong></div><div><span>写入错误</span><strong>${escapeHtml(review.sync_error || "-")}</strong></div></div>`;
   return `<div class="review-detail-header"><div class="summons-heading"><span class="eyebrow">${escapeHtml(review.group_name || "未命名群")} · ${kindLabel}</span><strong>${escapeHtml(review.original_filename || `资料 ${review.media_file_id}`)}</strong><div class="muted mono">${escapeHtml(review.group_id)} · ${escapeHtml(review.msg_id || "无消息 ID")}</div></div><div class="review-header-actions">${badge(repaymentWorkflowLabels[review.workflow_status] || review.workflow_status)}</div></div>
     ${repaymentLifecycle(review)}
-    <div class="review-detail-grid"><section class="review-preview"><div class="preview-toolbar" aria-label="原图旋转工具"><button type="button" class="preview-tool-button" data-preview-rotate="-90" title="向左旋转 90 度" aria-label="向左旋转 90 度">↶</button><span id="preview-rotation-label">0°</span><button type="button" class="preview-tool-button" data-preview-rotate="90" title="向右旋转 90 度" aria-label="向右旋转 90 度">↷</button></div><div id="review-preview" class="preview-placeholder">加载预览中...</div></section><section class="review-fields">
+    <div class="review-detail-grid"><section class="review-preview"><div class="preview-toolbar" aria-label="原图旋转工具"><button type="button" class="preview-tool-button" data-preview-rotate="-90" title="向左旋转 90 度" aria-label="向左旋转 90 度">${icon("rotate-ccw")}</button><span id="preview-rotation-label">0°</span><button type="button" class="preview-tool-button" data-preview-rotate="90" title="向右旋转 90 度" aria-label="向右旋转 90 度">${icon("rotate-cw")}</button></div><div id="review-preview" class="preview-placeholder">加载预览中...</div></section><section class="review-fields">
       ${automationDecisionPanel(review)}
       <form id="repayment-form"><div class="summons-callout">${review.material_kind === "agreement" ? "业务去向：协议履约台账" : "业务去向：关联协议的回款记录"}</div><div class="form-grid review-form-grid"><div class="field"><label>债权人</label><input name="plaintiff" required value="${escapeHtml(result.plaintiff || "")}" ${editable ? "" : "disabled"} /></div><div class="field"><label>债务人</label><input name="defendant" required value="${escapeHtml(result.defendant || "")}" ${editable ? "" : "disabled"} /></div><div class="field"><label>${review.material_kind === "agreement" ? "协议总额" : "本次回款"}</label><input name="amount" type="number" min="0.01" step="0.01" required value="${escapeHtml(result.amount == null ? "" : result.amount)}" ${editable ? "" : "disabled"} /></div>${review.material_kind === "agreement" ? `<div class="field"><label>仲裁机构</label><input name="arbitration_institution" value="${escapeHtml(structured.arbitration_institution || "")}" ${editable ? "" : "disabled"} /></div><div class="field"><label>仲裁案号</label><input name="arbitration_case_no" value="${escapeHtml(structured.arbitration_case_no || "")}" ${editable ? "" : "disabled"} /></div>` : `<div class="field"><label>关联协议 <span class="required">必选</span></label><select name="repayment_agreement_event_id" ${editable ? "" : "disabled"}><option value="">选择同群协议</option>${agreementOptions}</select></div><div class="field"><label>对应期数</label><input name="installment_sequence" type="number" min="1" max="100" value="${escapeHtml(structured.installment_sequence || "")}" ${editable ? "" : "disabled"} /></div>`}<div class="field wide"><label>复核备注</label><textarea name="note" ${editable ? "" : "disabled"}>${escapeHtml(review.review_note || "")}</textarea></div></div>
       <div class="field-label">${review.material_kind === "agreement" ? "分期还款方案" : "当前协议履约情况"}</div>${review.material_kind === "agreement" ? repaymentPlanEditor(result, editable) : repaymentProgressRows(review.progress)}
@@ -2199,6 +2237,7 @@ async function selectRepaymentInboxItem(summary) {
   const agreements = agreementData.items || [];
   const selected = { ...summary, ...detail };
   pane.innerHTML = repaymentMaterialDetail(selected, agreements);
+  refreshIcons();
   if (selected.material_kind === "agreement" && selected.review_status === "pending") bindRepaymentPlanEditor();
   document.querySelector("[data-repayment-confirm]")?.addEventListener("click", () => submitRepaymentMaterial(selected, "corrected"));
   document.querySelector("[data-repayment-reject]")?.addEventListener("click", () => submitRepaymentMaterial(selected, "rejected"));
@@ -2322,7 +2361,16 @@ async function renderRepaymentLedger() {
   document.querySelector("[data-repayment-filter-reset]").addEventListener("click", async () => { state.repaymentLedgerStatus = ""; state.repaymentLedgerFocus = ""; state.repaymentLedgerQuery = ""; state.repaymentLedgerPage = 1; state.selectedRepaymentAgreementId = null; await renderRepaymentLedger(); });
   document.querySelectorAll("[data-repayment-stat-status]").forEach((button) => button.addEventListener("click", async () => { state.repaymentLedgerStatus = state.repaymentLedgerStatus === button.dataset.repaymentStatStatus ? "" : button.dataset.repaymentStatStatus; state.repaymentLedgerFocus = ""; state.repaymentLedgerPage = 1; state.selectedRepaymentAgreementId = null; await renderRepaymentLedger(); }));
   document.querySelectorAll("[data-repayment-stat-focus]").forEach((button) => button.addEventListener("click", async () => { state.repaymentLedgerFocus = state.repaymentLedgerFocus === button.dataset.repaymentStatFocus ? "" : button.dataset.repaymentStatFocus; state.repaymentLedgerStatus = ""; state.repaymentLedgerPage = 1; state.selectedRepaymentAgreementId = null; await renderRepaymentLedger(); }));
-  document.querySelectorAll("[data-agreement-id]").forEach((button) => button.addEventListener("click", () => { const eventId = Number(button.dataset.agreementId); if (eventId === state.selectedRepaymentAgreementId) return; state.selectedRepaymentAgreementId = eventId; document.querySelectorAll("[data-agreement-id]").forEach((item) => item.classList.toggle("active", Number(item.dataset.agreementId) === eventId)); const item = items.find((row) => row.event_id === eventId); $(".review-detail-pane").innerHTML = repaymentAgreementDetail(item); bindRepaymentLedgerActions(item); }));
+  document.querySelectorAll("[data-agreement-id]").forEach((button) => button.addEventListener("click", () => {
+    const eventId = Number(button.dataset.agreementId);
+    if (eventId === state.selectedRepaymentAgreementId) return;
+    state.selectedRepaymentAgreementId = eventId;
+    document.querySelectorAll("[data-agreement-id]").forEach((item) => item.classList.toggle("active", Number(item.dataset.agreementId) === eventId));
+    const item = items.find((row) => row.event_id === eventId);
+    $(".review-detail-pane").innerHTML = repaymentAgreementDetail(item);
+    refreshIcons();
+    bindRepaymentLedgerActions(item);
+  }));
   document.querySelector("[data-repayment-ledger-prev]")?.addEventListener("click", async () => { state.repaymentLedgerPage -= 1; state.selectedRepaymentAgreementId = null; await renderRepaymentLedger(); });
   document.querySelector("[data-repayment-ledger-next]")?.addEventListener("click", async () => { state.repaymentLedgerPage += 1; state.selectedRepaymentAgreementId = null; await renderRepaymentLedger(); });
   if (selected) bindRepaymentLedgerActions(selected);
@@ -2623,6 +2671,9 @@ async function renderPaymentTrackings() {
   }
   const statusText = { pending: "待支付", partial: "部分支付", paid: "已支付", overdue: "已逾期" };
   const statusClass = { pending: "warn", partial: "warn", paid: "ok", overdue: "danger" };
+  const stagedCount = items.filter((item) => item.business_status === "staged").length;
+  const overdueCount = items.filter((item) => item.payment_status === "overdue").length;
+  const unmatchedCount = Number(receiptData.total || 0) + Number(unmatchedMediaData.total || 0) + Number(unmatchedTextData.total || 0);
   const money = (value) => value === null || value === undefined ? fmt(null) : `${escapeHtml(Number(value).toFixed(2))} 元`;
   const receiptOptions = (row) => {
     if (!row.case_id) return '<span class="muted">群消息确认</span>';
@@ -2661,11 +2712,16 @@ async function renderPaymentTrackings() {
     </form>`;
   $("#content").innerHTML = `
     <section class="payment-tracking-view">
-      <header class="case-section-header">
-        <div><h2>缴费信息跟踪</h2><p>每条缴费通知独立核算，付款凭证只有确认关联后才会更新支付状态。</p></div>
-        <span class="case-candidate-count">${data.total || 0}</span>
+      <header class="business-view-header">
+        <div><h2>当前处理队列</h2><p>先处理低置信度通知和未匹配付款确认，再查看完整缴费台账。</p></div>
+        <span class="record-count">共 ${escapeHtml(data.total || 0)} 条</span>
       </header>
-      ${panel("今日缴费信息汇总", `<div class="payment-summary-meta"><span>已确认 ${escapeHtml(dailySummary.confirmed_count)} 项 · 待确认 ${escapeHtml(dailySummary.pending_count)} 项</span><button type="button" class="ghost small" id="copy-payment-summary">复制汇总</button></div><pre class="payment-daily-summary">${escapeHtml(dailySummary.content)}</pre>`)}
+      <div class="workflow-metrics" aria-label="缴费处理概览">
+        <div class="workflow-metric ${stagedCount ? "attention" : "clear"}"><span>${icon("scan-search")} 待人工确认</span><strong>${stagedCount}</strong></div>
+        <div class="workflow-metric ${unmatchedCount ? "attention" : "clear"}"><span>${icon("unlink")} 待关联记录</span><strong>${unmatchedCount}</strong></div>
+        <div class="workflow-metric ${overdueCount ? "danger" : "clear"}"><span>${icon("clock-alert")} 当前页逾期</span><strong>${overdueCount}</strong></div>
+        <div class="workflow-metric neutral"><span>${icon("circle-check")} 今日已确认</span><strong>${escapeHtml(dailySummary.confirmed_count)}</strong></div>
+      </div>
       ${unmatchedTextRows.length ? panel("待匹配文字付款确认", `${table([
         { label: "时间", render: (row) => escapeHtml(formatDateTime(row.received_at)) },
         { label: "来源群 / 发送人", render: (row) => `<strong>${escapeHtml(row.group_name || row.group_id)}</strong><small class="payment-amount-detail">${escapeHtml(row.sender_id || "发送人待确认")}</small>` },
@@ -2682,20 +2738,19 @@ async function renderPaymentTrackings() {
       ], unmatchedMediaRows, "payment-unmatched-media-table")}`) : ""}
       ${panel("缴费信息表", `${filters}${table([
         { label: "日期", key: "notice_date" },
-        { label: "原告", key: "plaintiff" },
-        { label: "被告", key: "defendant" },
-        { label: "案号 / 来源群", render: (row) => row.case_id ? `<button class="text-link" data-payment-case="${row.case_id}">${escapeHtml(row.case_no || "查看历史案件")}</button>` : `<span>${escapeHtml(row.case_no || row.source_group_name || row.source_group_id || "无案号")}</span><small class="payment-amount-detail">${escapeHtml(row.source_sender_id || "发送人待确认")}</small>` },
+        { label: "当事人", render: (row) => `<strong>${escapeHtml(row.defendant || "被告待确认")}</strong><small class="payment-amount-detail">原告：${escapeHtml(row.plaintiff || "待确认")}</small>` },
+        { label: "案号 / 来源", render: (row) => row.case_id ? `<button class="text-link" data-payment-case="${row.case_id}">${escapeHtml(row.case_no || "查看历史案件")}</button>` : `<span>${escapeHtml(row.case_no || row.source_group_name || row.source_group_id || "无案号")}</span><small class="payment-amount-detail">${escapeHtml(row.source_group_name || row.source_group_id || "来源群待确认")} · ${escapeHtml(row.source_sender_id || "发送人待确认")}</small>` },
         { label: "缴费信息", render: (row) => `<strong>${escapeHtml(row.payment_type || "其他缴费")}</strong><small class="payment-amount-detail">应缴 ${money(row.required_amount)}<br>已缴 ${money(row.paid_amount)}<br>未缴 ${money(row.outstanding_amount)}</small>` },
-        { label: "支付情况", render: (row) => `<span class="badge ${statusClass[row.payment_status] || ""}">${escapeHtml(statusText[row.payment_status] || row.payment_status)}</span>` },
-        { label: "自动化判断", render: (row) => `${automationDecisionBadge({ ...row, automation_action: "remind" })}${row.review_reasons?.length ? `<small class="payment-amount-detail">${escapeHtml(row.review_reasons.join("；"))}</small>` : ""}` },
-        { label: "跟踪情况", render: (row) => `${escapeHtml(row.tracking_status)}<small class="payment-amount-detail">业务状态：${escapeHtml(row.business_status)}</small>` },
-        { label: "截止时间", render: (row) => `${fmt(row.payment_deadline)}<small class="payment-amount-detail">${escapeHtml(row.remaining_payment_time)}</small>` },
-        { label: "通知截图", render: (row) => row.notice_screenshot_url ? `<button class="small ghost" data-payment-screenshot="${escapeHtml(row.notice_screenshot_url)}">查看通知</button>` : '<span class="muted">无</span>' },
-        { label: "付款凭证", render: (row) => row.receipt_urls?.length ? row.receipt_urls.map((url, index) => `<button class="small ghost" data-payment-screenshot="${escapeHtml(url)}">凭证 ${index + 1}</button>`).join(" ") : '<span class="muted">待上传</span>' },
-        { label: "凭证关联", render: receiptOptions },
+        { label: "状态 / 判断", render: (row) => `<span class="badge ${statusClass[row.payment_status] || ""}">${escapeHtml(statusText[row.payment_status] || row.payment_status)}</span><div class="payment-decision-stack">${automationDecisionBadge({ ...row, automation_action: "remind" })}${row.review_reasons?.length ? `<small class="payment-amount-detail">${escapeHtml(row.review_reasons.join("；"))}</small>` : ""}</div>` },
+        { label: "跟踪 / 截止", render: (row) => `<strong>${escapeHtml(row.tracking_status)}</strong><small class="payment-amount-detail">${fmt(row.payment_deadline)} · ${escapeHtml(row.remaining_payment_time)}<br>业务状态：${escapeHtml(row.business_status)}</small>` },
+        { label: "资料与凭证", render: (row) => `<div class="payment-document-actions">${row.notice_screenshot_url ? `<button class="small ghost" data-payment-screenshot="${escapeHtml(row.notice_screenshot_url)}">通知</button>` : '<span class="muted">无通知截图</span>'}${row.receipt_urls?.length ? row.receipt_urls.map((url, index) => `<button class="small ghost" data-payment-screenshot="${escapeHtml(url)}">凭证 ${index + 1}</button>`).join("") : '<span class="muted">待上传凭证</span>'}</div>${receiptOptions(row)}` },
         { label: "操作", render: (row) => row.business_status === "staged" ? `<div class="payment-review-actions"><button type="button" class="small" data-payment-review-approve="${row.event_id}">确认并开始提醒</button><button type="button" class="small ghost" data-payment-review-reject="${row.event_id}">忽略</button></div>` : '<span class="muted">-</span>' },
       ], items, "payment-tracking-table")}
-      <div class="kdocs-pagination"><span>共 ${escapeHtml(data.total || 0)} 条，第 ${state.paymentTrackingPage} / ${totalPages} 页 · 待人工关联 ${escapeHtml((receiptData.total || 0) + (unmatchedMediaData.total || 0) + (unmatchedTextData.total || 0))} 条</span><button type="button" class="ghost small" id="payment-tracking-prev" ${state.paymentTrackingPage <= 1 ? "disabled" : ""}>上一页</button><button type="button" class="ghost small" id="payment-tracking-next" ${state.paymentTrackingPage >= totalPages ? "disabled" : ""}>下一页</button></div>`)}
+      <div class="kdocs-pagination"><span>共 ${escapeHtml(data.total || 0)} 条，第 ${state.paymentTrackingPage} / ${totalPages} 页 · 待人工关联 ${escapeHtml(unmatchedCount)} 条</span><button type="button" class="ghost small" id="payment-tracking-prev" ${state.paymentTrackingPage <= 1 ? "disabled" : ""}>上一页</button><button type="button" class="ghost small" id="payment-tracking-next" ${state.paymentTrackingPage >= totalPages ? "disabled" : ""}>下一页</button></div>`)}
+      <details class="payment-summary-disclosure">
+        <summary><span>${icon("clipboard-list")} 今日缴费信息汇总</span><span>已确认 ${escapeHtml(dailySummary.confirmed_count)} 项 · 待确认 ${escapeHtml(dailySummary.pending_count)} 项</span></summary>
+        <div class="payment-summary-content"><div class="payment-summary-meta"><span>可直接复制发送到工作群</span><button type="button" class="ghost small" id="copy-payment-summary">${icon("copy")} 复制汇总</button></div><pre class="payment-daily-summary">${escapeHtml(dailySummary.content)}</pre></div>
+      </details>
     </section>`;
   $("#payment-tracking-filter").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -2828,6 +2883,38 @@ async function renderPaymentTrackings() {
   }));
 }
 
+function merchantQuestionCard(row, statusLabels) {
+  const needsDecision = row.status === "pending_review";
+  const isEscalated = row.status === "escalated";
+  const active = ["open", "timed_out", "escalated"].includes(row.status);
+  return `<article class="merchant-task ${isEscalated ? "escalated" : needsDecision ? "review" : ""}">
+    <header class="merchant-task-header">
+      <div class="merchant-task-source">
+        <span class="merchant-source-icon">${icon("messages-square")}</span>
+        <div><strong>${escapeHtml(row.group_name || row.group_id || "未命名群")}</strong><span class="mono">${escapeHtml(row.group_id)}</span></div>
+      </div>
+      <span class="badge ${needsDecision ? "warn" : isEscalated ? "danger" : ""}">${escapeHtml(statusLabels[row.status] || row.status)}</span>
+    </header>
+    <div class="merchant-task-body">
+      <div class="merchant-message">
+        <div class="merchant-message-meta"><strong>${escapeHtml(row.sender_id || "未知发起人")}</strong><time>${escapeHtml(formatDateTime(row.asked_at))}</time></div>
+        <p>${escapeHtml(row.content || row.question_text || "消息内容为空")}</p>
+      </div>
+      <aside class="merchant-decision">
+        <span class="merchant-decision-label">自动化判断</span>
+        ${automationDecisionBadge({ ...row, automation_outcome: row.automation_outcome || (needsDecision ? "review" : undefined), automation_action: "remind" })}
+        ${row.review_reasons?.length ? `<p>${escapeHtml(row.review_reasons.join("；"))}</p>` : ""}
+      </aside>
+    </div>
+    <footer class="merchant-task-footer">
+      <div class="merchant-assignment"><span>@ 对象</span><strong>${escapeHtml(row.assigned_userid || row.sender_id || "待确认")}</strong><span>下一节点</span><strong>${escapeHtml(formatDateTime(row.deadline_at))}</strong></div>
+      <div class="merchant-question-actions">
+        ${needsDecision ? `<button class="small" data-approve-question="${row.id}">${icon("check")} 确认需要回复</button><button class="small ghost" data-ignore-question="${row.id}">${icon("x")} 无需回复</button>` : active ? `<button class="small ghost" data-close-question="${row.id}">${icon("circle-check")} 人工结束</button>` : '<span class="muted">任务已结束</span>'}
+      </div>
+    </footer>
+  </article>`;
+}
+
 async function renderMerchantQuestions() {
   const params = new URLSearchParams({
     offset: String((state.merchantQuestionPage - 1) * state.merchantQuestionPageSize),
@@ -2849,6 +2936,9 @@ async function renderMerchantQuestions() {
     replied: "已有效回复",
     closed: "已关闭",
   };
+  const reviewCount = items.filter((item) => item.status === "pending_review").length;
+  const waitingCount = items.filter((item) => ["open", "timed_out"].includes(item.status)).length;
+  const escalatedCount = items.filter((item) => item.status === "escalated").length;
   const filters = `<form id="merchant-question-filter" class="payment-tracking-filter">
     <label><span>处理状态</span><select name="status">
       ${[["active","需要处理"],["pending_review","待人工判断"],["open","等待回复"],["timed_out","已首次提醒"],["escalated","已升级提醒"],["replied","已有效回复"],["closed","已关闭"],["","全部"]].map(([value,label]) => `<option value="${value}" ${state.merchantQuestionStatus === value ? "selected" : ""}>${label}</option>`).join("")}
@@ -2856,29 +2946,17 @@ async function renderMerchantQuestions() {
     <label><span>每页</span><select name="page_size">${[20, 50, 100].map((size) => `<option value="${size}" ${state.merchantQuestionPageSize === size ? "selected" : ""}>${size} 条</option>`).join("")}</select></label>
     <button type="submit">查询</button>
   </form>`;
-  $("#content").innerHTML = panel(
-    "商家消息回复跟踪",
-    `${filters}${table(
-      [
-        { label: "状态", render: (row) => `<span class="badge ${row.status === "pending_review" ? "warn" : row.status === "escalated" ? "danger" : ""}">${escapeHtml(statusLabels[row.status] || row.status)}</span>` },
-        { label: "群", render: (row) => `<span class="mono">${escapeHtml(row.group_id)}</span>` },
-        { label: "发起人 / @ 对象", render: (row) => `<strong>${escapeHtml(row.sender_id)}</strong><small class="payment-amount-detail">${escapeHtml(row.assigned_userid || "待确认")}</small>` },
-        { label: "原消息", render: (row) => `<div class="merchant-question-content">${escapeHtml(row.content)}</div>` },
-        { label: "自动化判断", render: (row) => `${automationDecisionBadge({ ...row, automation_outcome: row.automation_outcome || (row.status === "pending_review" ? "review" : undefined), automation_action: "remind" })}${row.review_reasons?.length ? `<small class="payment-amount-detail">${escapeHtml(row.review_reasons.join("；"))}</small>` : ""}` },
-        { label: "时间", render: (row) => `<span>${escapeHtml(formatDateTime(row.asked_at))}</span><small class="payment-amount-detail">提醒节点：${escapeHtml(formatDateTime(row.deadline_at))}</small>` },
-        {
-          label: "操作",
-          render: (row) => row.status === "pending_review"
-            ? `<div class="merchant-question-actions"><button class="small" data-approve-question="${row.id}">确认需要回复</button><button class="small ghost" data-ignore-question="${row.id}">无需回复</button></div>`
-            : ["open", "timed_out", "escalated"].includes(row.status)
-              ? `<button class="small ghost" data-close-question="${row.id}">人工结束</button>`
-              : '<span class="muted">-</span>',
-        },
-      ],
-      items,
-      "merchant-question-table",
-    )}<div class="kdocs-pagination"><span>共 ${escapeHtml(data.total || 0)} 条，第 ${state.merchantQuestionPage} / ${totalPages} 页</span><button type="button" class="ghost small" id="merchant-question-prev" ${state.merchantQuestionPage <= 1 ? "disabled" : ""}>上一页</button><button type="button" class="ghost small" id="merchant-question-next" ${state.merchantQuestionPage >= totalPages ? "disabled" : ""}>下一页</button></div>`,
-  );
+  $("#content").innerHTML = `<section class="merchant-view">
+    <header class="business-view-header"><div><h2>回复任务</h2><p>只跟踪确实需要答复的业务问题，有效回复后自动结束。</p></div><span class="record-count">共 ${escapeHtml(data.total || 0)} 条</span></header>
+    <div class="workflow-metrics compact" aria-label="沟通任务概览">
+      <div class="workflow-metric ${reviewCount ? "attention" : "clear"}"><span>${icon("scan-search")} 待判断</span><strong>${reviewCount}</strong></div>
+      <div class="workflow-metric ${waitingCount ? "attention" : "clear"}"><span>${icon("message-circle-more")} 等待回复</span><strong>${waitingCount}</strong></div>
+      <div class="workflow-metric ${escalatedCount ? "danger" : "clear"}"><span>${icon("message-circle-warning")} 已升级</span><strong>${escalatedCount}</strong></div>
+    </div>
+    <div class="merchant-filter-bar">${filters}</div>
+    <div class="merchant-task-list">${items.length ? items.map((row) => merchantQuestionCard(row, statusLabels)).join("") : '<div class="empty-state"><strong>当前筛选下没有回复任务</strong><span>新的待回复问题会显示在这里</span></div>'}</div>
+    <div class="kdocs-pagination"><span>共 ${escapeHtml(data.total || 0)} 条，第 ${state.merchantQuestionPage} / ${totalPages} 页</span><button type="button" class="ghost small" id="merchant-question-prev" ${state.merchantQuestionPage <= 1 ? "disabled" : ""}>上一页</button><button type="button" class="ghost small" id="merchant-question-next" ${state.merchantQuestionPage >= totalPages ? "disabled" : ""}>下一页</button></div>
+  </section>`;
   $("#merchant-question-filter").addEventListener("submit", async (event) => {
     event.preventDefault();
     const values = new FormData(event.currentTarget);
@@ -3630,7 +3708,17 @@ async function loadAttributionPreview(row) {
 }
 
 async function loadView() {
-  $("#content").innerHTML = '<div class="empty-state">加载中...</div>';
+  const refreshButton = $("#refresh-btn");
+  if (refreshButton) {
+    refreshButton.disabled = true;
+    refreshButton.classList.add("is-loading");
+  }
+  $("#content").setAttribute("aria-busy", "true");
+  $("#content").innerHTML = `<div class="page-loading" role="status" aria-live="polite">
+    <span class="loading-spinner">${icon("loader-circle")}</span>
+    <div><strong>正在加载</strong><span>正在获取最新业务数据</span></div>
+  </div>`;
+  refreshIcons();
   try {
     if (state.view === "overview") await renderOverview();
     if (state.view === "cases") await renderCases();
@@ -3655,15 +3743,49 @@ async function loadView() {
   } catch (error) {
     $("#content").innerHTML = "";
     showAlert(error.message, "error");
+  } finally {
+    $("#content").setAttribute("aria-busy", "false");
+    if (refreshButton) {
+      refreshButton.disabled = false;
+      refreshButton.classList.remove("is-loading");
+    }
+    refreshIcons();
   }
 }
 
 function init() {
-  $("#api-key-input").value = state.apiKey;
-  $("#save-key-btn").addEventListener("click", () => {
-    state.apiKey = $("#api-key-input").value.trim();
+  const dialog = $("#security-dialog");
+  const apiKeyInput = $("#api-key-input");
+  apiKeyInput.value = state.apiKey;
+  updateSecurityState();
+  refreshIcons();
+  $("#security-btn").addEventListener("click", () => {
+    apiKeyInput.value = state.apiKey;
+    updateSecurityState();
+    dialog.showModal();
+    window.setTimeout(() => apiKeyInput.focus(), 0);
+  });
+  $("#security-close-btn").addEventListener("click", () => dialog.close());
+  $("#security-cancel-btn").addEventListener("click", () => dialog.close());
+  dialog.addEventListener("click", (event) => {
+    if (event.target === dialog) dialog.close();
+  });
+  $("#security-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    state.apiKey = apiKeyInput.value.trim();
     localStorage.setItem("legal_wecom_api_key", state.apiKey);
-    showAlert("API Key 已保存");
+    updateSecurityState();
+    dialog.close();
+    showAlert("访问密钥已保存");
+    loadView();
+  });
+  $("#clear-key-btn").addEventListener("click", () => {
+    state.apiKey = "";
+    apiKeyInput.value = "";
+    localStorage.removeItem("legal_wecom_api_key");
+    updateSecurityState();
+    dialog.close();
+    showAlert("访问密钥已清除");
     loadView();
   });
   $("#refresh-btn").addEventListener("click", loadView);
