@@ -10,6 +10,12 @@ from app.models.group_message import GroupMessage
 from app.models.merchant_question import MerchantQuestion
 from app.models.reminder import Reminder
 from app.core.config import get_settings
+from app.core.resource_permissions import (
+    allowed_group_ids,
+    allowed_tenant_ids,
+    resource_scope_enabled,
+    tenant_scope_enabled,
+)
 from app.adapters.legal_llm import LegalLLMAdapter, LegalLLMError
 from app.services.group_context_service import GroupContextService
 from app.services.reminder_service import ReminderService
@@ -173,8 +179,32 @@ class MerchantQuestionService:
             return {"created": 0, "closed": 0}
         if semantic_decision is None:
             semantic_decision = self._semantic_decision(message, None)
-        if self.settings.legal_llm_base_url:
-            if semantic_decision is None or not self._decision_creates_question(semantic_decision):
+        rule_confidence = self._rule_confidence(message.content or "")
+        threshold = self.settings.legal_auto_remind_min_confidence
+        classification = dict(semantic_decision or {"source": "rules", "needs_reply": True, "confidence": rule_confidence})
+        semantic_confidence = self._decision_confidence(semantic_decision) if semantic_decision else rule_confidence
+        if semantic_decision and semantic_confidence >= threshold and not self._decision_creates_question(semantic_decision):
+            return {"created": 0, "closed": 0}
+        status = "open"
+        review_reasons: list[str] = []
+        if semantic_confidence < threshold:
+            status = "pending_review"
+            review_reasons.append(f"会话判断置信度 {semantic_confidence:.0%} 低于自动提醒阈值 {threshold:.0%}")
+        if self.settings.legal_llm_base_url and semantic_decision is None:
+            status = "pending_review"
+            review_reasons.append("AI 会话判断不可用")
+        if semantic_decision and not bool(semantic_decision.get("needs_reply")) and semantic_confidence < threshold:
+            review_reasons.append("AI 与业务请求规则判断不一致")
+        classification["automation_decision"] = {
+            "action": "remind",
+            "outcome": "review" if status == "pending_review" else "auto",
+            "confidence": semantic_confidence,
+            "threshold": threshold,
+            "reasons": list(dict.fromkeys(review_reasons)),
+            "confidence_source": "ai_conversation" if semantic_decision else "deterministic_rule",
+        }
+        if status == "open" and not self._decision_creates_question(classification):
+            if not bool(classification.get("source") == "rules" and classification.get("needs_reply")):
                 return {"created": 0, "closed": 0}
 
         existing = self.db.scalar(
@@ -191,9 +221,9 @@ class MerchantQuestionService:
             content=(message.content or "").strip(),
             asked_at=asked_at,
             deadline_at=self._business_deadline(asked_at, group.question_timeout_minutes),
-            status="open",
+            status=status,
             assigned_userid=message.sender_id,
-            classification_json=json.dumps(semantic_decision or {"source": "rules"}, ensure_ascii=False),
+            classification_json=json.dumps(classification, ensure_ascii=False),
         )
         self.db.add(question)
         self.db.flush()
@@ -226,21 +256,47 @@ class MerchantQuestionService:
             logger.warning("商家会话AI判断失败 message_id=%s error=%s", message.id, exc)
             return None
 
-    @staticmethod
-    def _decision_closes_question(decision: dict) -> bool:
-        try:
-            confidence = float(decision.get("confidence") or 0)
-        except (TypeError, ValueError):
-            confidence = 0
-        return confidence >= 0.65 and bool(decision.get("is_answer") or decision.get("conversation_closed"))
+    def _decision_closes_question(self, decision: dict) -> bool:
+        return self._decision_confidence(decision) >= self.settings.legal_auto_remind_min_confidence and bool(
+            decision.get("is_answer") or decision.get("conversation_closed")
+        )
+
+    def _decision_creates_question(self, decision: dict) -> bool:
+        return self._decision_confidence(decision) >= self.settings.legal_auto_remind_min_confidence and bool(
+            decision.get("needs_reply")
+        ) and not bool(decision.get("is_answer"))
 
     @staticmethod
-    def _decision_creates_question(decision: dict) -> bool:
+    def _decision_confidence(decision: dict | None) -> float:
+        if not decision:
+            return 0.0
         try:
             confidence = float(decision.get("confidence") or 0)
         except (TypeError, ValueError):
             confidence = 0
-        return confidence >= 0.72 and bool(decision.get("needs_reply")) and not bool(decision.get("is_answer"))
+        return min(max(confidence, 0.0), 1.0)
+
+    @staticmethod
+    def _rule_confidence(content: str) -> float:
+        body = MerchantQuestionService._message_body(content)
+        request_count = sum(1 for signal in REQUEST_SIGNALS if signal in body)
+        has_question_mark = "?" in body or "？" in body
+        has_strong_context = any(
+            signal in body
+            for signals in (PAYMENT_SIGNALS, DEADLINE_SIGNALS, ISSUE_SIGNALS, INSTRUCTION_SIGNALS)
+            for signal in signals
+        )
+        if has_question_mark and request_count:
+            return 0.96
+        if has_question_mark:
+            return 0.90
+        if request_count >= 2 or (request_count and has_strong_context):
+            return 0.90
+        if request_count:
+            return 0.85
+        if has_strong_context:
+            return 0.75
+        return 0.0
 
     def _close_question_with_reply(
         self,
@@ -316,6 +372,7 @@ class MerchantQuestionService:
             assigned = question.sender_id
             if assigned and question.assigned_userid is None:
                 question.assigned_userid = assigned
+            tracking_started_at = self._tracking_started_at(question)
             first_minutes = group.question_timeout_minutes
             followup_minutes = max(first_minutes + 1, self.settings.merchant_question_escalation_minutes)
             stages = [
@@ -323,7 +380,7 @@ class MerchantQuestionService:
                 (max(followup_minutes + 1, 60), "merchant_question_escalation", assigned, "escalation-60"),
             ]
             for minutes, reminder_type, target_userid, stage_key in stages:
-                if not target_userid or self._business_deadline(question.asked_at, minutes) > now:
+                if not target_userid or self._business_deadline(tracking_started_at, minutes) > now:
                     continue
                 dedupe_key = f"merchant-question:{question.id}:{stage_key}"
                 if self.db.scalar(select(Reminder.id).where(Reminder.dedupe_key == dedupe_key)) is not None:
@@ -390,12 +447,24 @@ class MerchantQuestionService:
         group_id: str | None = None,
         offset: int = 0,
         limit: int = 50,
+        auth_context: dict | None = None,
     ) -> tuple[int, list[MerchantQuestion]]:
         query = select(MerchantQuestion)
-        if status:
+        if status == "active":
+            query = query.where(MerchantQuestion.status.in_(("pending_review", "open", "timed_out", "escalated")))
+        elif status:
             query = query.where(MerchantQuestion.status == status)
         if group_id:
             query = query.where(MerchantQuestion.group_id == group_id)
+        auth_context = auth_context or {}
+        if resource_scope_enabled(auth_context) and auth_context.get("role") != "admin":
+            groups = allowed_group_ids(auth_context)
+            if groups:
+                query = query.where(MerchantQuestion.group_id.in_(groups))
+        if tenant_scope_enabled(auth_context):
+            tenants = allowed_tenant_ids(auth_context)
+            if tenants:
+                query = query.where(MerchantQuestion.tenant_id.in_(tenants))
         total = int(self.db.scalar(select(func.count()).select_from(query.subquery())) or 0)
         items = list(
             self.db.scalars(
@@ -412,13 +481,71 @@ class MerchantQuestionService:
             raise ValueError("商家提问不存在")
         if question.status in {"replied", "closed"}:
             return question
+        was_pending_review = question.status == "pending_review"
         question.status = "closed"
         question.closed_by = operator
         question.closed_at = now_tz()
         question.close_reason = reason
+        if was_pending_review:
+            classification = self._classification(question)
+            decision = classification.get("automation_decision")
+            if not isinstance(decision, dict):
+                decision = {}
+            decision.update(
+                {
+                    "outcome": "manual_rejected",
+                    "reviewed_by": operator,
+                    "reviewed_at": now_tz().isoformat(),
+                }
+            )
+            classification["automation_decision"] = decision
+            question.classification_json = json.dumps(classification, ensure_ascii=False)
         self._cancel_pending_question_reminders(question, "关联商家提问已关闭", operator)
         self.db.flush()
         return question
+
+    def approve_question(self, question_id: int, operator: str) -> MerchantQuestion:
+        question = self.db.get(MerchantQuestion, question_id)
+        if not question:
+            raise ValueError("商家提问不存在")
+        if question.status != "pending_review":
+            raise ValueError("仅待确认消息可以开始提醒")
+        classification = self._classification(question)
+        decision = classification.get("automation_decision") if isinstance(classification.get("automation_decision"), dict) else {}
+        approved_at = now_tz()
+        decision["outcome"] = "manual_approved"
+        decision["reviewed_by"] = operator
+        decision["reviewed_at"] = approved_at.isoformat()
+        decision["tracking_started_at"] = approved_at.isoformat()
+        classification["automation_decision"] = decision
+        question.classification_json = json.dumps(classification, ensure_ascii=False)
+        question.status = "open"
+        group = self.group_service.get_group(question.group_id)
+        timeout_minutes = group.question_timeout_minutes if group else 5
+        question.deadline_at = self._business_deadline(approved_at, timeout_minutes)
+        question.updated_at = approved_at
+        self.db.flush()
+        return question
+
+    @staticmethod
+    def _classification(question: MerchantQuestion) -> dict:
+        try:
+            value = json.loads(question.classification_json or "{}")
+        except (TypeError, ValueError):
+            value = {}
+        return value if isinstance(value, dict) else {}
+
+    @classmethod
+    def _tracking_started_at(cls, question: MerchantQuestion) -> datetime:
+        classification = cls._classification(question)
+        decision = classification.get("automation_decision")
+        raw_value = decision.get("tracking_started_at") if isinstance(decision, dict) else None
+        if raw_value:
+            try:
+                return ensure_aware(datetime.fromisoformat(str(raw_value)))
+            except ValueError:
+                pass
+        return ensure_aware(question.asked_at)
 
     def _close_relevant_question(self, reply: GroupMessage) -> int:
         questions = list(

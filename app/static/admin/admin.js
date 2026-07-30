@@ -45,6 +45,9 @@ const state = {
   paymentTrackingPageSize: 30,
   paymentTrackingStatus: "",
   paymentTrackingQuery: "",
+  merchantQuestionPage: 1,
+  merchantQuestionPageSize: 50,
+  merchantQuestionStatus: "active",
   wecomPlatformGroups: [],
   selectedCaseId: null,
   attributionPage: 1,
@@ -64,7 +67,7 @@ const titles = {
   "ocr-reviews": ["执行文书复核", "核对判决书、调解书和裁定书后写入执行台账"],
   "court-summons": ["开庭传票", "补全传票信息并写入金山开庭时间表"],
   "repayment-ledger": ["协议履约台账", "查看每份协议的分期、回款、逾期、提醒和金山写入结果"],
-  "repayment-materials": ["还款资料待办", "人工确认还款协议和回款凭证，确认前不记账、不提醒、不写金山"],
+  "repayment-materials": ["还款资料待办", "高置信度资料自动执行，缺字段、低置信度或关联不唯一时人工确认"],
   "recognition-settings": ["识别与 AI", "配置腾讯 OCR 和法律文书结构化模型"],
   reminders: ["人工提醒", "查看、编辑和执行非自动业务提醒"],
   "payment-trackings": ["缴费信息跟踪", "按缴费通知汇总支付状态、催促进度和凭证"],
@@ -307,6 +310,60 @@ function badge(value) {
   return `<span class="badge ${finalCls}">${escapeHtml(text)}</span>`;
 }
 
+function automationDecision(data) {
+  const result = data?.final_result || data?.ocr_result || data || {};
+  const metadata = result.metadata || {};
+  const nested = metadata.automation_decision || {};
+  const confidenceValue = data?.automation_confidence ?? data?.classification_confidence ?? data?.confidence ?? nested.confidence;
+  const thresholdValue = data?.automation_threshold ?? nested.threshold;
+  const confidence = confidenceValue === null || confidenceValue === undefined || confidenceValue === "" ? null : Number(confidenceValue);
+  const threshold = thresholdValue === null || thresholdValue === undefined || thresholdValue === "" ? null : Number(thresholdValue);
+  return {
+    action: data?.automation_action || nested.action || "write",
+    outcome: data?.automation_outcome || nested.outcome || null,
+    confidence: Number.isFinite(confidence) ? confidence : null,
+    threshold: Number.isFinite(threshold) ? threshold : null,
+    source: data?.automation_confidence_source || nested.confidence_source || null,
+    reasons: data?.automation_reasons || data?.review_reasons || nested.reasons || [],
+  };
+}
+
+function automationDecisionLabel(decision) {
+  if (decision.outcome === "auto") return decision.action === "remind" ? "高置信度 · 自动提醒" : "高置信度 · 自动写入";
+  if (decision.outcome === "manual_approved") return "人工已确认执行";
+  if (decision.outcome === "manual_rejected") return "人工已忽略";
+  if (decision.outcome === "review") return "等待人工确认";
+  return "自动化判断待补充";
+}
+
+function automationDecisionBadge(data) {
+  const decision = automationDecision(data);
+  const tone = decision.outcome === "auto" || decision.outcome === "manual_approved"
+    ? "auto"
+    : decision.outcome === "manual_rejected"
+      ? "rejected"
+      : "review";
+  const score = decision.confidence == null ? "" : ` ${Math.round(decision.confidence * 100)}%`;
+  return `<span class="automation-badge ${tone}">${escapeHtml(automationDecisionLabel(decision))}${escapeHtml(score)}</span>`;
+}
+
+function automationDecisionPanel(data) {
+  const decision = automationDecision(data);
+  const tone = decision.outcome === "auto" || decision.outcome === "manual_approved"
+    ? "auto"
+    : decision.outcome === "manual_rejected"
+      ? "rejected"
+      : "review";
+  const sourceLabels = { ai_extraction: "AI 结构化", ai_conversation: "AI 会话判断", deterministic_rule: "确定性规则" };
+  const confidence = decision.confidence == null ? "未提供" : `${Math.round(decision.confidence * 100)}%`;
+  const threshold = decision.threshold == null ? "未配置" : `${Math.round(decision.threshold * 100)}%`;
+  return `<section class="automation-decision ${tone}">
+    <div class="automation-decision-head"><strong>${escapeHtml(automationDecisionLabel(decision))}</strong><span>置信度 ${escapeHtml(confidence)} · 阈值 ${escapeHtml(threshold)}</span></div>
+    <div class="automation-decision-meta">判断来源：${escapeHtml(sourceLabels[decision.source] || decision.source || "待确认")}</div>
+    ${decision.reasons.length ? `<ul>${decision.reasons.map((reason) => `<li>${escapeHtml(reason)}</li>`).join("")}</ul>` : '<p>关键字段完整、关联唯一且未发现冲突。</p>'}
+  </section>`;
+}
+
 function healthStatusClass(status) {
   if (status === "ok") return "status-ok";
   if (status === "error") return "status-error";
@@ -372,7 +429,7 @@ async function renderOverview() {
     optionalApi("/api/v1/legal/ocr-reviews/court-summons?workflow_status=attention&page_size=100", { total: 0, items: [] }),
     optionalApi("/api/v1/legal/ocr-reviews/repayment-materials?workflow_status=attention&page_size=100", { total: 0, items: [] }),
     optionalApi("/api/v1/legal/ocr-reviews/repayment-agreements?page_size=100", { total: 0, items: [] }),
-    optionalApi("/api/v1/legal/merchant-questions?status=open&limit=100", { total: 0, items: [] }),
+    optionalApi("/api/v1/legal/merchant-questions?status=active&limit=100", { total: 0, items: [] }),
     optionalApi("/api/v1/legal/document-sync-logs?status=failed&page_size=100", { total: 0, items: [] }),
     optionalApi("/api/v1/legal/system-alerts?status=open&page_size=100", { total: 0, items: [] }),
     optionalApi("/api/v1/health/detail", { config: { items: [] }, sender: { status: "error", message: "状态暂不可用" } }),
@@ -407,7 +464,7 @@ async function renderOverview() {
     ...summonsItems.map((item) => ({ priority: item.workflow_status === "write_failed" ? 110 : 80, view: "court-summons", label: item.workflow_status === "write_failed" ? "传票写入失败" : "传票待处理", title: item.original_filename || `资料 ${item.media_file_id}`, detail: item.group_name || item.group_id, updatedAt: item.updated_at })),
     ...repaymentItems.map((item) => ({ priority: item.workflow_status === "write_failed" ? 110 : 78, view: "repayment-materials", label: item.workflow_status === "write_failed" ? "还款资料写入失败" : "还款资料待处理", title: item.original_filename || `资料 ${item.media_file_id}`, detail: item.group_name || item.group_id, updatedAt: item.updated_at })),
     ...defaultedAgreements.map((item) => ({ priority: 105, view: "repayment-ledger", label: "协议已逾期", title: `${item.debtor} · 剩余 ${item.outstanding} 元`, detail: item.group_name || item.group_id, updatedAt: item.next_due_date })),
-    ...questionItems.map((item) => ({ priority: item.status === "escalated" ? 95 : 70, view: "merchant-questions", label: "商家待回复", title: String(item.content || item.question_text || "待回复消息").slice(0, 80), detail: item.group_id, updatedAt: item.asked_at })),
+    ...questionItems.map((item) => ({ priority: item.status === "escalated" ? 95 : item.status === "pending_review" ? 85 : 70, view: "merchant-questions", label: item.status === "pending_review" ? "商家消息待判断" : "商家待回复", title: String(item.content || item.question_text || "待回复消息").slice(0, 80), detail: item.group_id, updatedAt: item.asked_at })),
   ].sort((left, right) => right.priority - left.priority || String(left.updatedAt || "").localeCompare(String(right.updatedAt || ""))).slice(0, 10);
   const unavailableCount = sources.filter((item) => !item.ok).length;
 
@@ -423,7 +480,7 @@ async function renderOverview() {
         ${workbenchTaskCard({ label: "执行文书待复核", count: documentsData.total ?? documentItems.length, note: "判决书、调解书、裁定书", view: "ocr-reviews", tone: documentItems.length ? "warning" : "clear" })}
         ${workbenchTaskCard({ label: "传票待处理", count: summonsItems.length, note: "补全开庭信息并写表", view: "court-summons", tone: summonsItems.length ? "warning" : "clear" })}
         ${workbenchTaskCard({ label: "还款待处理 / 逾期", count: repaymentItems.length + defaultedAgreements.length, note: `${repaymentItems.length} 份资料 · ${defaultedAgreements.length} 份协议逾期`, view: defaultedAgreements.length ? "repayment-ledger" : "repayment-materials", tone: repaymentItems.length || defaultedAgreements.length ? "warning" : "clear" })}
-        ${workbenchTaskCard({ label: "商家待回复", count: questionsData.total ?? questionItems.length, note: "尚未收到有效回答", view: "merchant-questions", tone: questionItems.length ? "warning" : "clear" })}
+        ${workbenchTaskCard({ label: "商家待回复", count: questionsData.total ?? questionItems.length, note: "含需要人工判断的低置信度消息", view: "merchant-questions", tone: questionItems.length ? "warning" : "clear" })}
         ${workbenchTaskCard({ label: "金山写入失败", count: syncData.total ?? syncItems.length, note: "检查失败原因并重试", view: "sync", tone: syncItems.length ? "danger" : "clear" })}
       </div>
 
@@ -736,8 +793,16 @@ async function renderRecognitionSettings(initialStatus = null) {
                 <input name="llm_api_key" type="password" maxlength="512" autocomplete="off" placeholder="${settings.has_llm_api_key ? settings.secret_mask : "模型 API Key"}" />
               </div>
               <div class="field">
-                <label>置信度阈值</label>
+                <label>AI 最低可信度</label>
                 <input name="llm_min_confidence" type="number" min="0" max="1" step="0.05" value="${escapeHtml(settings.llm_min_confidence)}" />
+              </div>
+              <div class="field">
+                <label>自动写入阈值</label>
+                <input name="auto_write_min_confidence" type="number" min="0" max="1" step="0.01" value="${escapeHtml(settings.auto_write_min_confidence)}" />
+              </div>
+              <div class="field">
+                <label>自动提醒阈值</label>
+                <input name="auto_remind_min_confidence" type="number" min="0" max="1" step="0.01" value="${escapeHtml(settings.auto_remind_min_confidence)}" />
               </div>
               <div class="field">
                 <label>超时时间（秒）</label>
@@ -802,6 +867,8 @@ async function renderRecognitionSettings(initialStatus = null) {
       llm_timeout_seconds: Number(formData.get("llm_timeout_seconds")),
       llm_max_text_length: Number(formData.get("llm_max_text_length")),
       llm_min_confidence: Number(formData.get("llm_min_confidence")),
+      auto_write_min_confidence: Number(formData.get("auto_write_min_confidence")),
+      auto_remind_min_confidence: Number(formData.get("auto_remind_min_confidence")),
       llm_fallback_to_regex: formData.get("llm_fallback_to_regex") === "on",
       data_retention_enabled: formData.get("data_retention_enabled") === "on",
       data_retention_days: Number(formData.get("data_retention_days")),
@@ -1484,16 +1551,21 @@ async function renderArchiveGroups() {
 }
 
 function reviewFieldValue(result, key) {
-  const value = result && result[key];
+  const structured = (result?.metadata || {}).structured_fields || {};
+  const value = result?.[key] ?? structured[key];
   if (value === null || value === undefined) return "";
   if (key === "court_time" && typeof value === "string") return value.slice(0, 16);
   return String(value);
 }
 
-function reviewContextTimeline(review) {
+function reviewContextMessages(review) {
   const analyzedMessages = review.context_messages || [];
   const availableMessages = review.available_context_messages || [];
-  const messages = analyzedMessages.length ? analyzedMessages : availableMessages;
+  return analyzedMessages.length ? analyzedMessages : availableMessages;
+}
+
+function reviewContextTimeline(review) {
+  const messages = reviewContextMessages(review);
   if (!messages.length) return '<div class="context-empty">当前没有可用的相邻群聊文字或附件 OCR 摘要</div>';
   return `<div class="context-timeline">${messages
     .map(
@@ -1533,6 +1605,7 @@ function reviewDetail(review) {
         <div id="review-preview" class="preview-placeholder">加载预览中...</div>
       </section>
       <section class="review-fields">
+        ${automationDecisionPanel(review)}
         <form id="review-form" data-media-id="${review.media_file_id}">
           <div class="summons-callout">业务去向：强制执行进度表 · 原文件归档</div>
           <div class="form-grid review-form-grid">
@@ -1678,6 +1751,7 @@ async function renderOCRReviews() {
         <option value="pending" ${state.reviewStatusFilter === "pending" ? "selected" : ""}>待复核</option>
         <option value="approved" ${state.reviewStatusFilter === "approved" ? "selected" : ""}>已批准</option>
         <option value="corrected" ${state.reviewStatusFilter === "corrected" ? "selected" : ""}>已修正</option>
+        <option value="not_required" ${state.reviewStatusFilter === "not_required" ? "selected" : ""}>自动通过</option>
         <option value="rejected" ${state.reviewStatusFilter === "rejected" ? "selected" : ""}>已驳回</option>
         <option value="" ${state.reviewStatusFilter === "" ? "selected" : ""}>全部</option>
       </select>
@@ -1689,7 +1763,7 @@ async function renderOCRReviews() {
           items.length
             ? items
                 .map(
-                  (item) => `<button class="review-list-item ${item.media_file_id === state.selectedReviewId ? "active" : ""}" data-review-id="${item.media_file_id}"><span>${escapeHtml(item.original_filename || `媒体 ${item.media_file_id}`)}</span><small>${escapeHtml(item.ocr_result.event_type || "unknown")} · ${escapeHtml(item.updated_at)}</small></button>`,
+                  (item) => `<button class="review-list-item ${item.media_file_id === state.selectedReviewId ? "active" : ""}" data-review-id="${item.media_file_id}"><span>${escapeHtml(item.original_filename || `媒体 ${item.media_file_id}`)}</span><small>${escapeHtml(item.ocr_result.event_type || "unknown")} · ${escapeHtml(item.updated_at)}</small>${automationDecisionBadge(item)}</button>`,
                 )
                 .join("")
             : '<div class="empty-state">当前状态暂无判决书、调解书或裁定书</div>'
@@ -1762,6 +1836,7 @@ function courtSummonsDetail(review) {
         <div id="review-preview" class="preview-placeholder">加载预览中...</div>
       </section>
       <section class="review-fields">
+        ${automationDecisionPanel(review)}
         <form id="summons-form" data-media-id="${review.media_file_id}">
           <div class="summons-callout">默认规则：公司名称作为原告，被传唤人或自然人姓名作为被告。被告和准确开庭时间补全后，才会写入金山“开庭时间”表。</div>
           <div class="form-grid review-form-grid">
@@ -1785,7 +1860,7 @@ function courtSummonsDetail(review) {
           <div><span>表格行号</span><strong>${escapeHtml(review.external_row_index || "-")}</strong></div>
           <div><span>错误</span><strong>${escapeHtml(review.sync_error || "-")}</strong></div>
         </div>
-        <div class="review-context-block"><div class="context-heading"><div><div class="field-label">相邻群聊上下文</div><span>${(review.context_messages || review.available_context_messages || []).length} 条消息</span></div></div>${reviewContextTimeline(review)}</div>
+        <div class="review-context-block"><div class="context-heading"><div><div class="field-label">相邻群聊上下文</div><span>${reviewContextMessages(review).length} 条消息</span></div></div>${reviewContextTimeline(review)}</div>
         <div class="ocr-text-block"><div class="field-label">OCR 原文</div><pre>${escapeHtml(review.extracted_text || "无识别文本")}</pre></div>
       </section>
     </div>`;
@@ -1824,7 +1899,7 @@ async function renderCourtSummons() {
       <span class="muted">${data.total} 条</span>
     </div>
     <div class="review-workspace court-summons-workspace">
-      <aside class="review-list-pane">${items.length ? items.map((item) => `<button class="review-list-item ${item.media_file_id === state.selectedSummonsId ? "active" : ""}" data-summons-id="${item.media_file_id}"><span>${escapeHtml(item.original_filename || `传票 ${item.media_file_id}`)}</span><small>${escapeHtml(item.group_name || item.group_id)} · ${escapeHtml(summonsWorkflowLabels[item.workflow_status] || item.workflow_status)}</small></button>`).join("") : '<div class="empty-state">当前状态暂无传票</div>'}</aside>
+      <aside class="review-list-pane">${items.length ? items.map((item) => `<button class="review-list-item ${item.media_file_id === state.selectedSummonsId ? "active" : ""}" data-summons-id="${item.media_file_id}"><span>${escapeHtml(item.original_filename || `传票 ${item.media_file_id}`)}</span><small>${escapeHtml(item.group_name || item.group_id)} · ${escapeHtml(summonsWorkflowLabels[item.workflow_status] || item.workflow_status)}</small>${automationDecisionBadge(item)}</button>`).join("") : '<div class="empty-state">当前状态暂无传票</div>'}</aside>
       <main class="review-detail-pane">${summary ? '<div class="detail-loading">正在加载传票...</div>' : '<div class="empty-state">请选择开庭传票</div>'}</main>
     </div>`;
   $("#summons-status-filter").addEventListener("change", (event) => { state.summonsStatusFilter = event.target.value; state.selectedSummonsId = null; renderCourtSummons(); });
@@ -2018,12 +2093,13 @@ function repaymentMaterialDetail(review, agreements) {
   return `<div class="review-detail-header"><div class="summons-heading"><span class="eyebrow">${escapeHtml(review.group_name || "未命名群")} · ${kindLabel}</span><strong>${escapeHtml(review.original_filename || `资料 ${review.media_file_id}`)}</strong><div class="muted mono">${escapeHtml(review.group_id)} · ${escapeHtml(review.msg_id || "无消息 ID")}</div></div><div class="review-header-actions">${badge(repaymentWorkflowLabels[review.workflow_status] || review.workflow_status)}</div></div>
     ${repaymentLifecycle(review)}
     <div class="review-detail-grid"><section class="review-preview"><div class="preview-toolbar" aria-label="原图旋转工具"><button type="button" class="preview-tool-button" data-preview-rotate="-90" title="向左旋转 90 度" aria-label="向左旋转 90 度">↶</button><span id="preview-rotation-label">0°</span><button type="button" class="preview-tool-button" data-preview-rotate="90" title="向右旋转 90 度" aria-label="向右旋转 90 度">↷</button></div><div id="review-preview" class="preview-placeholder">加载预览中...</div></section><section class="review-fields">
+      ${automationDecisionPanel(review)}
       <form id="repayment-form"><div class="summons-callout">${review.material_kind === "agreement" ? "业务去向：协议履约台账" : "业务去向：关联协议的回款记录"}</div><div class="form-grid review-form-grid"><div class="field"><label>债权人</label><input name="plaintiff" required value="${escapeHtml(result.plaintiff || "")}" ${editable ? "" : "disabled"} /></div><div class="field"><label>债务人</label><input name="defendant" required value="${escapeHtml(result.defendant || "")}" ${editable ? "" : "disabled"} /></div><div class="field"><label>${review.material_kind === "agreement" ? "协议总额" : "本次回款"}</label><input name="amount" type="number" min="0.01" step="0.01" required value="${escapeHtml(result.amount == null ? "" : result.amount)}" ${editable ? "" : "disabled"} /></div>${review.material_kind === "agreement" ? `<div class="field"><label>仲裁机构</label><input name="arbitration_institution" value="${escapeHtml(structured.arbitration_institution || "")}" ${editable ? "" : "disabled"} /></div><div class="field"><label>仲裁案号</label><input name="arbitration_case_no" value="${escapeHtml(structured.arbitration_case_no || "")}" ${editable ? "" : "disabled"} /></div>` : `<div class="field"><label>关联协议 <span class="required">必选</span></label><select name="repayment_agreement_event_id" ${editable ? "" : "disabled"}><option value="">选择同群协议</option>${agreementOptions}</select></div><div class="field"><label>对应期数</label><input name="installment_sequence" type="number" min="1" max="100" value="${escapeHtml(structured.installment_sequence || "")}" ${editable ? "" : "disabled"} /></div>`}<div class="field wide"><label>复核备注</label><textarea name="note" ${editable ? "" : "disabled"}>${escapeHtml(review.review_note || "")}</textarea></div></div>
       <div class="field-label">${review.material_kind === "agreement" ? "分期还款方案" : "当前协议履约情况"}</div>${review.material_kind === "agreement" ? repaymentPlanEditor(result, editable) : repaymentProgressRows(review.progress)}
       ${editable ? repaymentEffectPreview(review, sameGroupAgreements, selectedAgreementId) : ""}
       <div class="review-actions">${editable ? `<button type="button" data-repayment-confirm>${primaryLabel}</button><button type="button" class="ghost" data-repayment-reanalyze>重新识别</button><button type="button" class="danger-button" data-repayment-reject>不是还款资料</button>` : `<span class="review-audit">复核人：${escapeHtml(review.reviewed_by || "-")} · ${escapeHtml(formatDateTime(review.reviewed_at))}</span>`}${review.workflow_status === "write_failed" ? '<button type="button" data-repayment-retry>重试金山写入</button>' : ""}</div></form>
       ${syncSummary}
-      <div class="review-context-block"><div class="context-heading"><div><div class="field-label">相邻群聊上下文</div><span>${(review.context_messages || review.available_context_messages || []).length} 条消息</span></div></div>${reviewContextTimeline(review)}</div>
+      <div class="review-context-block"><div class="context-heading"><div><div class="field-label">相邻群聊上下文</div><span>${reviewContextMessages(review).length} 条消息</span></div></div>${reviewContextTimeline(review)}</div>
       <div class="ocr-text-block"><div class="field-label">OCR 原文</div><pre>${escapeHtml(review.extracted_text || "无识别文本")}</pre></div></section></div>`;
 }
 
@@ -2217,7 +2293,7 @@ function repaymentMaterialListItem(item) {
   const kindLabel = item.material_kind === "agreement" ? "协议" : "回款";
   const subject = result.defendant || item.original_filename || `资料 ${item.media_file_id}`;
   const amount = result.amount == null ? "金额待补全" : `${result.amount} 元`;
-  return `<button class="review-list-item" data-repayment-id="${item.media_file_id}"><span>${escapeHtml(`${kindLabel} · ${subject}`)}</span><small>${escapeHtml(item.group_name || item.group_id)} · ${escapeHtml(amount)}</small><em>${escapeHtml(repaymentWorkflowLabels[item.workflow_status] || item.workflow_status)}</em></button>`;
+  return `<button class="review-list-item" data-repayment-id="${item.media_file_id}"><span>${escapeHtml(`${kindLabel} · ${subject}`)}</span><small>${escapeHtml(item.group_name || item.group_id)} · ${escapeHtml(amount)}</small>${automationDecisionBadge(item)}<em>${escapeHtml(repaymentWorkflowLabels[item.workflow_status] || item.workflow_status)}</em></button>`;
 }
 
 async function renderRepaymentLedger() {
@@ -2529,15 +2605,17 @@ async function renderPaymentTrackings() {
   });
   if (state.paymentTrackingStatus) params.set("status", state.paymentTrackingStatus);
   if (state.paymentTrackingQuery) params.set("query", state.paymentTrackingQuery);
-  const [data, receiptData, unmatchedMediaData, dailySummary] = await Promise.all([
+  const [data, receiptData, unmatchedMediaData, unmatchedTextData, dailySummary] = await Promise.all([
     api(`/api/v1/legal/payment-trackings?${params.toString()}`),
     api("/api/v1/legal/payment-trackings/unassigned-receipts?limit=200"),
     api("/api/v1/legal/payment-trackings/unmatched-media?limit=200"),
+    api("/api/v1/legal/payment-trackings/unmatched-text-confirmations?limit=200"),
     api("/api/v1/legal/payment-trackings/daily-summary"),
   ]);
   const items = data.items || [];
   const unassignedReceipts = receiptData.items || [];
   const unmatchedMedia = unmatchedMediaData.items || [];
+  const unmatchedTextConfirmations = unmatchedTextData.items || [];
   const totalPages = Math.max(1, Math.ceil((data.total || 0) / state.paymentTrackingPageSize));
   if (state.paymentTrackingPage > totalPages) {
     state.paymentTrackingPage = totalPages;
@@ -2565,6 +2643,12 @@ async function renderPaymentTrackings() {
         : '<span class="muted">当前页无同群候选，请先搜索当事人</span>',
     };
   });
+  const unmatchedTextRows = unmatchedTextConfirmations.map((confirmation) => ({
+    ...confirmation,
+    candidate_control: confirmation.candidates?.length
+      ? `<div class="payment-receipt-assignment payment-text-assignment"><select aria-label="选择缴费通知" data-unmatched-text-select="${confirmation.event_id}"><option value="">选择该确认对应的缴费通知</option>${confirmation.candidates.map((candidate) => `<option value="${candidate.event_id}">${escapeHtml(`${candidate.notice_date} · ${candidate.defendant || "当事人待确认"} · ${candidate.payment_type || "缴费"} ${candidate.amount ?? "金额待确认"} 元`)}</option>`).join("")}</select><button type="button" class="small" data-assign-unmatched-text="${confirmation.event_id}">确认关联</button></div>`
+      : '<span class="muted">同群暂无已确认且未完成的缴费通知</span>',
+  }));
   const filters = `
     <form id="payment-tracking-filter" class="payment-tracking-filter">
       <label><span>支付状态</span><select name="status">
@@ -2582,6 +2666,14 @@ async function renderPaymentTrackings() {
         <span class="case-candidate-count">${data.total || 0}</span>
       </header>
       ${panel("今日缴费信息汇总", `<div class="payment-summary-meta"><span>已确认 ${escapeHtml(dailySummary.confirmed_count)} 项 · 待确认 ${escapeHtml(dailySummary.pending_count)} 项</span><button type="button" class="ghost small" id="copy-payment-summary">复制汇总</button></div><pre class="payment-daily-summary">${escapeHtml(dailySummary.content)}</pre>`)}
+      ${unmatchedTextRows.length ? panel("待匹配文字付款确认", `${table([
+        { label: "时间", render: (row) => escapeHtml(formatDateTime(row.received_at)) },
+        { label: "来源群 / 发送人", render: (row) => `<strong>${escapeHtml(row.group_name || row.group_id)}</strong><small class="payment-amount-detail">${escapeHtml(row.sender_id || "发送人待确认")}</small>` },
+        { label: "确认原文", render: (row) => `<div class="payment-confirmation-text">${escapeHtml(row.confirmation_text)}</div>` },
+        { label: "自动化判断", render: (row) => `${automationDecisionBadge({ ...row, automation_action: "remind" })}${row.review_reasons?.length ? `<small class="payment-amount-detail">${escapeHtml(row.review_reasons.join("；"))}</small>` : ""}` },
+        { label: "关联缴费通知", render: (row) => row.candidate_control },
+        { label: "操作", render: (row) => `<button type="button" class="small ghost" data-ignore-unmatched-text="${row.event_id}">不是付款确认</button>` },
+      ], unmatchedTextRows, "payment-unmatched-text-table")}`) : ""}
       ${unmatchedMediaRows.length ? panel("未匹配付款凭证", `${table([
         { label: "来源群", render: (row) => `<strong>${escapeHtml(row.group_name || "未命名群")}</strong><small class="payment-amount-detail">${escapeHtml(row.group_id)}</small>` },
         { label: "识别信息", render: (row) => `${escapeHtml(row.defendant || "当事人待确认")} · ${money(row.amount)}<small class="payment-amount-detail">${escapeHtml(row.case_no || "无案号")}</small>` },
@@ -2595,13 +2687,15 @@ async function renderPaymentTrackings() {
         { label: "案号 / 来源群", render: (row) => row.case_id ? `<button class="text-link" data-payment-case="${row.case_id}">${escapeHtml(row.case_no || "查看历史案件")}</button>` : `<span>${escapeHtml(row.case_no || row.source_group_name || row.source_group_id || "无案号")}</span><small class="payment-amount-detail">${escapeHtml(row.source_sender_id || "发送人待确认")}</small>` },
         { label: "缴费信息", render: (row) => `<strong>${escapeHtml(row.payment_type || "其他缴费")}</strong><small class="payment-amount-detail">应缴 ${money(row.required_amount)}<br>已缴 ${money(row.paid_amount)}<br>未缴 ${money(row.outstanding_amount)}</small>` },
         { label: "支付情况", render: (row) => `<span class="badge ${statusClass[row.payment_status] || ""}">${escapeHtml(statusText[row.payment_status] || row.payment_status)}</span>` },
-        { label: "跟踪情况", key: "tracking_status" },
+        { label: "自动化判断", render: (row) => `${automationDecisionBadge({ ...row, automation_action: "remind" })}${row.review_reasons?.length ? `<small class="payment-amount-detail">${escapeHtml(row.review_reasons.join("；"))}</small>` : ""}` },
+        { label: "跟踪情况", render: (row) => `${escapeHtml(row.tracking_status)}<small class="payment-amount-detail">业务状态：${escapeHtml(row.business_status)}</small>` },
         { label: "截止时间", render: (row) => `${fmt(row.payment_deadline)}<small class="payment-amount-detail">${escapeHtml(row.remaining_payment_time)}</small>` },
         { label: "通知截图", render: (row) => row.notice_screenshot_url ? `<button class="small ghost" data-payment-screenshot="${escapeHtml(row.notice_screenshot_url)}">查看通知</button>` : '<span class="muted">无</span>' },
         { label: "付款凭证", render: (row) => row.receipt_urls?.length ? row.receipt_urls.map((url, index) => `<button class="small ghost" data-payment-screenshot="${escapeHtml(url)}">凭证 ${index + 1}</button>`).join(" ") : '<span class="muted">待上传</span>' },
         { label: "凭证关联", render: receiptOptions },
+        { label: "操作", render: (row) => row.business_status === "staged" ? `<div class="payment-review-actions"><button type="button" class="small" data-payment-review-approve="${row.event_id}">确认并开始提醒</button><button type="button" class="small ghost" data-payment-review-reject="${row.event_id}">忽略</button></div>` : '<span class="muted">-</span>' },
       ], items, "payment-tracking-table")}
-      <div class="kdocs-pagination"><span>共 ${escapeHtml(data.total || 0)} 条，第 ${state.paymentTrackingPage} / ${totalPages} 页 · 待关联凭证 ${escapeHtml((receiptData.total || 0) + (unmatchedMediaData.total || 0))} 份</span><button type="button" class="ghost small" id="payment-tracking-prev" ${state.paymentTrackingPage <= 1 ? "disabled" : ""}>上一页</button><button type="button" class="ghost small" id="payment-tracking-next" ${state.paymentTrackingPage >= totalPages ? "disabled" : ""}>下一页</button></div>`)}
+      <div class="kdocs-pagination"><span>共 ${escapeHtml(data.total || 0)} 条，第 ${state.paymentTrackingPage} / ${totalPages} 页 · 待人工关联 ${escapeHtml((receiptData.total || 0) + (unmatchedMediaData.total || 0) + (unmatchedTextData.total || 0))} 条</span><button type="button" class="ghost small" id="payment-tracking-prev" ${state.paymentTrackingPage <= 1 ? "disabled" : ""}>上一页</button><button type="button" class="ghost small" id="payment-tracking-next" ${state.paymentTrackingPage >= totalPages ? "disabled" : ""}>下一页</button></div>`)}
     </section>`;
   $("#payment-tracking-filter").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -2668,31 +2762,158 @@ async function renderPaymentTrackings() {
       button.disabled = false;
     }
   }));
+  document.querySelectorAll("[data-assign-unmatched-text]").forEach((button) => button.addEventListener("click", async () => {
+    const confirmationEventId = Number(button.dataset.assignUnmatchedText);
+    const select = document.querySelector(`[data-unmatched-text-select="${confirmationEventId}"]`);
+    const eventId = Number(select?.value || 0);
+    if (!eventId) return showAlert("请先选择这条文字确认对应的缴费通知", "error");
+    const confirmation = unmatchedTextConfirmations.find((item) => item.event_id === confirmationEventId);
+    const candidate = confirmation?.candidates?.find((item) => item.event_id === eventId);
+    if (!window.confirm(`确认“${confirmation?.confirmation_text || "该消息"}”对应 ${candidate?.defendant || "所选当事人"} 的 ${candidate?.payment_type || "缴费通知"}？确认后将取消后续提醒。`)) return;
+    button.disabled = true;
+    try {
+      await api(`/api/v1/legal/payment-trackings/${eventId}/assign-text-confirmation`, {
+        method: "POST",
+        body: JSON.stringify({ confirmation_event_id: confirmationEventId }),
+      });
+      showAlert("文字付款确认已关联，后续提醒正在取消");
+      await renderPaymentTrackings();
+    } catch (error) {
+      showAlert(error.message, "error");
+      button.disabled = false;
+    }
+  }));
+  document.querySelectorAll("[data-ignore-unmatched-text]").forEach((button) => button.addEventListener("click", async () => {
+    const reason = window.prompt("填写忽略原因", "不是付款确认或无法核实");
+    if (!reason?.trim()) return;
+    button.disabled = true;
+    try {
+      await api(`/api/v1/legal/events/${button.dataset.ignoreUnmatchedText}/reject`, {
+        method: "POST",
+        body: JSON.stringify({ reason: reason.trim() }),
+      });
+      showAlert("该文字消息已忽略，不会取消任何缴费提醒");
+      await renderPaymentTrackings();
+    } catch (error) {
+      showAlert(error.message, "error");
+      button.disabled = false;
+    }
+  }));
+  document.querySelectorAll("[data-payment-review-approve]").forEach((button) => button.addEventListener("click", async () => {
+    const eventId = Number(button.dataset.paymentReviewApprove);
+    const row = items.find((item) => item.event_id === eventId);
+    if (!window.confirm(`确认这是一条需要跟踪的缴费通知？确认后将从现在开始生成 30 / 90 分钟提醒，并 @ ${row?.source_sender_id || "原发送人"}。`)) return;
+    button.disabled = true;
+    try {
+      await api(`/api/v1/legal/events/${eventId}/approve`, { method: "POST", body: JSON.stringify({ reason: "管理端确认缴费通知" }) });
+      showAlert("缴费通知已确认，提醒正在进入队列");
+      await renderPaymentTrackings();
+    } catch (error) {
+      showAlert(error.message, "error");
+      button.disabled = false;
+    }
+  }));
+  document.querySelectorAll("[data-payment-review-reject]").forEach((button) => button.addEventListener("click", async () => {
+    const reason = window.prompt("填写忽略原因，例如：不是缴费通知、信息重复");
+    if (!reason?.trim()) return;
+    button.disabled = true;
+    try {
+      await api(`/api/v1/legal/events/${button.dataset.paymentReviewReject}/reject`, { method: "POST", body: JSON.stringify({ reason: reason.trim() }) });
+      showAlert("该记录已忽略，不会创建提醒");
+      await renderPaymentTrackings();
+    } catch (error) {
+      showAlert(error.message, "error");
+      button.disabled = false;
+    }
+  }));
 }
 
 async function renderMerchantQuestions() {
-  const data = await api("/api/v1/legal/merchant-questions?limit=200");
+  const params = new URLSearchParams({
+    offset: String((state.merchantQuestionPage - 1) * state.merchantQuestionPageSize),
+    limit: String(state.merchantQuestionPageSize),
+  });
+  if (state.merchantQuestionStatus) params.set("status", state.merchantQuestionStatus);
+  const data = await api(`/api/v1/legal/merchant-questions?${params.toString()}`);
   const items = data.items || [];
+  const totalPages = Math.max(1, Math.ceil((data.total || 0) / state.merchantQuestionPageSize));
+  if (state.merchantQuestionPage > totalPages) {
+    state.merchantQuestionPage = totalPages;
+    return renderMerchantQuestions();
+  }
+  const statusLabels = {
+    pending_review: "待人工判断",
+    open: "等待回复",
+    timed_out: "已首次提醒",
+    escalated: "已升级提醒",
+    replied: "已有效回复",
+    closed: "已关闭",
+  };
+  const filters = `<form id="merchant-question-filter" class="payment-tracking-filter">
+    <label><span>处理状态</span><select name="status">
+      ${[["active","需要处理"],["pending_review","待人工判断"],["open","等待回复"],["timed_out","已首次提醒"],["escalated","已升级提醒"],["replied","已有效回复"],["closed","已关闭"],["","全部"]].map(([value,label]) => `<option value="${value}" ${state.merchantQuestionStatus === value ? "selected" : ""}>${label}</option>`).join("")}
+    </select></label>
+    <label><span>每页</span><select name="page_size">${[20, 50, 100].map((size) => `<option value="${size}" ${state.merchantQuestionPageSize === size ? "selected" : ""}>${size} 条</option>`).join("")}</select></label>
+    <button type="submit">查询</button>
+  </form>`;
   $("#content").innerHTML = panel(
-    "提问记录",
-    table(
+    "商家消息回复跟踪",
+    `${filters}${table(
       [
-        { label: "状态", render: (row) => badge(row.status) },
-        { label: "群", key: "group_id" },
-        { label: "提问人", key: "sender_id" },
-        { label: "内容", key: "content" },
-        { label: "提问时间", key: "asked_at" },
-        { label: "截止时间", key: "deadline_at" },
-        { label: "告警人员", key: "assigned_userid" },
-        { label: "操作", render: (row) => ["open", "timed_out"].includes(row.status) ? `<button class="small ghost" data-close-question="${row.id}">人工关闭</button>` : "" },
+        { label: "状态", render: (row) => `<span class="badge ${row.status === "pending_review" ? "warn" : row.status === "escalated" ? "danger" : ""}">${escapeHtml(statusLabels[row.status] || row.status)}</span>` },
+        { label: "群", render: (row) => `<span class="mono">${escapeHtml(row.group_id)}</span>` },
+        { label: "发起人 / @ 对象", render: (row) => `<strong>${escapeHtml(row.sender_id)}</strong><small class="payment-amount-detail">${escapeHtml(row.assigned_userid || "待确认")}</small>` },
+        { label: "原消息", render: (row) => `<div class="merchant-question-content">${escapeHtml(row.content)}</div>` },
+        { label: "自动化判断", render: (row) => `${automationDecisionBadge({ ...row, automation_outcome: row.automation_outcome || (row.status === "pending_review" ? "review" : undefined), automation_action: "remind" })}${row.review_reasons?.length ? `<small class="payment-amount-detail">${escapeHtml(row.review_reasons.join("；"))}</small>` : ""}` },
+        { label: "时间", render: (row) => `<span>${escapeHtml(formatDateTime(row.asked_at))}</span><small class="payment-amount-detail">提醒节点：${escapeHtml(formatDateTime(row.deadline_at))}</small>` },
+        {
+          label: "操作",
+          render: (row) => row.status === "pending_review"
+            ? `<div class="merchant-question-actions"><button class="small" data-approve-question="${row.id}">确认需要回复</button><button class="small ghost" data-ignore-question="${row.id}">无需回复</button></div>`
+            : ["open", "timed_out", "escalated"].includes(row.status)
+              ? `<button class="small ghost" data-close-question="${row.id}">人工结束</button>`
+              : '<span class="muted">-</span>',
+        },
       ],
       items,
-    ),
+      "merchant-question-table",
+    )}<div class="kdocs-pagination"><span>共 ${escapeHtml(data.total || 0)} 条，第 ${state.merchantQuestionPage} / ${totalPages} 页</span><button type="button" class="ghost small" id="merchant-question-prev" ${state.merchantQuestionPage <= 1 ? "disabled" : ""}>上一页</button><button type="button" class="ghost small" id="merchant-question-next" ${state.merchantQuestionPage >= totalPages ? "disabled" : ""}>下一页</button></div>`,
   );
+  $("#merchant-question-filter").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const values = new FormData(event.currentTarget);
+    state.merchantQuestionStatus = String(values.get("status") || "");
+    state.merchantQuestionPageSize = Number(values.get("page_size") || 50);
+    state.merchantQuestionPage = 1;
+    await renderMerchantQuestions();
+  });
+  $("#merchant-question-prev").addEventListener("click", async () => { state.merchantQuestionPage -= 1; await renderMerchantQuestions(); });
+  $("#merchant-question-next").addEventListener("click", async () => { state.merchantQuestionPage += 1; await renderMerchantQuestions(); });
+  document.querySelectorAll("[data-approve-question]").forEach((button) => button.addEventListener("click", async () => {
+    if (!window.confirm("确认这条消息确实需要回复？确认后从现在开始按 5 / 30 / 60 分钟节点提醒，并 @ 原发起人。")) return;
+    button.disabled = true;
+    try {
+      await api(`/api/v1/legal/merchant-questions/${button.dataset.approveQuestion}/approve`, { method: "POST", body: "{}" });
+      showAlert("已开始跟踪该消息，提醒时间从人工确认时重新计算");
+      await renderMerchantQuestions();
+    } catch (error) {
+      showAlert(error.message, "error");
+      button.disabled = false;
+    }
+  }));
+  document.querySelectorAll("[data-ignore-question]").forEach((button) => button.addEventListener("click", async () => {
+    const reason = window.prompt("填写无需回复的原因", "语境已结束或不属于业务问题");
+    if (!reason?.trim()) return;
+    await api(`/api/v1/legal/merchant-questions/${button.dataset.ignoreQuestion}/close`, { method: "POST", body: JSON.stringify({ reason: reason.trim() }) });
+    showAlert("该消息已忽略，不会创建提醒");
+    await renderMerchantQuestions();
+  }));
   document.querySelectorAll("[data-close-question]").forEach((button) => button.addEventListener("click", async () => {
-    await api(`/api/v1/legal/merchant-questions/${button.dataset.closeQuestion}/close`, { method: "POST", body: JSON.stringify({ reason: "管理端人工关闭" }) });
-    showAlert("提问已关闭");
-    renderMerchantQuestions();
+    const reason = window.prompt("填写结束原因", "已通过其他方式回复或确认无需继续跟踪");
+    if (!reason?.trim()) return;
+    await api(`/api/v1/legal/merchant-questions/${button.dataset.closeQuestion}/close`, { method: "POST", body: JSON.stringify({ reason: reason.trim() }) });
+    showAlert("提问跟踪已结束");
+    await renderMerchantQuestions();
   }));
 }
 

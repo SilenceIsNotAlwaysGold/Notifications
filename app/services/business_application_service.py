@@ -44,13 +44,71 @@ class BusinessApplicationService:
         if media:
             result = MediaFileService._load_result(media.review_result_json or media.ocr_result_json)
             MediaFileService(self.db)._apply_ocr_business(media, event, result, legal_case)
-        else:
-            if not legal_case:
-                raise ValueError("开庭传票缺少原始截图")
+        elif legal_case:
             self._apply_text_event(event, legal_case)
+        elif event.event_type in {"payment_notice", "payment_screenshot"}:
+            self._apply_standalone_payment_event(event, metadata)
+        else:
+            raise ValueError("法律资料缺少原始附件")
         event.business_status = "applied"
         event.applied_at = now_tz()
         self.db.flush()
+
+    def _apply_standalone_payment_event(self, event: LegalEvent, metadata: dict) -> None:
+        message = self.db.get(GroupMessage, event.group_message_id) if event.group_message_id else None
+        if message is None:
+            raise ValueError("缴费事件缺少来源群消息")
+        structured = metadata.get("structured_fields") if isinstance(metadata.get("structured_fields"), dict) else {}
+        extracted = {
+            "event_type": event.event_type,
+            "amount": event.amount,
+            "case_no": structured.get("case_no"),
+            "plaintiff": structured.get("plaintiff"),
+            "defendant": structured.get("defendant"),
+            "extracted_text": event.extracted_text,
+            "metadata": metadata,
+        }
+        if event.event_type == "payment_notice":
+            effective = TenantSettingsService(self.db).get_effective_settings(event.tenant_id)
+            if not bool(effective["feature_flags"].get("enable_payment_tracking", True)) or not WeComArchiveGroupService(
+                self.db
+            ).feature_enabled(message.group_id, "payment_tracking"):
+                raise ValueError("当前群未启用缴费跟踪")
+            ReminderService(self.db).create_standalone_payment_confirmation_followups(
+                event,
+                message,
+                extracted,
+                start_at=self._manual_approval_time(event),
+            )
+            return
+
+        payment_tracking = PaymentTrackingService(self.db)
+        expected_notice_id = metadata.get("standalone_payment_notice_event_id")
+        if expected_notice_id:
+            try:
+                matched_notice = self.db.get(LegalEvent, int(expected_notice_id))
+            except (TypeError, ValueError):
+                matched_notice = None
+            matched_message = matched_notice.group_message if matched_notice else None
+            if (
+                not matched_notice
+                or matched_notice.event_type != "payment_notice"
+                or matched_notice.business_status not in {"approved", "applied"}
+                or not matched_message
+                or matched_message.group_id != message.group_id
+            ):
+                matched_notice = None
+        else:
+            matched_notice = payment_tracking.match_standalone_notice(message, extracted)
+        if matched_notice is None:
+            raise ValueError("付款确认无法唯一匹配同群缴费通知")
+        payment_tracking.confirm_standalone_notice(message, extracted, notice=matched_notice)
+
+    @staticmethod
+    def _manual_approval_time(event: LegalEvent):
+        if event.approved_by and event.approved_by != "system:auto-confidence":
+            return event.approved_at or now_tz()
+        return None
 
     def _apply_text_event(self, event: LegalEvent, legal_case: LegalCase) -> None:
         metadata = json.loads(event.metadata_json or "{}")

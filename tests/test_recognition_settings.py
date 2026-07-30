@@ -1,6 +1,7 @@
 import json
 
 import httpx
+import pytest
 
 from app.core.config import get_settings
 from app.schemas.recognition_settings import RecognitionSettingsUpdate
@@ -144,3 +145,33 @@ def test_recognition_settings_audit_masks_keys(client, db_session, monkeypatch, 
     assert audit_log is not None
     summary = json.loads(audit_log.request_summary_json)
     assert summary["json"]["llm_api_key"] == "***"
+
+
+def test_single_threshold_update_is_checked_against_current_extraction_threshold(tmp_path, monkeypatch):
+    env_file = tmp_path / ".env"
+    monkeypatch.setenv("LEGAL_LLM_MIN_CONFIDENCE", "0.80")
+    monkeypatch.setenv("LEGAL_AUTO_WRITE_MIN_CONFIDENCE", "0.90")
+    monkeypatch.setenv("LEGAL_AUTO_REMIND_MIN_CONFIDENCE", "0.85")
+    get_settings.cache_clear()
+
+    service = RecognitionSettingsService(get_settings(), env_file=env_file)
+
+    with pytest.raises(ValueError, match="自动写入阈值不能低于结构化抽取阈值"):
+        service.update(RecognitionSettingsUpdate(auto_write_min_confidence=0.70))
+
+    assert not env_file.exists()
+    get_settings.cache_clear()
+
+
+def test_settings_reject_invalid_threshold_combination_at_startup():
+    from pydantic import ValidationError
+
+    from app.core.config import Settings
+
+    with pytest.raises(ValidationError, match="自动提醒阈值不能低于结构化抽取阈值"):
+        Settings(
+            _env_file=None,
+            LEGAL_LLM_MIN_CONFIDENCE=0.90,
+            LEGAL_AUTO_WRITE_MIN_CONFIDENCE=0.95,
+            LEGAL_AUTO_REMIND_MIN_CONFIDENCE=0.85,
+        )

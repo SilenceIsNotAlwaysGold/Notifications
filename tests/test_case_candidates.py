@@ -7,7 +7,10 @@ from app.models.legal_event import LegalEvent
 from app.models.media_file import MediaFile
 
 
-def _send_new_case_message(client, content: str = "案件(2026)黔0281民初9551号需要缴费400元"):
+def _send_new_case_message(
+    client,
+    content: str = "案件(2026)黔0281民初9551号将于2026年9月1日上午9点开庭，请法务跟进",
+):
     return client.post(
         "/api/v1/legal/messages/mock",
         json={

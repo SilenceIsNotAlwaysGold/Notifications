@@ -37,7 +37,7 @@ def _case(client, case_no="（2026）黔0281民初9001号", group_id="workflow_g
     return response.json()["data"]["id"]
 
 
-def test_confirmed_case_event_stays_staged_until_human_approval(client, db_session):
+def test_low_confidence_payment_notice_stays_case_independent_until_human_approval(client, db_session):
     case_id = _case(client)
     response = client.post(
         "/api/v1/legal/messages/mock",
@@ -45,8 +45,8 @@ def test_confirmed_case_event_stays_staged_until_human_approval(client, db_sessi
     )
     assert response.status_code == 200
     event = db_session.get(LegalEvent, response.json()["data"]["event_ids"][0])
-    assert event.case_id == case_id
-    assert event.attribution_status == "confirmed"
+    assert event.case_id is None
+    assert event.attribution_status == "not_required"
     assert event.business_status == "staged"
     assert db_session.scalar(select(BusinessOutbox).where(BusinessOutbox.aggregate_id == event.id)) is None
     assert db_session.scalar(select(DocumentSyncLog).where(DocumentSyncLog.case_id == case_id)) is None
@@ -345,7 +345,9 @@ def test_outbox_process_is_idempotent(client, db_session):
     assert first["completed"] == 1
     assert second["processed"] == 0
     assert db_session.get(LegalEvent, event_id).business_status == "applied"
-    assert len(list(db_session.scalars(select(DocumentSyncLog).where(DocumentSyncLog.case_id == case_id)).all())) >= 1
+    reminders = list(db_session.scalars(select(Reminder).where(Reminder.source_event_id == event_id)).all())
+    assert len(reminders) == 2
+    assert db_session.scalar(select(DocumentSyncLog).where(DocumentSyncLog.case_id == case_id)) is None
 
 
 def test_court_notice_without_case_uploads_summons_and_writes_court_sheet(db_session, tmp_path):
@@ -489,8 +491,10 @@ def test_court_notice_ocr_without_case_is_auto_approved(db_session, tmp_path, mo
             "raw_text": "测试人民法院传票，被告张三，2026年8月3日9:30开庭",
             "event_type": "court_notice",
             "document_type": "开庭传票",
+            "plaintiff": "测试公司",
             "defendant": "张三",
             "court_time": "2026-08-03T09:30:00+08:00",
+            "extraction_confidence": 0.95,
             "requires_review": False,
             "metadata": {"structured_fields": {"court_name": "测试人民法院"}},
         },
@@ -573,7 +577,7 @@ def test_judgment_without_case_uploads_document_and_writes_enforcement_sheet(db_
     assert str(tmp_path) not in row["文件链接"]
 
 
-def test_complete_judgment_ocr_without_case_is_auto_approved(db_session, tmp_path, monkeypatch):
+def test_low_confidence_judgment_without_case_waits_for_review(db_session, tmp_path, monkeypatch):
     document_path = tmp_path / "mediation.pdf"
     document_path.write_bytes(b"mediation-pdf")
     message = GroupMessage(
@@ -639,12 +643,12 @@ def test_complete_judgment_ocr_without_case_is_auto_approved(db_session, tmp_pat
 
     event = db_session.get(LegalEvent, media.review_event_id)
     assert media.case_id is None
-    assert media.review_status == "not_required"
+    assert media.review_status == "pending"
     assert event.case_id is None
     assert event.attribution_status == "not_required"
-    assert event.business_status == "approved"
+    assert event.business_status == "staged"
     assert db_session.scalar(select(AttributionItem)) is None
-    assert db_session.scalar(select(BusinessOutbox).where(BusinessOutbox.aggregate_id == event.id)) is not None
+    assert db_session.scalar(select(BusinessOutbox).where(BusinessOutbox.aggregate_id == event.id)) is None
 
 
 def test_false_positive_legal_document_spreadsheet_stays_pending(db_session, tmp_path, monkeypatch):

@@ -15,10 +15,12 @@ from app.schemas.legal import MockMessageCreate
 from app.services.case_service import CaseService
 from app.services.case_candidate_service import CaseCandidateService
 from app.services.attribution_service import AttributionService
+from app.services.automation_confidence_service import AutomationConfidenceService
 from app.services.document_sync_service import DocumentSyncService
 from app.services.media_file_service import MediaFileService
 from app.services.merchant_question_service import MerchantQuestionService
 from app.services.ocr_service import OCRService
+from app.services.outbox_service import OutboxService
 from app.services.payment_tracking_service import PaymentTrackingService
 from app.services.reminder_service import ReminderService
 from app.services.tenant_settings_service import TenantSettingsService
@@ -101,6 +103,10 @@ class MessageService:
             reply_event_type = reply_extracted.get("event_type") or "unknown"
             extracted["event_type"] = reply_event_type
             extracted["event_types"] = [] if reply_event_type == "unknown" else [reply_event_type]
+            if reply_extracted.get("extraction_confidence") is not None:
+                extracted["extraction_confidence"] = reply_extracted["extraction_confidence"]
+            extracted["requires_review"] = bool(reply_extracted.get("requires_review"))
+            extracted["review_reasons"] = list(reply_extracted.get("review_reasons") or [])
             metadata = dict(extracted.get("metadata") or {})
             metadata["quoted_reply_body_used_for_payment_intent"] = True
             metadata["quoted_reply_intent_parser"] = (reply_extracted.get("metadata") or {}).get("parser")
@@ -116,14 +122,15 @@ class MessageService:
             and extracted.get("event_type") not in {"payment_notice", "payment_screenshot"}
         ):
             MerchantQuestionService(self.db).handle_message(group_message)
-        legal_case = self.case_service.find_case_for_extracted(
+        case_independent_text = extracted.get("event_type") in {"payment_notice", "payment_screenshot"}
+        legal_case = None if case_independent_text else self.case_service.find_case_for_extracted(
             extracted.get("case_no"),
             group_message.group_id,
             group_message.tenant_id,
             plaintiff=extracted.get("plaintiff"),
             defendant=extracted.get("defendant"),
         )
-        if not legal_case and extracted.get("case_no"):
+        if not case_independent_text and not legal_case and extracted.get("case_no"):
             CaseCandidateService(self.db).detect(
                 case_no=extracted.get("case_no"),
                 group_id=group_message.group_id,
@@ -162,25 +169,65 @@ class MessageService:
         event_ids: list[int] = []
         if linked_media and linked_media.get("event_id"):
             event_ids.append(int(linked_media["event_id"]))
-        events_by_type: dict[str, LegalEvent] = {}
-        event_metadata = self._event_metadata(extracted)
+        payment_tracking_enabled = (
+            payload.processing_mode == "live"
+            and payload.msg_type == "text"
+            and self._payment_tracking_enabled(tenant_id, group_message.group_id)
+        )
         for event_type in event_types:
+            event_result = {
+                **extracted,
+                "event_type": event_type,
+                "metadata": dict(extracted.get("metadata") or {}),
+            }
+            decision = None
+            if event_type in {"payment_notice", "payment_screenshot"}:
+                automation_reasons: list[str] = []
+                if not payment_tracking_enabled:
+                    automation_reasons.append("当前群未启用实时缴费跟踪")
+                if not (group_message.sender_id or "").strip():
+                    automation_reasons.append("无法确定需要 @ 的原发送人")
+                if event_type == "payment_screenshot":
+                    matched_notice = PaymentTrackingService(self.db).match_standalone_notice(group_message, event_result)
+                    if matched_notice is None:
+                        automation_reasons.append("付款确认无法唯一匹配同群缴费通知")
+                    else:
+                        event_result["metadata"]["standalone_payment_notice_event_id"] = matched_notice.id
+                        if event_result.get("amount") is None:
+                            event_result["amount"] = matched_notice.amount
+                            event_result["amounts"] = [matched_notice.amount] if matched_notice.amount is not None else []
+                decision = AutomationConfidenceService().evaluate(
+                    event_result,
+                    action="remind",
+                    allow_rule_confidence=True,
+                    extra_reasons=automation_reasons,
+                )
+                AutomationConfidenceService.apply(event_result, decision)
+                extracted = event_result
+            event_metadata = self._event_metadata(event_result)
             event = self._create_event(
                 event_type=event_type,
                 group_message_id=group_message.id,
                 case_id=legal_case.id if legal_case else None,
                 tenant_id=tenant_id,
-                amount=extracted.get("amount"),
-                extracted_text=extracted.get("extracted_text"),
+                amount=event_result.get("amount"),
+                extracted_text=event_result.get("extracted_text"),
                 metadata=event_metadata,
+                confidence=decision.confidence if decision else event_result.get("extraction_confidence"),
             )
             event_ids.append(event.id)
-            events_by_type[event_type] = event
-            if legal_case:
-                event.attribution_status = "confirmed"
-                event.business_status = "staged"
-            elif event_type in {"payment_notice", "payment_screenshot"}:
+            if event_type in {"payment_notice", "payment_screenshot"}:
+                event.case_id = None
                 event.attribution_status = "not_required"
+                if decision and decision.should_auto_execute:
+                    event.business_status = "approved"
+                    event.approved_by = "system:auto-confidence"
+                    event.approved_at = now_tz()
+                    OutboxService(self.db).enqueue_event(event.id, event.tenant_id)
+                else:
+                    event.business_status = "staged"
+            elif legal_case:
+                event.attribution_status = "confirmed"
                 event.business_status = "staged"
             else:
                 event.attribution_status = "pending"
@@ -188,23 +235,6 @@ class MessageService:
                 AttributionService(self.db).ensure_event(event, group_id=group_message.group_id, reason="文本消息无法唯一确定案件")
 
         reminder_ids: list[int] = []
-        if (
-            payload.processing_mode == "live"
-            and payload.msg_type == "text"
-            and self._payment_tracking_enabled(tenant_id, group_message.group_id)
-        ):
-            payment_notice = events_by_type.get("payment_notice")
-            if payment_notice is not None:
-                reminders = self.reminder_service.create_standalone_payment_confirmation_followups(
-                    payment_notice,
-                    group_message,
-                    extracted,
-                )
-                reminder_ids.extend(reminder.id for reminder in reminders)
-            if events_by_type.get("payment_screenshot") is not None and repayment_annotation is None:
-                reminder_ids.extend(
-                    PaymentTrackingService(self.db).confirm_standalone_notice(group_message, extracted)
-                )
 
         self._handle_media_payload(group_message, payload, legal_case.id if legal_case else None)
         if payload.msg_type == "text" and extracted.get("case_no"):
@@ -255,6 +285,8 @@ class MessageService:
             if value not in (None, ""):
                 structured[key] = value
         metadata["structured_fields"] = structured
+        metadata["extraction_confidence"] = extracted.get("extraction_confidence")
+        metadata["review_reasons"] = list(extracted.get("review_reasons") or [])
         return metadata
 
     @staticmethod
@@ -339,6 +371,7 @@ class MessageService:
         amount: Decimal | None,
         extracted_text: str | None,
         metadata: dict[str, Any],
+        confidence: Any = None,
     ) -> LegalEvent:
         event = LegalEvent(
             case_id=case_id,
@@ -347,6 +380,7 @@ class MessageService:
             event_type=event_type,
             event_time=now_tz(),
             amount=amount,
+            confidence=Decimal(str(confidence)) if confidence is not None else None,
             extracted_text=extracted_text,
             metadata_json=json.dumps(metadata, ensure_ascii=False),
         )

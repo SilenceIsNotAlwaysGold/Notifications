@@ -137,6 +137,11 @@ class PaymentListOut(BaseModel):
 class PaymentTrackingOut(BaseModel):
     event_id: int
     case_id: int | None
+    business_status: str
+    confidence: Decimal | None
+    automation_outcome: str | None = None
+    automation_threshold: float | None = None
+    review_reasons: list[str] = Field(default_factory=list)
     source_group_id: str | None = None
     source_group_name: str | None = None
     source_sender_id: str | None = None
@@ -186,6 +191,10 @@ class PaymentMediaReceiptAssignment(BaseModel):
     media_file_id: int = Field(ge=1)
 
 
+class PaymentTextConfirmationAssignment(BaseModel):
+    confirmation_event_id: int = Field(ge=1)
+
+
 class UnmatchedPaymentMediaOut(BaseModel):
     media_file_id: int
     event_id: int
@@ -202,6 +211,39 @@ class UnmatchedPaymentMediaOut(BaseModel):
 class UnmatchedPaymentMediaListOut(BaseModel):
     total: int
     items: list[UnmatchedPaymentMediaOut]
+
+
+class PaymentNoticeCandidateOut(BaseModel):
+    event_id: int
+    defendant: str | None
+    case_no: str | None
+    payment_type: str
+    amount: Decimal | None
+    notice_date: date
+    source_text: str | None
+    match_score: int
+
+
+class UnmatchedPaymentTextConfirmationOut(BaseModel):
+    event_id: int
+    group_id: str
+    group_name: str | None
+    sender_id: str
+    confirmation_text: str
+    amount: Decimal | None
+    defendant: str | None
+    case_no: str | None
+    confidence: Decimal | None
+    automation_outcome: str | None = None
+    automation_threshold: float | None = None
+    review_reasons: list[str] = Field(default_factory=list)
+    candidates: list[PaymentNoticeCandidateOut] = Field(default_factory=list)
+    received_at: datetime
+
+
+class UnmatchedPaymentTextConfirmationListOut(BaseModel):
+    total: int
+    items: list[UnmatchedPaymentTextConfirmationOut]
 
 
 class PaymentTrackingListOut(BaseModel):

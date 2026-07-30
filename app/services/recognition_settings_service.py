@@ -44,6 +44,8 @@ class RecognitionSettingsService:
             llm_timeout_seconds=self.settings.legal_llm_timeout_seconds,
             llm_max_text_length=self.settings.legal_llm_max_text_length,
             llm_min_confidence=self.settings.legal_llm_min_confidence,
+            auto_write_min_confidence=self.settings.legal_auto_write_min_confidence,
+            auto_remind_min_confidence=self.settings.legal_auto_remind_min_confidence,
             llm_fallback_to_regex=self.settings.legal_llm_fallback_to_regex,
             data_retention_enabled=self.settings.legal_data_retention_enabled,
             data_retention_days=self.settings.legal_data_retention_days,
@@ -51,6 +53,7 @@ class RecognitionSettingsService:
         )
 
     def update(self, payload: RecognitionSettingsUpdate) -> None:
+        self._validate_thresholds(payload)
         updates = self._payload_to_env(payload)
         if not updates:
             return
@@ -58,6 +61,27 @@ class RecognitionSettingsService:
         os.environ.update(updates)
         get_settings.cache_clear()
         self.settings = get_settings()
+
+    def _validate_thresholds(self, payload: RecognitionSettingsUpdate) -> None:
+        extraction_threshold = (
+            payload.llm_min_confidence
+            if "llm_min_confidence" in payload.model_fields_set and payload.llm_min_confidence is not None
+            else self.settings.legal_llm_min_confidence
+        )
+        write_threshold = (
+            payload.auto_write_min_confidence
+            if "auto_write_min_confidence" in payload.model_fields_set and payload.auto_write_min_confidence is not None
+            else self.settings.legal_auto_write_min_confidence
+        )
+        remind_threshold = (
+            payload.auto_remind_min_confidence
+            if "auto_remind_min_confidence" in payload.model_fields_set and payload.auto_remind_min_confidence is not None
+            else self.settings.legal_auto_remind_min_confidence
+        )
+        if write_threshold < extraction_threshold:
+            raise ValueError("自动写入阈值不能低于结构化抽取阈值")
+        if remind_threshold < extraction_threshold:
+            raise ValueError("自动提醒阈值不能低于结构化抽取阈值")
 
     def check(self) -> RecognitionCheckOut:
         return RecognitionCheckOut(ocr=self._check_ocr(), llm=self._check_llm())
@@ -180,6 +204,8 @@ class RecognitionSettingsService:
             "llm_timeout_seconds": "LEGAL_LLM_TIMEOUT_SECONDS",
             "llm_max_text_length": "LEGAL_LLM_MAX_TEXT_LENGTH",
             "llm_min_confidence": "LEGAL_LLM_MIN_CONFIDENCE",
+            "auto_write_min_confidence": "LEGAL_AUTO_WRITE_MIN_CONFIDENCE",
+            "auto_remind_min_confidence": "LEGAL_AUTO_REMIND_MIN_CONFIDENCE",
             "llm_fallback_to_regex": "LEGAL_LLM_FALLBACK_TO_REGEX",
             "data_retention_enabled": "LEGAL_DATA_RETENTION_ENABLED",
             "data_retention_days": "LEGAL_DATA_RETENTION_DAYS",

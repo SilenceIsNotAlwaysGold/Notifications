@@ -122,7 +122,7 @@ def test_replay_processes_text_message_and_creates_business_records(client, db_s
     assert len(reminders) == 0
 
 
-def test_replay_with_ocr_processes_media_text_and_kdocs_logs(client, db_session, monkeypatch):
+def test_replay_with_ocr_stages_incomplete_document_for_review(client, db_session, monkeypatch):
     monkeypatch.setenv("OCR_PROVIDER", "mock")
     monkeypatch.setenv("KDOCS_MODE", "mock")
     get_settings.cache_clear()
@@ -157,7 +157,7 @@ def test_replay_with_ocr_processes_media_text_and_kdocs_logs(client, db_session,
     assert data["ocr_results"][0]["document_type"] == "判决书"
     assert data["ocr_results"][0]["plaintiff"] == "李四"
     assert data["ocr_results"][0]["defendant"] == "张三"
-    assert data["ocr_results"][0]["requires_review"] is False
+    assert data["ocr_results"][0]["requires_review"] is True
 
     sync_types = {log.sync_type for log in db_session.scalars(select(DocumentSyncLog)).all()}
     assert "legal_document_upload" not in sync_types

@@ -19,6 +19,8 @@ class RecognitionSettingsOut(BaseModel):
     llm_timeout_seconds: int
     llm_max_text_length: int
     llm_min_confidence: float
+    auto_write_min_confidence: float
+    auto_remind_min_confidence: float
     llm_fallback_to_regex: bool
     data_retention_enabled: bool
     data_retention_days: int
@@ -36,6 +38,8 @@ class RecognitionSettingsUpdate(BaseModel):
     llm_timeout_seconds: int | None = Field(default=None, ge=1, le=120)
     llm_max_text_length: int | None = Field(default=None, ge=1000, le=100000)
     llm_min_confidence: float | None = Field(default=None, ge=0, le=1)
+    auto_write_min_confidence: float | None = Field(default=None, ge=0, le=1)
+    auto_remind_min_confidence: float | None = Field(default=None, ge=0, le=1)
     llm_fallback_to_regex: bool | None = None
     data_retention_enabled: bool | None = None
     data_retention_days: int | None = Field(default=None, ge=30, le=36500)
@@ -70,6 +74,13 @@ class RecognitionSettingsUpdate(BaseModel):
     def require_update_field(self):
         if not self.model_fields_set:
             raise ValueError("至少提供一个待更新字段")
+        extraction_threshold = self.llm_min_confidence
+        write_threshold = self.auto_write_min_confidence
+        remind_threshold = self.auto_remind_min_confidence
+        if extraction_threshold is not None and write_threshold is not None and write_threshold < extraction_threshold:
+            raise ValueError("自动写入阈值不能低于结构化抽取阈值")
+        if extraction_threshold is not None and remind_threshold is not None and remind_threshold < extraction_threshold:
+            raise ValueError("自动提醒阈值不能低于结构化抽取阈值")
         return self
 
 

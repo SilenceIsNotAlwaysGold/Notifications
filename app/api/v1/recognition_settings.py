@@ -26,7 +26,10 @@ def get_recognition_settings():
 @router.put("", dependencies=[Depends(_admin_operator)])
 def update_recognition_settings(payload: RecognitionSettingsUpdate):
     service = RecognitionSettingsService(get_settings())
-    service.update(payload)
+    try:
+        service.update(payload)
+    except ValueError as exc:
+        raise_fail(str(exc), code=1400)
     return ok("识别与 AI 配置已保存", service.current())
 
 

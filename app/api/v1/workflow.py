@@ -1,4 +1,5 @@
 from datetime import date
+import json
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
@@ -29,6 +30,7 @@ from app.schemas.workflow import (
     PaymentOut,
     PaymentReceiptAssignment,
     PaymentMediaReceiptAssignment,
+    PaymentTextConfirmationAssignment,
     PaymentReceiptListOut,
     PaymentReceiptOut,
     PaymentTrackingListOut,
@@ -36,6 +38,8 @@ from app.schemas.workflow import (
     PaymentUpdate,
     UnmatchedPaymentMediaListOut,
     UnmatchedPaymentMediaOut,
+    UnmatchedPaymentTextConfirmationListOut,
+    UnmatchedPaymentTextConfirmationOut,
 )
 from app.services.attribution_service import AttributionService
 from app.services.case_group_service import CaseGroupService
@@ -234,6 +238,67 @@ def list_unmatched_payment_media(
     )
 
 
+@router.get("/payment-trackings/unmatched-text-confirmations")
+def list_unmatched_payment_text_confirmations(
+    offset: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=200),
+    db: Session = Depends(get_db),
+    operator_info: dict[str, object] = Depends(get_current_operator),
+):
+    scoped_groups = allowed_group_ids(operator_info) if resource_scope_enabled(operator_info) and operator_info.get("role") != "admin" else None
+    total, items = PaymentTrackingService(db).list_unmatched_text_confirmations(
+        group_ids=scoped_groups,
+        offset=offset,
+        limit=limit,
+    )
+    return ok(
+        "待匹配文字付款确认查询成功",
+        UnmatchedPaymentTextConfirmationListOut(
+            total=total,
+            items=[UnmatchedPaymentTextConfirmationOut(**item) for item in items],
+        ),
+    )
+
+
+@router.post("/payment-trackings/{event_id}/assign-text-confirmation")
+def assign_payment_text_confirmation(
+    event_id: int,
+    payload: PaymentTextConfirmationAssignment,
+    db: Session = Depends(get_db),
+    operator_info: dict[str, object] = Depends(get_current_operator),
+):
+    notice = db.get(LegalEvent, event_id)
+    confirmation = db.get(LegalEvent, payload.confirmation_event_id)
+    if not notice or notice.event_type != "payment_notice":
+        raise_fail("缴费通知不存在", code=1404, status_code=404)
+    if not confirmation or confirmation.event_type != "payment_screenshot":
+        raise_fail("文字付款确认不存在", code=1404, status_code=404)
+    notice_message = notice.group_message
+    confirmation_message = confirmation.group_message
+    if not notice_message or not confirmation_message:
+        raise_fail("缴费通知或文字付款确认缺少来源群", code=1400)
+    if not has_group_access(operator_info, notice_message.group_id, notice.tenant_id) or not has_group_access(
+        operator_info,
+        confirmation_message.group_id,
+        confirmation.tenant_id,
+    ):
+        raise_fail("无权限访问该群的缴费信息", code=403, status_code=403)
+    try:
+        result = PaymentTrackingService(db).assign_text_confirmation(
+            notice,
+            confirmation,
+            str(operator_info["operator"]),
+        )
+        db.commit()
+    except ValueError as exc:
+        db.rollback()
+        raise_fail(str(exc), code=1400)
+    return ok(
+        "文字付款确认已关联并进入业务执行队列",
+        {"event_id": result.id, "payment_notice_event_id": notice.id},
+    )
+
+
 @router.post("/payment-trackings/{event_id}/assign-media-receipt")
 def assign_payment_media_receipt(
     event_id: int,
@@ -329,21 +394,67 @@ def _event_for_action(event_id: int, db: Session, operator_info: dict[str, objec
     event = db.get(LegalEvent, event_id)
     if not event:
         raise_fail("事件不存在", code=1404, status_code=404)
-    if event.case_id is None:
+    if event.case_id is not None:
+        if not has_case_access(db, operator_info, event.case_id):
+            raise_fail("无权限访问该事件", code=403, status_code=403)
+        return event
+    if event.attribution_status != "not_required" or event.group_message is None:
         raise_fail("事件案件归属未确认", code=1400)
-    if not has_case_access(db, operator_info, event.case_id):
+    if not has_group_access(operator_info, event.group_message.group_id, event.tenant_id):
         raise_fail("无权限访问该事件", code=403, status_code=403)
+    metadata = json.loads(event.metadata_json or "{}")
+    if metadata.get("media_file_id") is not None:
+        raise_fail("附件识别结果必须在对应资料复核页面处理", code=1400)
     return event
+
+
+def _record_manual_event_decision(
+    event: LegalEvent,
+    *,
+    outcome: str,
+    operator: str,
+    reason: str | None = None,
+) -> None:
+    try:
+        metadata = json.loads(event.metadata_json or "{}")
+    except (TypeError, ValueError):
+        metadata = {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    automation = metadata.get("automation_decision")
+    if not isinstance(automation, dict):
+        automation = {}
+    automation.update(
+        {
+            "outcome": outcome,
+            "reviewed_by": operator,
+            "reviewed_at": now_tz().isoformat(),
+        }
+    )
+    if reason:
+        automation["manual_reason"] = reason
+    metadata["automation_decision"] = automation
+    event.metadata_json = json.dumps(metadata, ensure_ascii=False)
 
 
 @router.post("/events/{event_id}/approve")
 def approve_event(event_id: int, payload: EventDecision, db: Session = Depends(get_db), operator_info: dict[str, object] = Depends(get_current_operator)):
     event = _event_for_action(event_id, db, operator_info)
-    if not event.case_id or event.attribution_status != "confirmed":
+    if event.case_id and event.attribution_status != "confirmed":
         raise_fail("事件案件归属未确认", code=1400)
+    if event.case_id is None and not (
+        event.attribution_status == "not_required" and event.event_type in {"payment_notice", "payment_screenshot"}
+    ):
+        raise_fail("事件案件归属未确认", code=1400)
+    if event.event_type == "payment_screenshot" and event.group_message_id:
+        metadata = json.loads(event.metadata_json or "{}")
+        if not metadata.get("standalone_payment_notice_event_id"):
+            raise_fail("请先在缴费跟踪中关联同群的具体缴费通知", code=1400)
+    operator = str(operator_info["operator"])
     event.business_status = "approved"
-    event.approved_by = str(operator_info["operator"])
+    event.approved_by = operator
     event.approved_at = now_tz()
+    _record_manual_event_decision(event, outcome="manual_approved", operator=operator, reason=payload.reason)
     OutboxService(db).enqueue_event(event.id, event.tenant_id)
     db.commit()
     return ok("事件已批准并进入业务队列", {"event_id": event.id})
@@ -354,8 +465,10 @@ def reject_event(event_id: int, payload: EventDecision, db: Session = Depends(ge
     event = _event_for_action(event_id, db, operator_info)
     if not (payload.reason or "").strip():
         raise_fail("驳回必须填写原因", code=1400)
+    operator = str(operator_info["operator"])
     event.business_status = "rejected"
     event.rejected_reason = payload.reason
+    _record_manual_event_decision(event, outcome="manual_rejected", operator=operator, reason=payload.reason)
     db.commit()
     return ok("事件已驳回", {"event_id": event.id})
 

@@ -66,38 +66,17 @@ class PaymentTrackingService:
         )
         return message.group_id, (contact.wecomapi_user_id if contact and contact.wecomapi_user_id else sender_id)
 
-    def confirm_standalone_notice(self, message: GroupMessage, extracted: dict[str, Any]) -> list[int]:
-        candidates = list(
-            self.db.scalars(
-                select(LegalEvent)
-                .join(GroupMessage, GroupMessage.id == LegalEvent.group_message_id)
-                .where(
-                    GroupMessage.group_id == message.group_id,
-                    LegalEvent.event_type == "payment_notice",
-                    LegalEvent.business_status != "rejected",
-                )
-                .order_by(LegalEvent.id.desc())
-                .limit(100)
-            ).all()
-        )
-        events = {
-            event.id: event
-            for event in candidates
-            if not self._metadata(event).get("standalone_payment_confirmation")
-            and not self._metadata(event).get("superseded_by_payment_notice_event_id")
-        }
-        if not events:
+    def confirm_standalone_notice(
+        self,
+        message: GroupMessage,
+        extracted: dict[str, Any],
+        *,
+        notice: LegalEvent | None = None,
+    ) -> list[int]:
+        notice = notice or self.match_standalone_notice(message, extracted)
+        if notice is None:
             return []
 
-        scored = [(self._confirmation_score(event, extracted, message.content or ""), event) for event in events.values()]
-        best_score = max(score for score, _event in scored)
-        matches = [event for score, event in scored if score == best_score and score > 0]
-        if len(matches) != 1:
-            matches = list(events.values()) if len(events) == 1 else []
-        if len(matches) != 1:
-            return []
-
-        notice = matches[0]
         reminders = list(
             self.db.scalars(
                 select(Reminder).where(
@@ -121,6 +100,41 @@ class PaymentTrackingService:
         self.db.flush()
         return [reminder.id for reminder in reminders]
 
+    def match_standalone_notice(self, message: GroupMessage, extracted: dict[str, Any]) -> LegalEvent | None:
+        events = {event.id: event for event in self._open_standalone_notices(message.group_id)}
+        if not events:
+            return None
+
+        scored = [(self._confirmation_score(event, extracted, message.content or ""), event) for event in events.values()]
+        best_score = max(score for score, _event in scored)
+        matches = [event for score, event in scored if score == best_score and score > 0]
+        if len(matches) != 1:
+            matches = list(events.values()) if len(events) == 1 else []
+        if len(matches) != 1:
+            return None
+        return matches[0]
+
+    def _open_standalone_notices(self, group_id: str, *, limit: int = 100) -> list[LegalEvent]:
+        candidates = list(
+            self.db.scalars(
+                select(LegalEvent)
+                .join(GroupMessage, GroupMessage.id == LegalEvent.group_message_id)
+                .where(
+                    GroupMessage.group_id == group_id,
+                    LegalEvent.event_type == "payment_notice",
+                    LegalEvent.business_status.in_(("approved", "applied")),
+                )
+                .order_by(LegalEvent.id.desc())
+                .limit(limit)
+            ).all()
+        )
+        return [
+            event
+            for event in candidates
+            if not self._metadata(event).get("standalone_payment_confirmation")
+            and not self._metadata(event).get("superseded_by_payment_notice_event_id")
+        ]
+
     def link_media_receipt_result(self, media_file, result: dict[str, Any]) -> LegalEvent | None:
         if result.get("event_type") != "payment_screenshot":
             return None
@@ -134,7 +148,7 @@ class PaymentTrackingService:
                 .where(
                     GroupMessage.group_id == media_file.group_id,
                     LegalEvent.event_type == "payment_notice",
-                    LegalEvent.business_status != "rejected",
+                    LegalEvent.business_status.in_(("approved", "applied")),
                     GroupMessage.received_at <= media_file.created_at,
                 )
                 .order_by(LegalEvent.id.desc())
@@ -429,6 +443,7 @@ class PaymentTrackingService:
         required = Decimal(str(event.amount)) if event.amount is not None else None
         metadata = PaymentTrackingService._metadata(event)
         structured = metadata.get("structured_fields") if isinstance(metadata.get("structured_fields"), dict) else {}
+        automation = metadata.get("automation_decision") if isinstance(metadata.get("automation_decision"), dict) else {}
         parsed = parse_legal_text(event.extracted_text)
         standalone_confirmation = metadata.get("standalone_payment_confirmation")
         if legal_case is None and standalone_confirmation and required is not None:
@@ -440,7 +455,9 @@ class PaymentTrackingService:
         sent = [item for item in reminders if item.status == "sent"]
         failed = [item for item in reminders if item.status == "failed"]
         pending = [item for item in reminders if item.status == "pending"]
-        if sent:
+        if event.business_status == "staged":
+            tracking = "等待人工确认，尚未创建提醒"
+        elif sent:
             latest = max((item.sent_at or item.remind_at for item in sent)).date()
             tracking = f"{latest.year}年{latest.month}月{latest.day}日已催促{len(sent)}次"
         elif failed:
@@ -467,6 +484,11 @@ class PaymentTrackingService:
         return {
             "event_id": event.id,
             "case_id": legal_case.id if legal_case else None,
+            "business_status": event.business_status,
+            "confidence": event.confidence,
+            "automation_outcome": automation.get("outcome"),
+            "automation_threshold": automation.get("threshold"),
+            "review_reasons": list(automation.get("reasons") or metadata.get("review_reasons") or []),
             "source_group_id": event.group_message.group_id if event.group_message else None,
             "source_group_name": None,
             "source_sender_id": event.group_message.sender_id if event.group_message else None,
@@ -587,6 +609,155 @@ class PaymentTrackingService:
             )
         return len(rows), rows[offset : offset + limit]
 
+    def list_unmatched_text_confirmations(
+        self,
+        *,
+        group_ids: list[str] | None = None,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> tuple[int, list[dict[str, Any]]]:
+        query = (
+            select(LegalEvent, GroupMessage)
+            .join(GroupMessage, GroupMessage.id == LegalEvent.group_message_id)
+            .where(LegalEvent.event_type == "payment_screenshot")
+            .where(LegalEvent.business_status == "staged")
+            .order_by(GroupMessage.received_at.desc(), LegalEvent.id.desc())
+        )
+        if group_ids is not None:
+            if not group_ids:
+                return 0, []
+            query = query.where(GroupMessage.group_id.in_(group_ids))
+        pairs = list(self.db.execute(query).all())
+        group_identifiers = {message.group_id for _event, message in pairs}
+        group_names = {
+            identifier: group.display_name or identifier
+            for group in self.db.scalars(select(WeComArchiveGroup)).all()
+            for identifier in (group.room_id, group.wecomapi_room_id)
+            if identifier in group_identifiers
+        }
+        rows: list[dict[str, Any]] = []
+        for event, message in pairs:
+            metadata = self._metadata(event)
+            if (
+                metadata.get("media_file_id")
+                or metadata.get("repayment_annotation")
+                or metadata.get("standalone_payment_notice_event_id")
+            ):
+                continue
+            structured = metadata.get("structured_fields") if isinstance(metadata.get("structured_fields"), dict) else {}
+            extracted = {
+                "case_no": structured.get("case_no"),
+                "defendant": structured.get("defendant"),
+                "amount": event.amount,
+                "metadata": metadata,
+            }
+            notices = self._open_standalone_notices(message.group_id, limit=30)
+            scored_notices = sorted(
+                (
+                    (self._confirmation_score(notice, extracted, message.content or event.extracted_text or ""), notice)
+                    for notice in notices
+                ),
+                key=lambda item: (item[0], item[1].id),
+                reverse=True,
+            )
+            automation = metadata.get("automation_decision") if isinstance(metadata.get("automation_decision"), dict) else {}
+            rows.append(
+                {
+                    "event_id": event.id,
+                    "group_id": message.group_id,
+                    "group_name": group_names.get(message.group_id, message.group_id),
+                    "sender_id": message.sender_id,
+                    "confirmation_text": message.content or event.extracted_text or "",
+                    "amount": event.amount,
+                    "defendant": structured.get("defendant"),
+                    "case_no": structured.get("case_no"),
+                    "confidence": event.confidence,
+                    "automation_outcome": automation.get("outcome"),
+                    "automation_threshold": automation.get("threshold"),
+                    "review_reasons": list(automation.get("reasons") or metadata.get("review_reasons") or []),
+                    "candidates": [
+                        self._text_confirmation_candidate(notice, match_score=score)
+                        for score, notice in scored_notices
+                    ],
+                    "received_at": message.received_at,
+                }
+            )
+        return len(rows), rows[offset : offset + limit]
+
+    def assign_text_confirmation(
+        self,
+        notice: LegalEvent,
+        confirmation: LegalEvent,
+        operator: str,
+    ) -> LegalEvent:
+        if notice.event_type != "payment_notice" or notice.business_status not in {"approved", "applied"}:
+            raise ValueError("所选缴费通知尚未确认或已经失效")
+        if confirmation.event_type != "payment_screenshot" or confirmation.business_status != "staged":
+            raise ValueError("文字付款确认不存在或已经处理")
+        notice_message = notice.group_message or (
+            self.db.get(GroupMessage, notice.group_message_id) if notice.group_message_id else None
+        )
+        confirmation_message = confirmation.group_message or (
+            self.db.get(GroupMessage, confirmation.group_message_id) if confirmation.group_message_id else None
+        )
+        if not notice_message or not confirmation_message:
+            raise ValueError("缴费通知或付款确认缺少来源群消息")
+        if notice_message.group_id != confirmation_message.group_id:
+            raise ValueError("文字付款确认和缴费通知不在同一个群")
+        notice_metadata = self._metadata(notice)
+        if notice_metadata.get("standalone_payment_confirmation"):
+            raise ValueError("所选缴费通知已经确认付款")
+        if notice_metadata.get("superseded_by_payment_notice_event_id"):
+            raise ValueError("所选缴费通知已被新通知替代")
+
+        metadata = self._metadata(confirmation)
+        if metadata.get("media_file_id"):
+            raise ValueError("附件付款凭证请在未匹配付款凭证中处理")
+        if metadata.get("repayment_annotation"):
+            raise ValueError("还款确认不能关联到诉讼缴费通知")
+        metadata["standalone_payment_notice_event_id"] = notice.id
+        metadata["payment_notice_match_source"] = "manual_same_group_assignment"
+        automation = metadata.get("automation_decision") if isinstance(metadata.get("automation_decision"), dict) else {}
+        reviewed_at = now_tz()
+        automation.update(
+            {
+                "outcome": "manual_approved",
+                "reviewed_by": operator,
+                "reviewed_at": reviewed_at.isoformat(),
+                "manual_reason": f"人工关联缴费通知 #{notice.id}",
+            }
+        )
+        metadata["automation_decision"] = automation
+        confirmation.metadata_json = json.dumps(metadata, ensure_ascii=False, default=str)
+        confirmation.amount = confirmation.amount or notice.amount
+        confirmation.attribution_status = "not_required"
+        confirmation.business_status = "approved"
+        confirmation.approved_by = operator
+        confirmation.approved_at = reviewed_at
+
+        from app.services.outbox_service import OutboxService
+
+        OutboxService(self.db).enqueue_event(confirmation.id, confirmation.tenant_id)
+        self.db.flush()
+        return confirmation
+
+    @classmethod
+    def _text_confirmation_candidate(cls, event: LegalEvent, *, match_score: int) -> dict[str, Any]:
+        metadata = cls._metadata(event)
+        structured = metadata.get("structured_fields") if isinstance(metadata.get("structured_fields"), dict) else {}
+        parsed = parse_legal_text(event.extracted_text)
+        message = event.group_message
+        return {
+            "event_id": event.id,
+            "defendant": structured.get("defendant") or parsed.get("defendant"),
+            "case_no": structured.get("case_no") or metadata.get("case_no") or parsed.get("case_no"),
+            "payment_type": cls._payment_type(structured, event.extracted_text),
+            "amount": event.amount,
+            "notice_date": (event.event_time or (message.received_at if message else event.created_at)).date(),
+            "source_text": event.extracted_text or (message.content if message else None),
+            "match_score": match_score,
+        }
+
     def assign_media_receipt(
         self,
         notice: LegalEvent,
@@ -595,6 +766,8 @@ class PaymentTrackingService:
     ) -> LegalEvent:
         if notice.event_type != "payment_notice" or not notice.group_message:
             raise ValueError("缴费通知缺少来源群")
+        if notice.business_status not in {"approved", "applied"}:
+            raise ValueError("缴费通知尚未确认，不能关联付款凭证")
         if media_file.group_id != notice.group_message.group_id:
             raise ValueError("付款凭证和缴费通知不在同一个群")
         receipt = self.db.get(LegalEvent, media_file.review_event_id) if media_file.review_event_id else None

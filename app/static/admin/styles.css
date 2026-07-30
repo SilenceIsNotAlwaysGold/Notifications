@@ -2192,6 +2192,35 @@ tr:hover td {
   color: var(--muted);
 }
 
+.automation-badge {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  align-items: center;
+  padding: 3px 7px;
+  border: 1px solid #f3c98b;
+  border-radius: 4px;
+  background: #fff7e8;
+  color: #8a4b08;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 700;
+  line-height: 1.35;
+  white-space: normal;
+}
+
+.automation-badge.auto {
+  border-color: #a9d9cf;
+  background: #eaf7f4;
+  color: #096b5f;
+}
+
+.automation-badge.rejected {
+  border-color: #d8dee8;
+  background: #f2f4f7;
+  color: #667085;
+}
+
 .review-detail-pane {
   min-width: 0;
   min-height: 0;
@@ -2533,6 +2562,97 @@ tr:hover td {
 .review-fields {
   min-width: 0;
   padding: 18px;
+}
+
+.automation-decision {
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border: 1px solid #f3c98b;
+  border-left: 4px solid #d97706;
+  border-radius: 6px;
+  background: #fffaf0;
+}
+
+.automation-decision.auto {
+  border-color: #a9d9cf;
+  border-left-color: #0f8c82;
+  background: #f0faf8;
+}
+
+.automation-decision.rejected {
+  border-color: #d8dee8;
+  border-left-color: #98a2b3;
+  background: #f8fafc;
+}
+
+.automation-decision-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.automation-decision-head span,
+.automation-decision-meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.automation-decision-meta {
+  margin-top: 4px;
+}
+
+.automation-decision ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: #7a3e05;
+  font-size: 13px;
+}
+
+.automation-decision p {
+  margin-top: 8px;
+  color: #25675f;
+  font-size: 13px;
+}
+
+.payment-review-actions,
+.merchant-question-actions {
+  display: flex;
+  min-width: 150px;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.payment-confirmation-text {
+  min-width: 240px;
+  max-width: 440px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.payment-text-assignment {
+  min-width: 360px;
+}
+
+.payment-text-assignment select {
+  min-width: 260px;
+}
+
+.payment-unmatched-text-table td {
+  vertical-align: top;
+}
+
+.merchant-question-content {
+  min-width: 220px;
+  max-width: 440px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.merchant-question-table td {
+  vertical-align: top;
 }
 
 .review-form-grid {

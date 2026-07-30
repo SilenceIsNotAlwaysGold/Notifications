@@ -54,6 +54,17 @@ def _review_out(
     available_context_messages: list[dict] | None = None,
 ) -> OCRReviewOut:
     ocr_result = _parse_json(media_file.ocr_result_json)
+    final_result = _parse_json(media_file.review_result_json) if media_file.review_result_json else None
+    effective_result = final_result or ocr_result
+    metadata = effective_result.get("metadata") if isinstance(effective_result.get("metadata"), dict) else {}
+    automation = metadata.get("automation_decision") if isinstance(metadata.get("automation_decision"), dict) else {}
+
+    def _float_or_none(value):
+        try:
+            return float(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
     return OCRReviewOut(
         media_file_id=media_file.id,
         tenant_id=media_file.tenant_id,
@@ -70,7 +81,13 @@ def _review_out(
         context_messages=ocr_result.get("context_messages") or [],
         available_context_messages=available_context_messages or [],
         ocr_result=ocr_result,
-        final_result=_parse_json(media_file.review_result_json) if media_file.review_result_json else None,
+        final_result=final_result,
+        automation_action=automation.get("action"),
+        automation_outcome=automation.get("outcome"),
+        automation_confidence=_float_or_none(automation.get("confidence")),
+        automation_threshold=_float_or_none(automation.get("threshold")),
+        automation_confidence_source=automation.get("confidence_source"),
+        automation_reasons=[str(reason) for reason in automation.get("reasons") or []],
         preview_url=f"/api/v1/legal/media-files/{media_file.id}/content" if media_file.local_path else None,
         reviewed_by=media_file.reviewed_by,
         reviewed_at=media_file.reviewed_at,

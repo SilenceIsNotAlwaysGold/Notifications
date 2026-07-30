@@ -1,5 +1,6 @@
 from datetime import date, datetime
 from decimal import Decimal
+import json
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -462,10 +463,39 @@ class MerchantQuestionOut(BaseModel):
     closed_by: str | None
     closed_at: datetime | None
     close_reason: str | None
+    classification_confidence: float | None = None
+    automation_threshold: float | None = None
+    automation_outcome: str | None = None
+    automation_confidence_source: str | None = None
+    review_reasons: list[str] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+    @classmethod
+    def model_validate(cls, obj, *args, **kwargs):
+        data = super().model_validate(obj, *args, **kwargs)
+        try:
+            classification = json.loads(getattr(obj, "classification_json", "{}") or "{}")
+        except (TypeError, ValueError):
+            classification = {}
+        decision = classification.get("automation_decision") if isinstance(classification.get("automation_decision"), dict) else {}
+        confidence = decision.get("confidence", classification.get("confidence"))
+        try:
+            data.classification_confidence = float(confidence) if confidence is not None else None
+        except (TypeError, ValueError):
+            data.classification_confidence = None
+        try:
+            data.automation_threshold = float(decision["threshold"]) if decision.get("threshold") is not None else None
+        except (TypeError, ValueError):
+            data.automation_threshold = None
+        data.automation_outcome = str(decision["outcome"]) if decision.get("outcome") else None
+        data.automation_confidence_source = (
+            str(decision["confidence_source"]) if decision.get("confidence_source") else None
+        )
+        data.review_reasons = [str(reason) for reason in decision.get("reasons") or []]
+        return data
 
 
 class MerchantQuestionListOut(BaseModel):
@@ -642,6 +672,12 @@ class OCRReviewOut(BaseModel):
     available_context_messages: list[dict[str, Any]] = Field(default_factory=list)
     ocr_result: dict[str, Any]
     final_result: dict[str, Any] | None
+    automation_action: str | None = None
+    automation_outcome: str | None = None
+    automation_confidence: float | None = None
+    automation_threshold: float | None = None
+    automation_confidence_source: str | None = None
+    automation_reasons: list[str] = Field(default_factory=list)
     preview_url: str | None
     reviewed_by: str | None
     reviewed_at: datetime | None

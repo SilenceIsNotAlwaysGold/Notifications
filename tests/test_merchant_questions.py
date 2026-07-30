@@ -6,6 +6,7 @@ from app.models.merchant_question import MerchantQuestion
 from app.models.reminder import Reminder
 from app.core.config import get_settings
 from app.services.merchant_question_service import MerchantQuestionService
+from app.services.outbox_service import OutboxService
 from app.utils.datetime_utils import app_timezone
 
 
@@ -333,7 +334,8 @@ def test_payment_notice_uses_payment_workflow_without_merchant_timeout(client, d
     _create_group(client)
     now = datetime(2026, 7, 29, 10, 0, tzinfo=app_timezone())
 
-    _text(client, "merchant_group", "notice_sender", "李江胜案件受理费25元，请在8月2日前缴费", now)
+    _text(client, "merchant_group", "notice_sender", "李江胜，案件受理费25元，请在8月2日前缴费", now)
+    OutboxService(db_session).process_pending()
 
     assert db_session.scalar(select(MerchantQuestion)) is None
     reminders = list(db_session.scalars(select(Reminder).order_by(Reminder.id)).all())
@@ -398,6 +400,44 @@ def test_ai_rejects_keyword_false_positive(client, db_session, monkeypatch):
     )
 
     assert db_session.scalar(select(MerchantQuestion)) is None
+    get_settings.cache_clear()
+
+
+def test_low_confidence_ai_question_waits_for_manual_confirmation(client, db_session, monkeypatch):
+    monkeypatch.setenv("LEGAL_LLM_BASE_URL", "https://llm.example/v1")
+    monkeypatch.setenv("LEGAL_LLM_MODEL", "test-model")
+    get_settings.cache_clear()
+    _create_group(client)
+    monkeypatch.setattr(
+        "app.services.merchant_question_service.LegalLLMAdapter.classify_conversation",
+        lambda self, message, **kwargs: {
+            "needs_reply": True,
+            "is_answer": False,
+            "conversation_closed": False,
+            "confidence": 0.62,
+            "reason": "可能是需要处理的问题",
+        },
+    )
+    asked_at = datetime(2026, 7, 29, 10, 0, tzinfo=app_timezone())
+
+    _text(client, "merchant_group", "merchant_001", "麻烦看一下这个怎么处理", asked_at)
+
+    question = db_session.scalar(select(MerchantQuestion))
+    assert question.status == "pending_review"
+    assert MerchantQuestionService(db_session).scan_timeouts(asked_at + timedelta(minutes=61))["created_reminders"] == 0
+
+    response = client.post(f"/api/v1/legal/merchant-questions/{question.id}/approve")
+    assert response.status_code == 200
+    assert response.json()["data"]["status"] == "open"
+    assert response.json()["data"]["automation_outcome"] == "manual_approved"
+    db_session.expire_all()
+    question = db_session.get(MerchantQuestion, question.id)
+    result = MerchantQuestionService(db_session).scan_timeouts(question.deadline_at + timedelta(minutes=1))
+    reminders = list(db_session.scalars(select(Reminder).where(Reminder.group_id == "merchant_group")).all())
+    assert result["created_reminders"] == 1
+    assert result["created_escalations"] == 0
+    assert len(reminders) == 1
+    assert reminders[0].target_userid == "merchant_001"
     get_settings.cache_clear()
 
 

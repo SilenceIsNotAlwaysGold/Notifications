@@ -2,7 +2,7 @@ from functools import lru_cache
 from typing import Literal
 from zoneinfo import ZoneInfo
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -129,6 +129,8 @@ class Settings(BaseSettings):
     legal_llm_timeout_seconds: int = Field(default=30, gt=0, alias="LEGAL_LLM_TIMEOUT_SECONDS")
     legal_llm_max_text_length: int = Field(default=16000, ge=1000, alias="LEGAL_LLM_MAX_TEXT_LENGTH")
     legal_llm_min_confidence: float = Field(default=0.75, ge=0, le=1, alias="LEGAL_LLM_MIN_CONFIDENCE")
+    legal_auto_write_min_confidence: float = Field(default=0.90, ge=0, le=1, alias="LEGAL_AUTO_WRITE_MIN_CONFIDENCE")
+    legal_auto_remind_min_confidence: float = Field(default=0.85, ge=0, le=1, alias="LEGAL_AUTO_REMIND_MIN_CONFIDENCE")
     legal_llm_fallback_to_regex: bool = Field(default=True, alias="LEGAL_LLM_FALLBACK_TO_REGEX")
     ops_alerts_enabled: bool = Field(default=True, alias="OPS_ALERTS_ENABLED")
     ops_scan_interval_minutes: int = Field(default=5, ge=1, alias="OPS_SCAN_INTERVAL_MINUTES")
@@ -143,6 +145,14 @@ class Settings(BaseSettings):
     ops_alert_user_ids: str = Field(default="", alias="OPS_ALERT_USER_IDS")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", populate_by_name=True)
+
+    @model_validator(mode="after")
+    def validate_automation_thresholds(self):
+        if self.legal_auto_write_min_confidence < self.legal_llm_min_confidence:
+            raise ValueError("自动写入阈值不能低于结构化抽取阈值")
+        if self.legal_auto_remind_min_confidence < self.legal_llm_min_confidence:
+            raise ValueError("自动提醒阈值不能低于结构化抽取阈值")
+        return self
 
     @property
     def tzinfo(self) -> ZoneInfo:

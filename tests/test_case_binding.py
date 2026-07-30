@@ -182,7 +182,7 @@ def test_fullwidth_ocr_case_number_matches_existing_halfwidth_case(client, db_se
             "group_id": "wr_shared",
             "sender_id": "external_user",
             "msg_type": "text",
-            "content": "案件（2026）黔0281民初8109号需要缴费400元",
+            "content": "案件（2026）黔0281民初8109号将于2026年9月1日上午9点开庭，请法务跟进",
         },
     )
 

@@ -88,6 +88,8 @@ def reset_database():
     os.environ["LEGAL_LLM_TIMEOUT_SECONDS"] = "30"
     os.environ["LEGAL_LLM_MAX_TEXT_LENGTH"] = "16000"
     os.environ["LEGAL_LLM_MIN_CONFIDENCE"] = "0.75"
+    os.environ["LEGAL_AUTO_WRITE_MIN_CONFIDENCE"] = "0.90"
+    os.environ["LEGAL_AUTO_REMIND_MIN_CONFIDENCE"] = "0.85"
     os.environ["LEGAL_LLM_FALLBACK_TO_REGEX"] = "true"
     os.environ["OPS_BACKUP_DIR"] = "./test_storage/backups"
     os.environ["OPS_DISK_FREE_MIN_GB"] = "0"

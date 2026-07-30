@@ -23,6 +23,7 @@ from app.models.reminder import Reminder
 from app.services.case_service import CaseService
 from app.services.case_candidate_service import CaseCandidateService
 from app.services.attribution_service import AttributionService
+from app.services.automation_confidence_service import AutomationConfidenceService
 from app.services.document_sync_service import DocumentSyncService
 from app.services.group_context_service import GroupContextService
 from app.services.ocr_service import OCRService
@@ -200,19 +201,17 @@ class MediaFileService:
                 duplicate_reason = f"相同原文件已由资料 #{duplicate_media.id} 执行业务，禁止重复写入"
                 if duplicate_reason not in result.setdefault("review_reasons", []):
                     result["review_reasons"].append(duplicate_reason)
-            result["requires_review"] = self._result_requires_review(result) or stage_only
-            if (
-                not stage_only
-                and duplicate_media is None
-                and self._can_auto_apply_legal_document(media_file, result, extracted_text)
-            ):
-                result["requires_review"] = False
-                result.setdefault("metadata", {})["case_independent_legal_document"] = True
+            result.setdefault("metadata", {})["media_file_id"] = media_file.id
+            automation_reasons = self._automation_blockers(media_file, result, extracted_text)
             if stage_only:
-                result.setdefault("review_reasons", []).append("上下文重新分析结果必须人工确认")
+                automation_reasons.append("上下文重新分析结果必须人工确认")
                 result.setdefault("metadata", {})["stage_only_reanalysis"] = True
                 if preferred_context_message_id is not None:
                     result["metadata"]["reanalysis_context_message_id"] = preferred_context_message_id
+            decision = AutomationConfidenceService().evaluate(result, extra_reasons=automation_reasons)
+            AutomationConfidenceService.apply(result, decision)
+            if decision.should_auto_execute and result.get("event_type") == "judgment":
+                result.setdefault("metadata", {})["case_independent_legal_document"] = True
             media_file.extracted_text = extracted_text
             media_file.ocr_result_json = self._dump_result(result)
             media_file.review_result_json = None
@@ -678,6 +677,7 @@ class MediaFileService:
 
         result = self._load_result(media_file.ocr_result_json)
         if decision == "rejected":
+            self._record_manual_automation_decision(result, "manual_rejected", operator)
             media_file.review_status = "rejected"
             media_file.reviewed_by = operator
             media_file.reviewed_at = now_tz()
@@ -774,6 +774,7 @@ class MediaFileService:
         result.setdefault("metadata", {})["review_decision"] = decision
         result["metadata"]["reviewed_by"] = operator
         result["metadata"]["reviewed_at"] = now_tz().isoformat()
+        self._record_manual_automation_decision(result, "manual_approved", operator)
 
         suggested_case = self.case_service.find_case_for_extracted(
             result.get("case_no"),
@@ -845,6 +846,21 @@ class MediaFileService:
             )
         self.db.flush()
         return {"media_file": media_file, "already_decided": False, "created_reminders": 0, "cancelled_reminders": 0}
+
+    @staticmethod
+    def _record_manual_automation_decision(result: dict[str, Any], outcome: str, operator: str) -> None:
+        metadata = result.setdefault("metadata", {})
+        automation = metadata.get("automation_decision")
+        if not isinstance(automation, dict):
+            automation = {}
+        automation.update(
+            {
+                "outcome": outcome,
+                "reviewed_by": operator,
+                "reviewed_at": now_tz().isoformat(),
+            }
+        )
+        metadata["automation_decision"] = automation
 
     def list_media_files(
         self,
@@ -1021,6 +1037,11 @@ class MediaFileService:
                         event,
                         source_message,
                         result,
+                        start_at=(
+                            event.approved_at
+                            if event.approved_by and event.approved_by != "system:auto-confidence"
+                            else None
+                        ),
                     )
                 )
         if matched_case and result.get("event_type") == "court_notice":
@@ -1067,16 +1088,28 @@ class MediaFileService:
 
     @staticmethod
     def _result_requires_review(result: dict[str, Any]) -> bool:
-        event_type = result.get("event_type") or "unknown"
-        metadata = result.get("metadata") or {}
-        repayment_annotation = metadata.get("repayment_annotation")
-        return bool(result.get("requires_review")) or event_type in {"unknown", "repayment_agreement"} or (
-            event_type == "payment_screenshot"
-            and (
-                bool(repayment_annotation)
-                or not metadata.get("payment_notice_event_id")
-            )
-        )
+        return not AutomationConfidenceService().evaluate(result).should_auto_execute
+
+    @classmethod
+    def _automation_blockers(
+        cls,
+        media_file: MediaFile,
+        result: dict[str, Any],
+        extracted_text: str,
+    ) -> list[str]:
+        event_type = result.get("event_type")
+        metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+        reasons: list[str] = []
+        if event_type == "judgment" and not cls._is_case_independent_legal_document(media_file, result, extracted_text):
+            reasons.append("无法确认这是字段完整的正式法律文书")
+        elif event_type == "payment_notice" and not cls._is_case_independent_fee_material(media_file, result, extracted_text):
+            reasons.append("无法确认这是可独立跟踪的缴费通知")
+        elif event_type == "payment_screenshot":
+            linked_notice = metadata.get("payment_notice_event_id")
+            linked_agreement = metadata.get("repayment_agreement_event_id")
+            if not (linked_notice or linked_agreement):
+                reasons.append("付款凭证无法唯一关联缴费通知或还款协议")
+        return reasons
 
     @staticmethod
     def _normalize_payment_material(result: dict[str, Any], extracted_text: str) -> None:
@@ -1192,15 +1225,6 @@ class MediaFileService:
             return bool(metadata.get("repayment_annotation") or metadata.get("repayment_agreement_event_id"))
         return False
 
-    @classmethod
-    def _can_auto_apply_legal_document(
-        cls,
-        media_file: MediaFile,
-        result: dict[str, Any],
-        extracted_text: str,
-    ) -> bool:
-        return cls._is_case_independent_legal_document(media_file, result, extracted_text)
-
     @staticmethod
     def _promote_suspected_court_notice(result: dict[str, Any], extracted_text: str) -> bool:
         if result.get("event_type") == "court_notice":
@@ -1277,7 +1301,7 @@ class MediaFileService:
             reason = "已将公司名称归为原告，请确认被传唤人姓名"
             if reason not in reasons:
                 reasons.append(reason)
-        result["requires_review"] = True
+            result["requires_review"] = True
         return True
 
     @staticmethod

@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps_auth import get_current_operator
 from app.api.v1.response import ok, raise_fail
-from app.core.resource_permissions import filter_by_case_or_group, has_group_access
+from app.core.resource_permissions import has_group_access
 from app.db.session import get_db
 from app.models.merchant_question import MerchantQuestion
 from app.schemas.legal import MerchantQuestionClose, MerchantQuestionListOut, MerchantQuestionOut
@@ -21,11 +21,16 @@ def list_merchant_questions(
     db: Session = Depends(get_db),
     operator_info: dict[str, object] = Depends(get_current_operator),
 ):
-    _total, items = MerchantQuestionService(db).list_questions(status=status, group_id=group_id, offset=offset, limit=limit)
-    items = filter_by_case_or_group(db, items, operator_info)
+    total, items = MerchantQuestionService(db).list_questions(
+        status=status,
+        group_id=group_id,
+        offset=offset,
+        limit=limit,
+        auth_context=operator_info,
+    )
     return ok(
         "商家提问查询成功",
-        MerchantQuestionListOut(total=len(items), items=[MerchantQuestionOut.model_validate(item) for item in items]),
+        MerchantQuestionListOut(total=total, items=[MerchantQuestionOut.model_validate(item) for item in items]),
     )
 
 
@@ -44,6 +49,26 @@ def close_merchant_question(
     result = MerchantQuestionService(db).close_question(question_id, str(operator_info["operator"]), payload.reason)
     db.commit()
     return ok("商家提问已关闭", MerchantQuestionOut.model_validate(result))
+
+
+@router.post("/{question_id}/approve")
+def approve_merchant_question(
+    question_id: int,
+    db: Session = Depends(get_db),
+    operator_info: dict[str, object] = Depends(get_current_operator),
+):
+    question = db.get(MerchantQuestion, question_id)
+    if not question:
+        raise_fail("商家提问不存在", code=1404, status_code=404)
+    if not has_group_access(operator_info, question.group_id, question.tenant_id):
+        raise_fail("无权限访问该资源", code=403, status_code=403)
+    try:
+        result = MerchantQuestionService(db).approve_question(question_id, str(operator_info["operator"]))
+        db.commit()
+    except ValueError as exc:
+        db.rollback()
+        raise_fail(str(exc), code=1400)
+    return ok("已确认需要回复，开始按时限跟踪", MerchantQuestionOut.model_validate(result))
 
 
 @router.post("/scan-timeouts")

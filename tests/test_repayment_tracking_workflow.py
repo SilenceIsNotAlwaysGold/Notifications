@@ -16,6 +16,7 @@ from app.models.reminder import Reminder
 from app.services.business_application_service import BusinessApplicationService
 from app.services.legal_text_extraction_service import LegalTextExtractionService
 from app.services.media_file_service import MediaFileService
+from app.services.outbox_service import OutboxService
 from app.services.repayment_tracking_service import RepaymentTrackingService
 from app.services.reminder_service import ReminderService
 from app.services.wecomapi_group_sync_service import WeComApiGroupSyncService
@@ -181,6 +182,134 @@ def test_incomplete_repayment_agreement_still_routes_to_repayment_queue():
 
     assert MediaFileService._is_case_independent_repayment_material(media, result, "还款协议")
     assert MediaFileService._result_requires_review(result)
+
+
+def test_high_confidence_complete_agreement_is_applied_through_outbox(db_session, tmp_path, monkeypatch):
+    message = GroupMessage(
+        group_id="repayment_group",
+        sender_id="FuZhiHang",
+        msg_type="pdf",
+        raw_payload_json="{}",
+        received_at=now_tz(),
+    )
+    db_session.add(message)
+    db_session.flush()
+    agreement_path = tmp_path / "auto-agreement.pdf"
+    agreement_path.write_bytes(b"%PDF auto repayment agreement")
+    media = MediaFile(
+        group_message_id=message.id,
+        group_id=message.group_id,
+        msg_id="auto-agreement",
+        media_type="pdf",
+        original_filename=agreement_path.name,
+        file_ext=".pdf",
+        mime_type="application/pdf",
+        md5sum="auto-agreement-md5",
+        local_path=str(agreement_path),
+        download_status="downloaded",
+        ocr_status="pending",
+        source="test",
+    )
+    db_session.add(media)
+    db_session.flush()
+    extracted = agreement_result()
+    extracted.update(
+        {
+            "success": True,
+            "raw_text": AGREEMENT_TEXT,
+            "extraction_confidence": 0.96,
+            "requires_review": False,
+            "review_reasons": [],
+        }
+    )
+    service = MediaFileService(db_session)
+    monkeypatch.setattr(service.ocr_service, "extract_from_file", lambda *_args, **_kwargs: extracted)
+
+    summary = service.process_ocr(media.id)
+    event = db_session.get(LegalEvent, summary["event_id"])
+    task = db_session.scalar(select(BusinessOutbox).where(BusinessOutbox.aggregate_id == event.id))
+
+    assert media.review_status == "not_required"
+    assert event.attribution_status == "not_required"
+    assert event.business_status == "approved"
+    assert task is not None and task.status == "pending"
+
+    processed = OutboxService(db_session).process_pending()
+
+    assert processed["completed"] == 1
+    assert event.business_status == "applied"
+    assert media.business_applied_at is not None
+    assert json.loads(event.metadata_json)["automation_decision"]["outcome"] == "auto"
+    assert db_session.scalar(select(Reminder.id).where(Reminder.source_event_id == event.id)) is not None
+
+
+def test_high_confidence_unique_repayment_receipt_is_applied_automatically(db_session, tmp_path, monkeypatch):
+    agreement, _agreement_media, agreement_data = add_agreement(db_session, tmp_path)
+    BusinessApplicationService(db_session).apply_event(agreement.id)
+    message = GroupMessage(
+        group_id="repayment_group",
+        sender_id="merchant-001",
+        msg_type="image",
+        raw_payload_json="{}",
+        received_at=now_tz(),
+    )
+    db_session.add(message)
+    db_session.flush()
+    receipt_path = tmp_path / "auto-receipt.jpg"
+    receipt_path.write_bytes(b"payment receipt")
+    media = MediaFile(
+        group_message_id=message.id,
+        group_id=message.group_id,
+        msg_id="auto-receipt",
+        media_type="image",
+        original_filename=receipt_path.name,
+        file_ext=".jpg",
+        mime_type="image/jpeg",
+        md5sum="auto-receipt-md5",
+        local_path=str(receipt_path),
+        download_status="downloaded",
+        ocr_status="pending",
+        source="test",
+    )
+    db_session.add(media)
+    db_session.flush()
+    service = MediaFileService(db_session)
+    monkeypatch.setattr(
+        service.ocr_service,
+        "extract_from_file",
+        lambda *_args, **_kwargs: {
+            "success": True,
+            "raw_text": "微信支付成功 668.36 元",
+            "event_type": "payment_screenshot",
+            "event_types": ["payment_screenshot"],
+            "plaintiff": agreement_data["plaintiff"],
+            "defendant": agreement_data["defendant"],
+            "amount": "668.36",
+            "extraction_confidence": 0.96,
+            "requires_review": False,
+            "review_reasons": [],
+            "metadata": {
+                "repayment_annotation": {"payment_kind": "installment"},
+                "structured_fields": {"installment_sequence": 2},
+            },
+        },
+    )
+
+    summary = service.process_ocr(media.id)
+    payment_event = db_session.get(LegalEvent, summary["event_id"])
+
+    assert media.review_status == "not_required"
+    assert payment_event.business_status == "approved"
+    assert json.loads(payment_event.metadata_json)["repayment_agreement_event_id"] == agreement.id
+
+    processed = OutboxService(db_session).process_pending()
+    progress = RepaymentTrackingService(db_session).progress(agreement)
+
+    assert processed["completed"] == 1
+    assert payment_event.business_status == "applied"
+    assert progress["total_paid"] == Decimal("668.36")
+    assert progress["installments"][1]["status"] == "paid"
+    assert json.loads(payment_event.metadata_json)["automation_decision"]["outcome"] == "auto"
 
 
 def test_invalid_or_duplicate_installments_are_not_executable():

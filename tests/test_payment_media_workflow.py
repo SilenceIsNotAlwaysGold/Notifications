@@ -103,7 +103,7 @@ def test_payment_success_image_closes_unique_same_group_notice(db_session):
         amount=Decimal("25.00"),
         extracted_text="李江胜案件受理费25元",
         attribution_status="not_required",
-        business_status="staged",
+        business_status="approved",
         metadata_json=json.dumps(
             {"structured_fields": {"defendant": "李江胜", "payment_type": "案件受理费"}},
             ensure_ascii=False,
@@ -172,7 +172,7 @@ def test_ambiguous_payment_receipt_stays_unmatched(db_session):
                 amount=Decimal("25.00"),
                 extracted_text=f"{defendant}案件受理费25元",
                 attribution_status="not_required",
-                business_status="staged",
+                business_status="approved",
                 metadata_json="{}",
             )
         )
@@ -197,7 +197,7 @@ def test_receipt_without_party_case_or_fee_evidence_does_not_claim_single_notice
         amount=Decimal("400.00"),
         extracted_text="王成公告费400元",
         attribution_status="not_required",
-        business_status="staged",
+        business_status="approved",
         metadata_json=json.dumps({"structured_fields": {"defendant": "王成", "payment_type": "公告费"}}),
     )
     db_session.add(notice)
@@ -220,7 +220,7 @@ def test_manual_same_group_media_assignment_cancels_followups_through_outbox(db_
         amount=Decimal("25.00"),
         extracted_text="李江胜案件受理费25元",
         attribution_status="not_required",
-        business_status="staged",
+        business_status="approved",
         metadata_json=json.dumps({"structured_fields": {"defendant": "李江胜", "payment_type": "案件受理费"}}),
     )
     db_session.add(notice)

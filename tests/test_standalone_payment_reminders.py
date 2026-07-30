@@ -8,8 +8,10 @@ from app.models.legal_event import LegalEvent
 from app.models.payment_record import PaymentRecord
 from app.models.reminder import Reminder
 from app.models.business_outbox import BusinessOutbox
+from app.core.config import get_settings
 from app.schemas.legal import MockMessageCreate
 from app.services.message_service import MessageService
+from app.services.outbox_service import OutboxService
 from app.utils.datetime_utils import now_tz
 
 
@@ -17,7 +19,7 @@ GROUP_ID = "standalone-payment-group"
 
 
 def _send(db_session, content: str, sender: str = "notice-sender", minutes: int = 0):
-    return MessageService(db_session).handle_incoming_message(
+    result = MessageService(db_session).handle_incoming_message(
         MockMessageCreate(
             group_id=GROUP_ID,
             sender_id=sender,
@@ -26,6 +28,8 @@ def _send(db_session, content: str, sender: str = "notice-sender", minutes: int 
             received_at=now_tz() + timedelta(minutes=minutes),
         )
     )
+    OutboxService(db_session).process_pending()
+    return result
 
 
 def _reminders(db_session):
@@ -51,7 +55,9 @@ def test_unassigned_payment_notice_creates_source_group_followups_only(db_sessio
     assert all("李江胜" in item.content and "案件受理费" in item.content for item in reminders)
     assert db_session.scalar(select(LegalCase.id)) is None
     assert db_session.scalar(select(PaymentRecord.id)) is None
-    assert db_session.scalar(select(BusinessOutbox.id)) is None
+    outbox = db_session.scalar(select(BusinessOutbox))
+    assert outbox is not None
+    assert outbox.status == "completed"
 
 
 def test_confirmation_by_any_group_member_closes_standalone_notice(db_session):
@@ -85,7 +91,7 @@ def test_quoted_payment_confirmation_closes_original_notice_without_creating_fol
     )
     assert all(item.status == "cancelled" for item in original_reminders)
     assert len(_reminders(db_session)) == 2
-    assert result["reminder_ids"] == [item.id for item in original_reminders]
+    assert result["reminder_ids"] == []
     confirmation = db_session.get(LegalEvent, result["event_ids"][0])
     assert confirmation.event_type == "payment_screenshot"
 
@@ -182,6 +188,95 @@ def test_ambiguous_confirmation_does_not_close_multiple_notices(db_session):
     _send(db_session, "已经交了", sender="payer", minutes=5)
 
     assert {item.status for item in _reminders(db_session)} == {"pending"}
+
+
+def test_ambiguous_text_confirmation_can_be_manually_linked(client, db_session):
+    first = _send(db_session, "李江胜，案件受理费25元，请缴费")
+    second = _send(db_session, "王成，公告费400元，请缴费", minutes=1)
+
+    confirmation_result = _send(db_session, "我已付款", sender="payer", minutes=5)
+    confirmation = db_session.get(LegalEvent, confirmation_result["event_ids"][0])
+
+    assert confirmation.event_type == "payment_screenshot"
+    assert confirmation.business_status == "staged"
+    db_session.commit()
+    direct_approval = client.post(
+        f"/api/v1/legal/events/{confirmation.id}/approve",
+        json={"reason": "尝试直接批准"},
+    )
+    assert direct_approval.status_code == 400
+    assert "关联同群" in direct_approval.json()["message"]
+
+    queue = client.get("/api/v1/legal/payment-trackings/unmatched-text-confirmations")
+    assert queue.status_code == 200
+    item = queue.json()["data"]["items"][0]
+    assert item["event_id"] == confirmation.id
+    assert {candidate["event_id"] for candidate in item["candidates"]} == {
+        first["event_ids"][0],
+        second["event_ids"][0],
+    }
+
+    assigned = client.post(
+        f"/api/v1/legal/payment-trackings/{second['event_ids'][0]}/assign-text-confirmation",
+        json={"confirmation_event_id": confirmation.id},
+    )
+    assert assigned.status_code == 200
+    db_session.rollback()
+    OutboxService(db_session).process_pending()
+    db_session.expire_all()
+
+    first_reminders = list(
+        db_session.scalars(select(Reminder).where(Reminder.source_event_id == first["event_ids"][0])).all()
+    )
+    second_reminders = list(
+        db_session.scalars(select(Reminder).where(Reminder.source_event_id == second["event_ids"][0])).all()
+    )
+    confirmation = db_session.get(LegalEvent, confirmation.id)
+    metadata = json.loads(confirmation.metadata_json)
+    assert {item.status for item in first_reminders} == {"pending"}
+    assert {item.status for item in second_reminders} == {"cancelled"}
+    assert confirmation.business_status == "applied"
+    assert metadata["standalone_payment_notice_event_id"] == second["event_ids"][0]
+    assert metadata["automation_decision"]["outcome"] == "manual_approved"
+    assert metadata["automation_decision"]["reviewed_by"] == "anonymous-dev"
+
+
+def test_manual_payment_notice_approval_starts_followups_from_approval_time(
+    client,
+    db_session,
+    monkeypatch,
+):
+    monkeypatch.setenv("LEGAL_AUTO_REMIND_MIN_CONFIDENCE", "1")
+    get_settings.cache_clear()
+    result = MessageService(db_session).handle_incoming_message(
+        MockMessageCreate(
+            group_id=GROUP_ID,
+            sender_id="notice-sender",
+            msg_type="text",
+            content="李江胜，案件受理费25元，请在8月2日前缴费",
+            received_at=now_tz() - timedelta(days=1),
+        )
+    )
+    event = db_session.get(LegalEvent, result["event_ids"][0])
+    assert event.business_status == "staged"
+    assert _reminders(db_session) == []
+    db_session.commit()
+
+    response = client.post(
+        f"/api/v1/legal/events/{event.id}/approve",
+        json={"reason": "人工确认缴费通知"},
+    )
+    assert response.status_code == 200
+    db_session.rollback()
+    OutboxService(db_session).process_pending()
+    db_session.expire_all()
+
+    event = db_session.get(LegalEvent, event.id)
+    reminders = _reminders(db_session)
+    assert event.business_status == "applied"
+    assert len(reminders) == 2
+    assert {round((item.remind_at - event.approved_at).total_seconds() / 60) for item in reminders} == {30, 90}
+    get_settings.cache_clear()
 
 
 def test_questions_and_unpaid_statements_do_not_close_notice(db_session):

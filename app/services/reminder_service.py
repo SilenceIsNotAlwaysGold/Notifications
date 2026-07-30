@@ -219,6 +219,8 @@ class ReminderService:
         event: LegalEvent,
         message: GroupMessage,
         extracted: dict[str, object],
+        *,
+        start_at: datetime | None = None,
     ) -> list[Reminder]:
         if event.event_type != "payment_notice" or event.amount is None:
             return []
@@ -243,6 +245,7 @@ class ReminderService:
             "尚未收到明确付款确认。请付款后回复“已缴费/已代缴/已收款”。"
         )
         created: list[Reminder] = []
+        tracking_started_at = ensure_aware(start_at or message.received_at)
         for minutes in (30, 90):
             dedupe_key = f"payment-confirmation:{event.id}:{minutes}"
             if self.db.scalar(select(Reminder.id).where(Reminder.dedupe_key == dedupe_key)):
@@ -253,7 +256,7 @@ class ReminderService:
                     tenant_id=event.tenant_id or message.tenant_id,
                     group_id=group_id,
                     reminder_type="payment_confirmation",
-                    remind_at=ensure_aware(message.received_at) + timedelta(minutes=minutes),
+                    remind_at=tracking_started_at + timedelta(minutes=minutes),
                     content=content,
                     target_userid=target_userid,
                     source_event_id=event.id,
