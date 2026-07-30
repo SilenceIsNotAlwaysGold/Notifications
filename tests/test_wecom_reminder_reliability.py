@@ -100,6 +100,40 @@ def test_target_userid_is_passed_as_mentioned_userids(db_session):
     assert captured["mentioned_mobiles"] is None
 
 
+def test_invalid_mention_mapping_blocks_unmentioned_delivery(db_session):
+    calls = []
+
+    class FakeWeComAdapter:
+        mode = "wecomapi"
+        settings = type("Settings", (), {"wecom_max_retry": 1})()
+
+        def resolve_mentioned_userids(self, group_id, mentioned_userids, tenant_id=None):
+            return []
+
+        def send_text(self, group_id, content, mentioned_userids=None, mentioned_mobiles=None):
+            calls.append((group_id, content, mentioned_userids))
+            return {"success": True, "mode": "wecomapi", "status_code": 200, "response": {}, "error": None}
+
+    reminder = Reminder(
+        group_id="group_001",
+        reminder_type="installment_repayment",
+        remind_at=ensure_aware(datetime.fromisoformat("2026-06-02T09:00:00+08:00")),
+        content="需要明确 @ 发起人",
+        target_userid="former-member",
+        status="pending",
+    )
+    db_session.add(reminder)
+    db_session.commit()
+
+    result = ReminderService(db_session, wecom_adapter=FakeWeComAdapter()).send_due_reminders()
+    db_session.commit()
+
+    assert result == {"sent": 0, "simulated": 0, "failed": 1, "retrying": 0, "total": 1}
+    assert calls == []
+    assert reminder.status == "failed"
+    assert "已阻止无 @ 发送" in reminder.last_error
+
+
 def test_due_reminders_in_same_group_are_sent_as_one_digest(db_session):
     calls = []
 

@@ -2952,6 +2952,143 @@ tr:hover td {
   background: #f0f8f3;
 }
 
+.repayment-reminder-panel {
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  background: #fff;
+}
+
+.repayment-reminder-panel.complete {
+  border-color: #abefc6;
+  background: #f6fef9;
+}
+
+.repayment-reminder-head {
+  display: flex;
+  min-height: 68px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.repayment-reminder-panel.complete .repayment-reminder-head {
+  border-bottom: 0;
+}
+
+.repayment-reminder-head > div,
+.repayment-reminder-destination,
+.repayment-reminder-target,
+.repayment-reminder-copy,
+.repayment-reminder-plan {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.repayment-reminder-head span,
+.repayment-reminder-head small,
+.repayment-reminder-grid span,
+.repayment-reminder-grid small,
+.repayment-reminder-copy > span,
+.repayment-reminder-plan > span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.repayment-reminder-head strong {
+  font-size: 15px;
+}
+
+.repayment-reminder-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(280px, 1.35fr);
+  border-bottom: 1px solid var(--line);
+}
+
+.repayment-reminder-grid > * {
+  padding: 12px 14px;
+}
+
+.repayment-reminder-grid > * + * {
+  border-left: 1px solid var(--line);
+}
+
+.repayment-reminder-target select {
+  min-height: 38px;
+  margin-top: 3px;
+}
+
+.repayment-reminder-copy,
+.repayment-reminder-plan {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.repayment-reminder-copy p {
+  margin: 3px 0 0;
+  color: #344054;
+  font-size: 13px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.repayment-reminder-schedule {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 16px;
+  margin-top: 4px;
+}
+
+.repayment-reminder-schedule > div {
+  display: flex;
+  min-width: 0;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid #eaecf0;
+}
+
+.repayment-reminder-schedule strong,
+.repayment-reminder-schedule span,
+.repayment-reminder-empty {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.repayment-reminder-schedule span,
+.repayment-reminder-empty {
+  color: var(--muted);
+}
+
+.repayment-reminder-confirm {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 14px;
+  border-left: 3px solid var(--warning);
+  background: #fffaeb;
+}
+
+.repayment-reminder-confirm[hidden] {
+  display: none;
+}
+
+.repayment-reminder-confirm p {
+  flex: 1;
+  margin: 0;
+  color: #475467;
+  font-size: 12px;
+}
+
+.repayment-reminder-confirm > div {
+  display: flex;
+  gap: 8px;
+}
+
 .repayment-payment-timeline {
   display: grid;
   margin-top: 8px;
@@ -3161,6 +3298,7 @@ tr:hover td {
   .repayment-ledger-filter { grid-template-columns: 170px minmax(220px, 1fr) auto auto; }
   .repayment-stats-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .repayment-ledger-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .repayment-reminder-confirm { align-items: stretch; flex-direction: column; }
 }
 
 @media (min-width: 821px) and (max-width: 1300px) {
@@ -3360,6 +3498,16 @@ tr:hover td {
 
   .repayment-payment-timeline > div:not(.empty-state) {
     grid-template-columns: 100px 90px minmax(120px, 1fr) auto;
+  }
+
+  .repayment-reminder-grid,
+  .repayment-reminder-schedule {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .repayment-reminder-grid > * + * {
+    border-top: 1px solid var(--line);
+    border-left: 0;
   }
 
   .review-preview {

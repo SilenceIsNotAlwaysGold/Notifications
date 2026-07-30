@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.models.contact import Contact, ContactGroup
 from app.models.group_message import GroupMessage
 from app.models.legal_event import LegalEvent
 from app.models.media_file import MediaFile
@@ -294,6 +295,7 @@ class RepaymentTrackingService:
             metadata = self.metadata(agreement)
             structured = metadata.get("structured_fields") if isinstance(metadata.get("structured_fields"), dict) else {}
             progress = self.progress(agreement, payments_by_agreement.get(agreement.id, []))
+            reminder_context = self.reminder_context(agreement, progress)
             open_installments = [
                 item for item in progress["installments"] if item["status"] != "paid"
             ]
@@ -325,12 +327,156 @@ class RepaymentTrackingService:
                     "overdue_count": sum(item["status"] == "overdue" for item in progress["installments"]),
                     "pending_reminder_count": len(reminders),
                     "next_remind_at": reminders[0].remind_at if reminders else None,
+                    "pending_reminders": reminders,
+                    "source_sender_id": group_message.sender_id if group_message else None,
+                    "reminder_target_userid": (
+                        reminder_context.get("target_userid") if reminder_context else None
+                    ),
+                    "reminder_preview": reminder_context.get("content") if reminder_context else None,
                     "arbitration_institution": structured.get("arbitration_institution"),
                     "arbitration_case_no": structured.get("arbitration_case_no"),
                     "created_at": agreement.created_at,
                 }
             )
         return summaries
+
+    def reminder_context(
+        self,
+        agreement: LegalEvent,
+        progress: dict[str, Any] | None = None,
+        *,
+        installment_sequence: int | None = None,
+    ) -> dict[str, Any] | None:
+        if agreement.event_type != "repayment_agreement" or agreement.business_status not in {"approved", "applied"}:
+            return None
+        progress = progress or self.progress(agreement)
+        if progress.get("status") == "completed":
+            return None
+        open_installments = [
+            item for item in progress.get("installments") or [] if item.get("status") != "paid"
+        ]
+        if not open_installments or not agreement.group_message:
+            return None
+        if installment_sequence is None:
+            installment = min(
+                open_installments,
+                key=lambda item: (item["due_date"], item["sequence"]),
+            )
+        else:
+            installment = next(
+                (
+                    item
+                    for item in open_installments
+                    if int(item["sequence"]) == installment_sequence
+                ),
+                None,
+            )
+            if installment is None:
+                return None
+        metadata = self.metadata(agreement)
+        creditor = str(metadata.get("plaintiff") or "债权人待确认")
+        debtor = str(metadata.get("defendant") or "债务人待确认")
+        remaining = max(
+            Decimal("0.00"),
+            Decimal(str(installment["amount"])) - Decimal(str(installment.get("paid") or 0)),
+        )
+        due_date = installment["due_date"]
+        days = (now_tz().date() - due_date).days
+        if days > 0:
+            timing = f"已逾期 {days} 天"
+        elif days == 0:
+            timing = "今日到期"
+        else:
+            timing = f"距离到期还有 {abs(days)} 天"
+        target_userid = self._reminder_target_userid(agreement, metadata)
+        content = (
+            f"【还款提醒】债权人：{creditor}；债务人：{debtor}。"
+            f"第 {installment['sequence']} 期剩余应还 {remaining:.2f} 元，"
+            f"约定还款日 {due_date.isoformat()}，{timing}。"
+            "请核实还款情况，并在群内回复或发送付款凭证。"
+        )
+        return {
+            "agreement_event_id": agreement.id,
+            "group_id": agreement.group_message.group_id,
+            "source_sender_id": agreement.group_message.sender_id,
+            "target_userid": target_userid,
+            "installment_sequence": int(installment["sequence"]),
+            "due_date": due_date,
+            "remaining": remaining,
+            "content": content,
+        }
+
+    def reconcile_pending_reminders(self) -> int:
+        agreement_ids = set(
+            self.db.scalars(
+                select(Reminder.source_event_id)
+                .where(Reminder.reminder_type == "installment_repayment")
+                .where(Reminder.status == "pending")
+                .where(Reminder.source_event_id.is_not(None))
+            ).all()
+        )
+        cancelled = 0
+        for agreement_id in agreement_ids:
+            agreement = self.db.get(LegalEvent, agreement_id)
+            if not agreement or agreement.event_type != "repayment_agreement":
+                continue
+            progress = self.progress(agreement)
+            cancelled += self.cancel_satisfied_reminders(agreement, progress)
+            pending = list(
+                self.db.scalars(
+                    select(Reminder)
+                    .where(Reminder.source_event_id == agreement.id)
+                    .where(Reminder.reminder_type == "installment_repayment")
+                    .where(Reminder.status == "pending")
+                ).all()
+            )
+            for reminder in pending:
+                sequence = self._sequence_from_dedupe(reminder.dedupe_key)
+                if sequence is None:
+                    continue
+                context = self.reminder_context(
+                    agreement,
+                    progress,
+                    installment_sequence=sequence,
+                )
+                if context is None:
+                    continue
+                reminder.content = str(context["content"])
+                reminder.target_userid = context.get("target_userid")
+        self.db.flush()
+        return cancelled
+
+    def _reminder_target_userid(
+        self,
+        agreement: LegalEvent,
+        metadata: dict[str, Any],
+    ) -> str | None:
+        message = agreement.group_message
+        if message is None:
+            return None
+        identifier = str(
+            metadata.get("repayment_reminder_target_userid") or message.sender_id or ""
+        ).strip()
+        if not identifier:
+            return None
+        contact = self.db.scalar(
+            select(Contact)
+            .join(ContactGroup, ContactGroup.contact_id == Contact.id)
+            .where(
+                ContactGroup.group_id == message.group_id,
+                ContactGroup.membership_status != "left",
+                Contact.is_active.is_(True),
+                (Contact.archive_user_id == identifier)
+                | (Contact.wecomapi_user_id == identifier),
+            )
+            .order_by(
+                Contact.wecomapi_user_id.is_(None),
+                Contact.last_confirmed_at.desc(),
+                Contact.id.desc(),
+            )
+            .limit(1)
+        )
+        return contact.wecomapi_user_id if contact and contact.wecomapi_user_id else identifier
 
     def cancel_satisfied_reminders(self, agreement: LegalEvent, progress: dict[str, Any]) -> int:
         paid_sequences = {

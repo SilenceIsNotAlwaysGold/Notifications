@@ -2137,6 +2137,27 @@ async function selectRepaymentInboxItem(summary) {
   await loadReviewPreview(selected);
 }
 
+function repaymentReminderPanel(agreement) {
+  const pending = agreement.pending_reminders || [];
+  if (agreement.status === "completed" || !agreement.reminder_preview) {
+    return `<section class="repayment-reminder-panel complete"><div class="repayment-reminder-head"><div><span>还款提醒</span><strong>提醒已停止</strong><small>协议已结清或当前没有未还期次</small></div></div></section>`;
+  }
+  const currentTarget = agreement.reminder_target_userid || agreement.source_sender_id || "";
+  const schedule = pending.length
+    ? `<div class="repayment-reminder-schedule">${pending.slice(0, 6).map((item) => `<div><strong>${escapeHtml(formatDateTime(item.remind_at))}</strong><span>${escapeHtml(item.target_userid || currentTarget || "@ 对象待确认")}</span></div>`).join("")}${pending.length > 6 ? `<small>另有 ${escapeHtml(pending.length - 6)} 条后续计划</small>` : ""}</div>`
+    : '<div class="repayment-reminder-empty">暂无后续自动提醒，可人工发起本期催款</div>';
+  return `<section class="repayment-reminder-panel">
+    <div class="repayment-reminder-head"><div><span>还款提醒</span><strong>催办当前最早未还期次</strong><small>加入队列前请确认发送群、@ 对象和完整话术</small></div><button type="button" data-repayment-reminder-start disabled>立即催还款</button></div>
+    <div class="repayment-reminder-grid">
+      <div class="repayment-reminder-destination"><span>发送群</span><strong>${escapeHtml(agreement.group_name || "未命名群")}</strong><small class="mono">${escapeHtml(agreement.group_id)}</small></div>
+      <label class="repayment-reminder-target"><span>@ 对象</span><select data-repayment-reminder-target disabled><option value="">正在加载群成员...</option></select><small data-repayment-reminder-member-hint>${currentTarget ? `默认原发送人：${escapeHtml(currentTarget)}` : "原发送人待匹配"}</small></label>
+    </div>
+    <div class="repayment-reminder-copy"><span>完整话术</span><p>${escapeHtml(agreement.reminder_preview)}</p></div>
+    <div class="repayment-reminder-plan"><span>后续自动提醒 · ${escapeHtml(pending.length)} 条</span>${schedule}</div>
+    <div class="repayment-reminder-confirm" data-repayment-reminder-confirm hidden><strong>确认本次催款</strong><p data-repayment-reminder-confirm-text></p><div><button type="button" data-repayment-reminder-submit>确认加入队列</button><button type="button" class="ghost" data-repayment-reminder-cancel>取消</button></div></div>
+  </section>`;
+}
+
 function repaymentAgreementDetail(agreement) {
   const statusLabel = repaymentProgressLabels[agreement.status] || agreement.status;
   const hasOverpayment = Number(agreement.overpayment || 0) > 0;
@@ -2158,6 +2179,7 @@ function repaymentAgreementDetail(agreement) {
     <div class="repayment-ledger-body">
       <div class="repayment-action-strip ${escapeHtml(nextAction.tone)}"><div><span>当前动作</span><strong>${escapeHtml(nextAction.title)}</strong></div><p>${escapeHtml(nextAction.detail)}</p></div>
       <div class="repayment-progress-summary"><div><span>协议总额</span><strong>${escapeHtml(agreement.total_debt)} 元</strong></div><div><span>累计回款</span><strong>${escapeHtml(agreement.total_paid)} 元</strong></div><div><span>${escapeHtml(balanceLabel)}</span><strong>${escapeHtml(balanceValue)} 元</strong></div><div><span>下一期</span><strong>${escapeHtml(agreement.next_due_date ? `${agreement.next_due_date} · ${agreement.next_due_amount} 元` : "无待还款")}</strong></div></div>
+      ${repaymentReminderPanel(agreement)}
       <div class="repayment-ledger-meta"><div><span>待发送提醒</span><strong>${escapeHtml(agreement.pending_reminder_count)} 条</strong><small>${escapeHtml(agreement.next_remind_at ? formatDateTime(agreement.next_remind_at) : "无后续提醒")}</small></div><div><span>逾期期数</span><strong>${escapeHtml(agreement.overdue_count)} 期</strong></div><div><span>金山写入</span><strong>${escapeHtml(repaymentSyncLabels[agreement.sync_status] || agreement.sync_status || "待核对")}</strong><small>${escapeHtml(agreement.external_row_index == null ? "未取得行号" : `第 ${agreement.external_row_index} 行`)}</small></div><div><span>仲裁信息</span><strong>${escapeHtml(agreement.arbitration_case_no || agreement.arbitration_institution || "尚未提交")}</strong></div></div>
       <div class="field-label repayment-ledger-title">分期履约</div><div class="repayment-plan-list">${agreement.installments.length ? agreement.installments.map((item) => `<div class="installment-${escapeHtml(item.status)}"><strong>第 ${escapeHtml(item.sequence)} 期</strong><span>${escapeHtml(item.due_date)}</span><span>已还 ${escapeHtml(item.paid)} / ${escapeHtml(item.amount)} 元 · ${escapeHtml(repaymentProgressLabels[item.status] || item.status)}</span></div>`).join("") : '<div class="empty-state">暂无分期计划</div>'}</div>
       <div class="field-label repayment-ledger-title">回款记录</div><div class="repayment-payment-timeline">${agreement.payments.length ? agreement.payments.map((item) => `<div><span>${escapeHtml(item.payment_date)}</span><strong>${escapeHtml(item.amount)} 元</strong><small>${item.installment_sequence ? `第 ${escapeHtml(item.installment_sequence)} 期` : "自动按最早未结期分配"}</small>${item.preview_url ? `<button type="button" class="ghost small" data-repayment-receipt="${escapeHtml(item.preview_url)}">查看凭证</button>` : ""}</div>`).join("") : '<div class="empty-state">尚未确认回款</div>'}</div>
@@ -2261,6 +2283,77 @@ function bindRepaymentLedgerActions(agreement) {
   document.querySelector("[data-open-repayment-kdocs]")?.addEventListener("click", () => { state.kdocsTarget = "repayment"; state.kdocsPage = 1; setView("kdocs-browser"); });
   document.querySelector("[data-open-repayment-agreement]")?.addEventListener("click", (event) => openProtectedMedia(event.currentTarget.dataset.openRepaymentAgreement).catch((error) => showAlert(error.message, "error")));
   document.querySelectorAll("[data-repayment-receipt]").forEach((button) => button.addEventListener("click", () => openProtectedMedia(button.dataset.repaymentReceipt).catch((error) => showAlert(error.message, "error"))));
+  bindRepaymentReminderActions(agreement);
+}
+
+async function bindRepaymentReminderActions(agreement) {
+  const select = document.querySelector("[data-repayment-reminder-target]");
+  if (!select) return;
+  const startButton = document.querySelector("[data-repayment-reminder-start]");
+  const confirm = document.querySelector("[data-repayment-reminder-confirm]");
+  const confirmText = document.querySelector("[data-repayment-reminder-confirm-text]");
+  const submitButton = document.querySelector("[data-repayment-reminder-submit]");
+  const cancelButton = document.querySelector("[data-repayment-reminder-cancel]");
+  const memberHint = document.querySelector("[data-repayment-reminder-member-hint]");
+  let members = [];
+
+  const selectedLabel = () => {
+    const member = members.find((item) => item.user_id === select.value);
+    return member ? `${member.display_name} · ${member.user_id}` : select.value;
+  };
+  const refreshConfirmation = () => {
+    startButton.disabled = !select.value;
+    confirm.hidden = true;
+    if (confirmText) confirmText.textContent = "";
+  };
+
+  select.addEventListener("change", refreshConfirmation);
+  startButton.addEventListener("click", () => {
+    if (!select.value) return;
+    confirmText.textContent = `发送到“${agreement.group_name || agreement.group_id}”，并 @ ${selectedLabel()}。同一期今天只发送一次。`;
+    confirm.hidden = false;
+  });
+  cancelButton.addEventListener("click", () => { confirm.hidden = true; });
+  submitButton.addEventListener("click", async () => {
+    if (!select.value) return;
+    submitButton.disabled = true;
+    submitButton.textContent = "正在加入...";
+    try {
+      const result = await api(`/api/v1/legal/ocr-reviews/repayment-agreements/${agreement.event_id}/reminders`, {
+        method: "POST",
+        body: JSON.stringify({ target_userid: select.value }),
+      });
+      showAlert(result.created ? "还款提醒已加入队列，预计一分钟内发送" : "今天已存在该期提醒，已更新 @ 对象");
+      await renderRepaymentLedger();
+    } catch (error) {
+      showAlert(error.message, "error");
+      submitButton.disabled = false;
+      submitButton.textContent = "确认加入队列";
+    }
+  });
+
+  try {
+    const result = await api(`/api/v1/legal/wecomapi-settings/group-members?room_id=${encodeURIComponent(agreement.group_id)}`);
+    if (state.view !== "repayment-ledger" || state.selectedRepaymentAgreementId !== agreement.event_id || !select.isConnected) return;
+    members = result.members || [];
+    const currentTarget = agreement.reminder_target_userid || agreement.source_sender_id || "";
+    const selectedExists = members.some((member) => member.user_id === currentTarget);
+    select.innerHTML = `<option value="">请选择群成员</option>${members.map((member) => `<option value="${escapeHtml(member.user_id)}">${escapeHtml(`${member.display_name} · ${member.user_id}`)}</option>`).join("")}`;
+    select.value = selectedExists ? currentTarget : "";
+    select.disabled = false;
+    memberHint.textContent = selectedExists
+      ? `默认原发送人：${selectedLabel()}`
+      : currentTarget
+        ? `原发送人 ${currentTarget} 未匹配，请重新选择`
+        : "请选择本次需要 @ 的群成员";
+    if (result.warning) memberHint.textContent = `${memberHint.textContent}；${result.warning}`;
+    refreshConfirmation();
+  } catch (error) {
+    select.innerHTML = '<option value="">群成员加载失败</option>';
+    select.disabled = true;
+    startButton.disabled = true;
+    memberHint.textContent = error.message;
+  }
 }
 
 async function renderReminders() {

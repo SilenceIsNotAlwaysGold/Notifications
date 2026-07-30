@@ -99,6 +99,8 @@ def test_repayment_views_are_decoupled_and_only_load_media_after_selection():
     ledger_renderer = script[script.index("async function renderRepaymentLedger") : script.index("async function renderRepaymentMaterials")]
     inbox_renderer = script[script.index("async function renderRepaymentMaterials") : script.index("function bindRepaymentLedgerActions")]
     selector = script[script.index("async function selectRepaymentInboxItem") : script.index("function repaymentAgreementDetail")]
+    reminder_panel = script[script.index("function repaymentReminderPanel") : script.index("function repaymentAgreementDetail")]
+    reminder_actions = script[script.index("async function bindRepaymentReminderActions") : script.index("async function renderReminders")]
 
     assert "data-open-repayment-agreement" in detail
     assert "review-preview" not in detail
@@ -108,6 +110,11 @@ def test_repayment_views_are_decoupled_and_only_load_media_after_selection():
     assert "loadReviewPreview" not in inbox_renderer
     assert "await selectRepaymentInboxItem" not in inbox_renderer
     assert "await loadReviewPreview(selected)" in selector
+    assert "立即催还款" in reminder_panel
+    assert "data-repayment-reminder-target" in reminder_panel
+    assert "data-repayment-reminder-confirm" in reminder_panel
+    assert "/repayment-agreements/${agreement.event_id}/reminders" in reminder_actions
+    assert "wecomapi-settings/group-members" in reminder_actions
 
 
 def test_compose_contains_only_current_runtime_services():

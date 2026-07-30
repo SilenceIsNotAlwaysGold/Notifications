@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.adapters.wecomapi import WeComApiAdapter
 from app.core.config import Settings, get_settings
+from app.models.contact import Contact, ContactGroup
 from app.models.wecom_archive_group import WeComArchiveGroup
 from app.models.wecomapi_room_cache import WeComApiRoomCache
 from app.models.wecomapi_room_member_cache import WeComApiRoomMemberCache
@@ -158,6 +159,35 @@ class WeComApiGroupSyncService:
                 else "平台暂时无法读取全量群成员，当前展示已在群里发过消息的人员"
             ),
         }
+
+    def resolve_member(self, archive_room_id: str, identifier: str) -> str:
+        requested = str(identifier or "").strip()
+        if not requested:
+            raise ValueError("请选择该群内的提醒对象")
+        result = self.members(archive_room_id)
+        member_ids = {
+            str(item.get("user_id") or "").strip()
+            for item in result.get("members") or []
+            if str(item.get("user_id") or "").strip()
+        }
+        if requested in member_ids:
+            return requested
+        contact = self.db.scalar(
+            select(Contact)
+            .join(ContactGroup, ContactGroup.contact_id == Contact.id)
+            .where(
+                ContactGroup.group_id == archive_room_id,
+                ContactGroup.membership_status != "left",
+                Contact.is_active.is_(True),
+                (Contact.archive_user_id == requested)
+                | (Contact.wecomapi_user_id == requested),
+            )
+            .order_by(Contact.last_confirmed_at.desc(), Contact.id.desc())
+            .limit(1)
+        )
+        if contact and contact.wecomapi_user_id in member_ids:
+            return contact.wecomapi_user_id
+        raise ValueError("所选提醒对象已不在该群，请刷新群成员后重新选择")
 
     def _update_cache(self, rooms: list[dict[str, Any]]) -> None:
         cached_by_id = {

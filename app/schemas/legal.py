@@ -2,7 +2,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ApiResponse(BaseModel):
@@ -697,6 +697,16 @@ class RepaymentPaymentItemOut(BaseModel):
     preview_url: str | None = None
 
 
+class RepaymentReminderCreate(BaseModel):
+    target_userid: str | None = Field(default=None, max_length=128)
+
+    @field_validator("target_userid")
+    @classmethod
+    def clean_target_userid(cls, value: str | None) -> str | None:
+        cleaned = (value or "").strip()
+        return cleaned or None
+
+
 class RepaymentAgreementOut(BaseModel):
     event_id: int
     media_file_id: int | None = None
@@ -720,12 +730,21 @@ class RepaymentAgreementOut(BaseModel):
     overdue_count: int = 0
     pending_reminder_count: int = 0
     next_remind_at: datetime | None = None
+    source_sender_id: str | None = None
+    reminder_target_userid: str | None = None
+    reminder_preview: str | None = None
+    pending_reminders: list[ReminderOut] = Field(default_factory=list)
     arbitration_institution: str | None = None
     arbitration_case_no: str | None = None
     sync_status: str | None = None
     external_row_index: int | None = None
     sync_error: str | None = None
     created_at: datetime
+
+
+class RepaymentReminderCreateOut(BaseModel):
+    created: bool
+    reminder: ReminderOut
 
 
 class RepaymentAgreementStatsOut(BaseModel):

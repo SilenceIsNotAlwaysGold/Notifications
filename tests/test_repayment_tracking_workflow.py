@@ -2,6 +2,7 @@ import json
 from datetime import datetime, timedelta
 from decimal import Decimal
 
+import pytest
 from sqlalchemy import select
 
 from app.adapters.kdocs import KDocsAdapter
@@ -16,6 +17,8 @@ from app.services.business_application_service import BusinessApplicationService
 from app.services.legal_text_extraction_service import LegalTextExtractionService
 from app.services.media_file_service import MediaFileService
 from app.services.repayment_tracking_service import RepaymentTrackingService
+from app.services.reminder_service import ReminderService
+from app.services.wecomapi_group_sync_service import WeComApiGroupSyncService
 from app.utils.datetime_utils import app_timezone, now_tz
 
 
@@ -92,6 +95,46 @@ def add_agreement(db_session, tmp_path) -> tuple[LegalEvent, MediaFile, dict]:
     db_session.flush()
     media.review_event_id = event.id
     return event, media, result
+
+
+def add_repayment(
+    db_session,
+    agreement: LegalEvent,
+    result: dict,
+    *,
+    amount: Decimal,
+    fingerprint: str,
+) -> LegalEvent:
+    payment_message = GroupMessage(
+        group_id="repayment_group",
+        sender_id="merchant-owner",
+        msg_type="image",
+        raw_payload_json="{}",
+        received_at=now_tz(),
+    )
+    db_session.add(payment_message)
+    db_session.flush()
+    payment = LegalEvent(
+        group_message_id=payment_message.id,
+        event_type="payment_screenshot",
+        event_time=payment_message.received_at,
+        amount=amount,
+        attribution_status="not_required",
+        business_status="approved",
+        metadata_json=json.dumps(
+            {
+                "plaintiff": result["plaintiff"],
+                "defendant": result["defendant"],
+                "repayment_agreement_event_id": agreement.id,
+                "repayment_payment_fingerprint": fingerprint,
+                "structured_fields": {},
+            },
+            ensure_ascii=False,
+        ),
+    )
+    db_session.add(payment)
+    db_session.flush()
+    return payment
 
 
 def test_real_agreement_text_extracts_complete_schedule_without_llm():
@@ -231,8 +274,164 @@ def test_repayment_agreement_endpoint_returns_one_business_record(client, db_ses
     assert item["overpayment"] == "0.00"
     assert len(item["installments"]) == 4
     assert item["pending_reminder_count"] > 0
+    assert item["source_sender_id"] == "FuZhiHang"
+    assert item["reminder_target_userid"] == "FuZhiHang"
+    assert "【还款提醒】" in item["reminder_preview"]
+    assert item["pending_reminders"]
     assert data["stats"]["total"] == 1
     assert data["stats"]["outstanding_total"] == "2673.43"
+
+
+def test_manual_repayment_followup_is_idempotent_and_updates_future_targets(
+    client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+):
+    agreement, _media, _result = add_agreement(db_session, tmp_path)
+    BusinessApplicationService(db_session).apply_event(agreement.id)
+    db_session.commit()
+    monkeypatch.setattr(
+        WeComApiGroupSyncService,
+        "resolve_member",
+        lambda self, group_id, identifier: identifier,
+    )
+
+    first = client.post(
+        f"/api/v1/legal/ocr-reviews/repayment-agreements/{agreement.id}/reminders",
+        json={"target_userid": "merchant-owner"},
+    )
+    second = client.post(
+        f"/api/v1/legal/ocr-reviews/repayment-agreements/{agreement.id}/reminders",
+        json={"target_userid": "merchant-owner"},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["data"]["created"] is True
+    assert second.json()["data"]["created"] is False
+    assert first.json()["data"]["reminder"]["id"] == second.json()["data"]["reminder"]["id"]
+    manual = first.json()["data"]["reminder"]
+    assert manual["case_id"] is None
+    assert manual["group_id"] == "repayment_group"
+    assert manual["target_userid"] == "merchant-owner"
+    assert "庞灏" in manual["content"]
+    assert "668.36" in manual["content"]
+    assert manual["reminder_type"] == "installment_repayment"
+
+    reminders = list(
+        db_session.scalars(
+            select(Reminder)
+            .where(Reminder.source_event_id == agreement.id)
+            .where(Reminder.status == "pending")
+        ).all()
+    )
+    assert reminders
+    assert {item.target_userid for item in reminders} == {"merchant-owner"}
+    db_session.expire_all()
+    metadata = json.loads(db_session.get(LegalEvent, agreement.id).metadata_json)
+    assert metadata["repayment_reminder_target_userid"] == "merchant-owner"
+
+
+def test_manual_repayment_followup_rejects_a_user_outside_the_group(
+    client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+):
+    agreement, _media, _result = add_agreement(db_session, tmp_path)
+    BusinessApplicationService(db_session).apply_event(agreement.id)
+    db_session.commit()
+
+    def reject_member(self, group_id, identifier):
+        raise ValueError("所选提醒对象已不在该群，请刷新群成员后重新选择")
+
+    monkeypatch.setattr(WeComApiGroupSyncService, "resolve_member", reject_member)
+
+    response = client.post(
+        f"/api/v1/legal/ocr-reviews/repayment-agreements/{agreement.id}/reminders",
+        json={"target_userid": "former-member"},
+    )
+
+    assert response.status_code == 400
+    assert "已不在该群" in response.text
+
+
+def test_completed_agreement_rejects_manual_followup(
+    client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+):
+    agreement, _media, result = add_agreement(db_session, tmp_path)
+    BusinessApplicationService(db_session).apply_event(agreement.id)
+    add_repayment(
+        db_session,
+        agreement,
+        result,
+        amount=Decimal("2673.43"),
+        fingerprint="completed-before-followup",
+    )
+    db_session.commit()
+    monkeypatch.setattr(
+        WeComApiGroupSyncService,
+        "resolve_member",
+        lambda self, group_id, identifier: pytest.fail("结清协议不应查询群成员"),
+    )
+
+    response = client.post(
+        f"/api/v1/legal/ocr-reviews/repayment-agreements/{agreement.id}/reminders",
+        json={"target_userid": "merchant-owner"},
+    )
+
+    assert response.status_code == 400
+    assert "协议已结清" in response.text
+
+
+def test_paid_agreement_cancels_due_followup_before_sending(
+    client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+):
+    agreement, _media, result = add_agreement(db_session, tmp_path)
+    BusinessApplicationService(db_session).apply_event(agreement.id)
+    db_session.commit()
+    monkeypatch.setattr(
+        WeComApiGroupSyncService,
+        "resolve_member",
+        lambda self, group_id, identifier: identifier,
+    )
+    queued = client.post(
+        f"/api/v1/legal/ocr-reviews/repayment-agreements/{agreement.id}/reminders",
+        json={"target_userid": "merchant-owner"},
+    )
+    reminder_id = queued.json()["data"]["reminder"]["id"]
+
+    add_repayment(
+        db_session,
+        agreement,
+        result,
+        amount=Decimal("2673.43"),
+        fingerprint="paid-before-send",
+    )
+    db_session.commit()
+    calls = []
+
+    class FakeWeComAdapter:
+        settings = type("Settings", (), {"wecom_max_retry": 3})()
+
+        def send_text(self, group_id, content, mentioned_userids=None, mentioned_mobiles=None):
+            calls.append((group_id, content, mentioned_userids))
+            return {"success": True, "mode": "mock", "status_code": None, "response": {}, "error": None}
+
+    result = ReminderService(db_session, wecom_adapter=FakeWeComAdapter()).send_due_reminders()
+
+    assert result["total"] == 0
+    assert calls == []
+    reminder = db_session.get(Reminder, reminder_id)
+    assert reminder.status == "cancelled"
+    assert reminder.cancel_reason == "对应还款已确认"
 
 
 def test_repayment_agreement_filters_and_stats_use_business_records(client, db_session, tmp_path):

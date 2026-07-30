@@ -21,6 +21,9 @@ from app.schemas.legal import (
     OCRReviewDecisionOut,
     OCRReviewListOut,
     OCRReviewOut,
+    ReminderOut,
+    RepaymentReminderCreate,
+    RepaymentReminderCreateOut,
     RepaymentMaterialListOut,
     RepaymentMaterialOut,
     RepaymentAgreementListOut,
@@ -30,6 +33,8 @@ from app.schemas.legal import (
 from app.services.group_context_service import GroupContextService
 from app.services.media_file_service import MediaFileService
 from app.services.repayment_tracking_service import RepaymentTrackingService
+from app.services.reminder_service import ReminderService
+from app.services.wecomapi_group_sync_service import WeComApiGroupSyncService
 from app.utils.datetime_utils import now_tz
 
 router = APIRouter(prefix="/legal/ocr-reviews", tags=["legal-ocr-reviews"])
@@ -411,6 +416,13 @@ def list_repayment_agreements(
                 overdue_count=summary["overdue_count"],
                 pending_reminder_count=summary["pending_reminder_count"],
                 next_remind_at=summary["next_remind_at"],
+                source_sender_id=summary["source_sender_id"],
+                reminder_target_userid=summary["reminder_target_userid"],
+                reminder_preview=summary["reminder_preview"],
+                pending_reminders=[
+                    ReminderOut.model_validate(reminder)
+                    for reminder in summary["pending_reminders"]
+                ],
                 arbitration_institution=summary["arbitration_institution"],
                 arbitration_case_no=summary["arbitration_case_no"],
                 sync_status=sync_log.status if sync_log else None,
@@ -471,6 +483,45 @@ def list_repayment_agreements(
     return ok(
         "还款协议履约台账查询成功",
         RepaymentAgreementListOut(total=total, items=items[start : start + page_size], stats=stats),
+    )
+
+
+@router.post("/repayment-agreements/{agreement_event_id}/reminders")
+def create_repayment_reminder(
+    agreement_event_id: int,
+    payload: RepaymentReminderCreate,
+    db: Session = Depends(get_db),
+    operator_info: dict[str, object] = Depends(get_current_operator),
+):
+    agreement = db.get(LegalEvent, agreement_event_id)
+    group_id = agreement.group_message.group_id if agreement and agreement.group_message else None
+    if not agreement or agreement.event_type != "repayment_agreement" or not group_id:
+        raise_fail("还款协议不存在", code=1404, status_code=404)
+    if not has_group_access(operator_info, group_id, agreement.tenant_id):
+        raise_fail("无权限访问该资源", code=403, status_code=403)
+    try:
+        context = RepaymentTrackingService(db).reminder_context(agreement)
+        if context is None:
+            raise ValueError("协议已结清或没有可提醒的未还期次")
+        requested_target = payload.target_userid or context.get("target_userid")
+        resolved_target = WeComApiGroupSyncService(db).resolve_member(
+            group_id,
+            str(requested_target or ""),
+        )
+        reminder, created = ReminderService(db).create_standalone_repayment_followup(
+            agreement.id,
+            target_userid=resolved_target,
+        )
+        db.commit()
+    except ValueError as exc:
+        db.rollback()
+        raise_fail(str(exc), code=1400)
+    return ok(
+        "还款提醒已加入发送队列" if created else "今天已存在该期还款提醒",
+        RepaymentReminderCreateOut(
+            created=created,
+            reminder=ReminderOut.model_validate(reminder),
+        ),
     )
 
 

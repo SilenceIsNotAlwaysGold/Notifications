@@ -228,7 +228,7 @@ class MessageService:
         normalized = " ".join((content or "").split())
         return bool(
             re.match(
-                r"^(?:@[^\s]+\s*)*(?:【缴费待确认】|【缴费信息待核实】|【致和法务提醒】|【致和法务】企业微信发送通道测试成功)",
+                r"^(?:@[^\s]+\s*)*(?:【缴费待确认】|【缴费信息待核实】|【还款提醒】|【还款待确认】|【致和法务提醒】|【致和法务】企业微信发送通道测试成功)",
                 normalized,
             )
         )

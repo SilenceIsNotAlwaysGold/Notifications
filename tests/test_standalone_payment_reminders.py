@@ -225,3 +225,15 @@ def test_platform_payment_reminder_callback_is_archived_without_new_event(db_ses
     assert result["event_ids"] == []
     assert result["reminder_ids"] == []
     assert db_session.scalar(select(LegalEvent.id)) is None
+
+
+def test_platform_repayment_reminder_callback_is_archived_without_new_event(db_session):
+    result = _send(
+        db_session,
+        "@协议发送人 【还款提醒】债权人：天津新诗商贸有限公司；债务人：庞灏。第 1 期剩余应还 668.36 元。",
+        sender="bot-account",
+    )
+
+    assert result["event_ids"] == []
+    assert result["reminder_ids"] == []
+    assert db_session.scalar(select(LegalEvent.id)) is None

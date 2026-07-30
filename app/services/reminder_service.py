@@ -11,6 +11,7 @@ from app.models.legal_event import LegalEvent
 from app.models.group_message import GroupMessage
 from app.models.reminder import Reminder
 from app.models.reminder_send_log import ReminderSendLog
+from app.services.repayment_tracking_service import RepaymentTrackingService
 from app.services.reminder_rule_service import ReminderRuleService
 from app.services.system_run_log_service import SystemRunLogService
 from app.services.tenant_settings_service import TenantSettingsService
@@ -338,6 +339,8 @@ class ReminderService:
     ) -> list[Reminder]:
         created: list[Reminder] = []
         current = now_tz()
+        tracking = RepaymentTrackingService(self.db)
+        progress = tracking.progress(event)
         for index, installment in enumerate(installments[:120], start=1):
             try:
                 due_date = date.fromisoformat(str(installment.get("due_date") or "")[:10])
@@ -345,6 +348,11 @@ class ReminderService:
                 continue
             sequence = installment.get("sequence") or index
             amount = installment.get("amount") or "待确认"
+            context = tracking.reminder_context(
+                event,
+                progress,
+                installment_sequence=int(sequence),
+            )
             for label, delta_days in (("d-7", -7), ("d0", 0), ("d+3", 3)):
                 target_date = due_date + timedelta(days=delta_days)
                 remind_at = datetime.combine(target_date, datetime.min.time(), tzinfo=app_timezone()).replace(hour=9)
@@ -360,16 +368,103 @@ class ReminderService:
                         group_id=message.group_id,
                         reminder_type="installment_repayment",
                         remind_at=remind_at,
-                        content=(
-                            f"【还款待确认】{creditor}与{debtor}的第 {sequence} 期还款应于 "
-                            f"{due_date.isoformat()} 支付 {amount} 元，请核实还款情况。"
+                        content=str(context["content"]) if context else (
+                            f"【还款提醒】债权人：{creditor}；债务人：{debtor}。"
+                            f"第 {sequence} 期应于 {due_date.isoformat()} 还款 {amount} 元，"
+                            "请核实还款情况，并在群内回复或发送付款凭证。"
                         ),
-                        target_userid=message.sender_id,
+                        target_userid=(context or {}).get("target_userid") or message.sender_id,
                         source_event_id=event.id,
                         dedupe_key=dedupe_key,
                     )
                 )
         return created
+
+    def create_standalone_repayment_followup(
+        self,
+        agreement_event_id: int,
+        *,
+        target_userid: str | None = None,
+    ) -> tuple[Reminder, bool]:
+        agreement = self.db.get(LegalEvent, agreement_event_id)
+        if not agreement or agreement.event_type != "repayment_agreement":
+            raise ValueError("还款协议不存在")
+        if agreement.business_status not in {"approved", "applied"}:
+            raise ValueError("还款协议尚未确认")
+        tracking = RepaymentTrackingService(self.db)
+        context = tracking.reminder_context(agreement)
+        if not context:
+            raise ValueError("协议已结清或没有可提醒的未还期次")
+        resolved_target = (target_userid or context.get("target_userid") or "").strip()
+        if not resolved_target:
+            raise ValueError("请选择该群内的提醒对象")
+
+        metadata = tracking.metadata(agreement)
+        metadata["repayment_reminder_target_userid"] = resolved_target
+        agreement.metadata_json = json.dumps(metadata, ensure_ascii=False, default=str)
+        pending = list(
+            self.db.scalars(
+                select(Reminder)
+                .where(Reminder.source_event_id == agreement.id)
+                .where(Reminder.reminder_type == "installment_repayment")
+                .where(Reminder.status == "pending")
+            ).all()
+        )
+        for reminder in pending:
+            reminder.target_userid = resolved_target
+
+        current = now_tz()
+        day_start = start_of_day(current.date())
+        next_day = day_start + timedelta(days=1)
+        sequence = int(context["installment_sequence"])
+        same_day = list(
+            self.db.scalars(
+                select(Reminder)
+                .where(Reminder.source_event_id == agreement.id)
+                .where(Reminder.reminder_type == "installment_repayment")
+                .where(Reminder.remind_at >= day_start)
+                .where(Reminder.remind_at < next_day)
+                .where(Reminder.status.in_(("pending", "sent", "simulated")))
+                .order_by(Reminder.id.asc())
+            ).all()
+        )
+        for reminder in same_day:
+            if tracking._sequence_from_dedupe(reminder.dedupe_key) != sequence:
+                continue
+            if reminder.status == "pending":
+                reminder.remind_at = current
+                reminder.content = str(context["content"])
+                reminder.target_userid = resolved_target
+            self.db.flush()
+            return reminder, False
+
+        dedupe_key = f"standalone-installment-manual:{agreement.id}:{sequence}:{current.date().isoformat()}"
+        existing = self.db.scalar(select(Reminder).where(Reminder.dedupe_key == dedupe_key))
+        if existing:
+            if existing.status in {"cancelled", "failed"}:
+                existing.status = "pending"
+                existing.remind_at = current
+                existing.content = str(context["content"])
+                existing.target_userid = resolved_target
+                existing.retry_count = 0
+                existing.last_error = None
+                existing.cancelled_at = None
+                existing.cancel_reason = None
+            self.db.flush()
+            return existing, False
+
+        reminder = self._create(
+            case_id=None,
+            tenant_id=agreement.tenant_id or agreement.group_message.tenant_id,
+            group_id=str(context["group_id"]),
+            reminder_type="installment_repayment",
+            remind_at=current,
+            content=str(context["content"]),
+            target_userid=resolved_target,
+            source_event_id=agreement.id,
+            dedupe_key=dedupe_key,
+        )
+        return reminder, True
 
     def cancel_pending_case_reminders(self, case_id: int, reason: str) -> int:
         reminders = list(
@@ -433,6 +528,7 @@ class ReminderService:
     def send_due_reminders(self, trigger_type: str = "system", operator: str | None = None) -> dict[str, object]:
         run_service = SystemRunLogService(self.db)
         run_log = run_service.start_run("reminder_send", trigger_type, summary={"operator": operator} if operator else None)
+        RepaymentTrackingService(self.db).reconcile_pending_reminders()
         due_reminders = list(
             self.db.scalars(
                 select(Reminder)
@@ -448,22 +544,34 @@ class ReminderService:
         try:
             for reminders in self._group_for_delivery(due_reminders):
                 primary = reminders[0]
-                mentioned = list(dict.fromkeys(item.target_userid for item in reminders if item.target_userid)) or None
+                requested_mentions = list(
+                    dict.fromkeys(item.target_userid for item in reminders if item.target_userid)
+                )
+                mentioned = requested_mentions or None
                 resolver = getattr(self.wecom_adapter, "resolve_mentioned_userids", None)
                 if callable(resolver):
                     mentioned = resolver(primary.group_id, mentioned, tenant_id=primary.tenant_id) or None
                 content = self._delivery_content(reminders)
-                try:
-                    result = self._send_text(primary, mentioned, content=content)
-                except Exception as exc:
-                    logger.exception("发送提醒摘要失败，group_id=%s", primary.group_id)
+                if requested_mentions and len(mentioned or []) < len(requested_mentions):
                     result = {
                         "success": False,
-                        "mode": getattr(self.wecom_adapter, "mode", "mock"),
+                        "mode": getattr(self.wecom_adapter, "mode", "wecomapi"),
                         "status_code": None,
                         "response": None,
-                        "error": str(exc),
+                        "error": "提醒对象已不在群内或成员映射失效，已阻止无 @ 发送",
                     }
+                else:
+                    try:
+                        result = self._send_text(primary, mentioned, content=content)
+                    except Exception as exc:
+                        logger.exception("发送提醒摘要失败，group_id=%s", primary.group_id)
+                        result = {
+                            "success": False,
+                            "mode": getattr(self.wecom_adapter, "mode", "mock"),
+                            "status_code": None,
+                            "response": None,
+                            "error": str(exc),
+                        }
 
                 for reminder in reminders:
                     self._write_send_log(
